@@ -1,0 +1,74 @@
+# docker-compose.therock.yml
+# TheRock (ROCm nightly) llama.cpp targeting gfx1151 natively.
+# Use: ./start_therock.sh  /  ./stop_therock.sh
+# Requires image built first: ./build_therock.sh
+
+name: strix-llamacpp-therock
+
+services:
+  llama:
+    image: strix-llamacpp-therock:local
+    build:
+      context: .
+      dockerfile: Dockerfile.therock
+    container_name: strix-llamacpp-therock
+    restart: "no"
+
+    entrypoint: ["llama-server"]
+    command:
+      - "${MODEL_FLAG:--hf}"
+      - "${MODEL_VALUE:-unsloth/Llama-3.1-Nemotron-Nano-8B-v1-GGUF}"
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "${SERVER_PORT:-8000}"
+      - "--ctx-size"
+      - "${LLAMA_CTX_SIZE:-32768}"
+      - "--threads"
+      - "${LLAMA_THREADS:-16}"
+      - "-ngl"
+      - "${LLAMA_NGL:-999}"
+      - "-fit"
+      - "off"
+      - "--parallel"
+      - "1"
+      - "--verbose"
+      - "-a"
+      - "${MODEL_ALIAS:-model}"
+      # Note: flash-attn compiled in by default on HIP builds; no -fa flag at runtime.
+
+    devices:
+      - /dev/dri:/dev/dri
+      - /dev/kfd:/dev/kfd
+    group_add:
+      - video
+      - render
+
+    security_opt:
+      - seccomp:unconfined
+    ipc: host
+    cap_add:
+      - SYS_PTRACE
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+
+    environment:
+      HSA_XNACK: "1"
+      AMD_SERIALIZE_COPY: "1" 
+      HF_HUB_ENABLE_HF_TRANSFER: "1"
+      HF_HOME:      "/mnt/data/llama.cpp-cache/hf"
+      HF_HUB_CACHE: "/mnt/data/llama.cpp-cache/hf/hub"
+      HSA_ENABLE_SDMA:       "0"
+      ROCR_VISIBLE_DEVICES:  "0"
+      GPU_MAX_HW_QUEUES:     "2"
+      ROCBLAS_USE_HIPBLASLT: "0"    # hipBLASLt still unstable on gfx1151 as of early 2026
+
+    volumes:
+      - ${HOST_LLAMA_CACHE:-/mnt/data/llama.cpp-cache}:/mnt/data/llama.cpp-cache
+      - /mnt/data:/mnt/data:ro
+      - ${HOME}/.cache/huggingface:/root/.cache/huggingface:ro
+
+    ports:
+      - "${SERVER_PORT:-8000}:8000"

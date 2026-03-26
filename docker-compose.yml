@@ -1,0 +1,74 @@
+# Strix Halo — llama.cpp (Vulkan RADV) via kyuz0/amd-strix-halo-toolboxes
+# Start: ./start.sh    Stop: ./stop.sh
+
+name: strix-llamacpp
+
+services:
+  llama:
+    image: docker.io/kyuz0/amd-strix-halo-toolboxes:${LLAMA_IMAGE_TAG:-vulkan-radv}
+    container_name: strix-llamacpp
+    restart: "no"
+
+    entrypoint: ["llama-server"]
+    command:
+      - "${MODEL_FLAG:--hf}"
+      - "${MODEL_VALUE:-unsloth/Llama-3.1-Nemotron-Nano-8B-v1-GGUF}"
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "${SERVER_PORT:-8000}"
+      - "--ctx-size"
+      - "${LLAMA_CTX_SIZE:-32768}"
+      - "--threads"
+      - "${LLAMA_THREADS:-16}"
+      - "-ngl"
+      - "${LLAMA_NGL:-999}"
+      - "--no-mmap"
+      - "-fa" # ROCM adds this at compile time, don't manually enable it. May be different for Vulkan.
+      - "1" # this line is with the above -fa.
+      - "--parallel"  # Increasing parallelism decreases single request latency at the cost of overall throughput.
+      - "1" # this line is with the above --parallel.
+      - "-a"
+      - "${MODEL_ALIAS:-model}"
+      - "--jinja" # Tool support
+
+    # ── GPU — Vulkan RADV only needs /dev/dri ──────────────────────────────────
+    devices:
+      - /dev/dri:/dev/dri
+      - /dev/kfd:/dev/kfd
+    group_add:
+      - video
+      - render
+
+    security_opt:
+      - seccomp:unconfined
+    ipc: host
+    cap_add:
+      - SYS_PTRACE
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+
+    environment:
+      HF_HUB_ENABLE_HF_TRANSFER: "1"
+      HF_HOME:      "/mnt/data/llama.cpp-cache/hf"
+      HF_HUB_CACHE: "/mnt/data/llama.cpp-cache/hf/hub"
+      HSA_ENABLE_SDMA: "0"
+      GGML_VK_PREFER_HOST_MEMORY: "1"
+
+    volumes:
+      # ── Persistent llama.cpp download cache ──────────────────────────────────
+      - ${HOST_LLAMA_CACHE:-/mnt/data/llama.cpp-cache}:/mnt/data/llama.cpp-cache
+
+      # ── Broad read-only model search ─────────────────────────────────────────
+      # Mount /mnt/data read-only so the container can find any existing
+      # GGUF regardless of which subdirectory it landed in
+      # (HF CLI, ComfyUI, Ollama blobs, manual downloads, etc.)
+      - /mnt/data:/mnt/data:ro
+
+      # Home cache (hf-cli default download location on the host)
+      - ${HOME}/.cache/huggingface:/root/.cache/huggingface:ro
+
+    ports:
+      - "${SERVER_PORT:-8000}:8000"
