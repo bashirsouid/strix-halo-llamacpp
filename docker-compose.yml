@@ -31,6 +31,9 @@ services:
       - "-a"
       - "${MODEL_ALIAS:-model}"
       - "--jinja" # Tool support
+      # TODO: Fix
+      #- "${LLAMA_CHAT_TEMPLATE_FILE:+--chat-template-file}"
+      #- "${LLAMA_CHAT_TEMPLATE_FILE:-}"
 
     # ── GPU — Vulkan RADV only needs /dev/dri ──────────────────────────────────
     devices:
@@ -69,6 +72,9 @@ services:
 
       # Home cache (hf-cli default download location on the host)
       - ${HOME}/.cache/huggingface:/root/.cache/huggingface:ro
+
+      # Templates for tool use
+      - /mnt/data/models/llm-templates:/templates:ro
 
     ports:
       - "${SERVER_PORT:-8000}:8000"

@@ -1,23 +1,22 @@
 #!/usr/bin/env bash
-# Nemotron-3-Super 120B-A12B MoE (unsloth UD-Q4_K_M, 3-part GGUF)
-# Auto-downloads all 3 shards if any are missing, then launches via llama-server.
+# Mistral-Small-4-119B-2603 — MoE 119B (6.5B active), unsloth UD-Q4_K_M.
+# Auto-downloads all 3 shards if missing, then launches via llama-server.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib.sh"
 source "$SCRIPT_DIR/config.env"
 
-# 120B MoE — 12B active params per token, so generation is fast.
-# KV cache still scales with total layers so keep ctx moderate.
-export LLAMA_CTX_SIZE=16384
+# MoE 119B, 6.5B active params — KV cache scales with total layers, keep ctx moderate.
+export LLAMA_CTX_SIZE=32768
 export LLAMA_NGL=999
 export LLAMA_THREADS=16
 
-HF_REPO="unsloth/Nemotron-3-Super-120B-A12B-GGUF"
+HF_REPO="unsloth/Mistral-Small-4-119B-2603-GGUF"
 QUANT="UD-Q4_K_M"
-DEST_DIR="/mnt/data/models/nvidia/nemotron-3-super/UD-Q4_K_M"
-PART1="${DEST_DIR}/NVIDIA-Nemotron-3-Super-120B-A12B-UD-Q4_K_M-00001-of-00003.gguf"
-PART2="${DEST_DIR}/NVIDIA-Nemotron-3-Super-120B-A12B-UD-Q4_K_M-00002-of-00003.gguf"
-PART3="${DEST_DIR}/NVIDIA-Nemotron-3-Super-120B-A12B-UD-Q4_K_M-00003-of-00003.gguf"
+DEST_DIR="/mnt/data/models/unsloth/Mistral-Small-4-119B-2603-GGUF/UD-Q4_K_M"
+PART1="${DEST_DIR}/Mistral-Small-4-119B-2603-UD-Q4_K_M-00001-of-00003.gguf"
+PART2="${DEST_DIR}/Mistral-Small-4-119B-2603-UD-Q4_K_M-00002-of-00003.gguf"
+PART3="${DEST_DIR}/Mistral-Small-4-119B-2603-UD-Q4_K_M-00003-of-00003.gguf"
 
 # ── Check / download missing shards ──────────────────────────────────
 MISSING=0
@@ -27,11 +26,11 @@ MISSING=0
 
 if (( MISSING )); then
     _lib_info "Downloading missing shards from HF: ${HF_REPO}"
-    _lib_info "This will take a while (~63 GB total for all 3 parts)..."
+    _lib_info "This will take a while (~57 GB total for all 3 parts)..."
     mkdir -p "$DEST_DIR"
-    hf download "${HF_REPO}" \
+    HF_HUB_ENABLE_HF_TRANSFER=1 hf download "${HF_REPO}" \
         --include "${QUANT}/*.gguf" \
-        --local-dir "/mnt/data/models/nvidia/nemotron-3-super/"
+        --local-dir "/mnt/data/models/unsloth/Mistral-Small-4-119B-2603-GGUF/"
     _lib_ok "All shards downloaded."
 else
     _lib_ok "All 3 shards present locally — skipping download."
@@ -41,5 +40,5 @@ fi
 export MODEL_FLAG="-m"
 export MODEL_VALUE="$PART1"
 
-launch_server "nemotron-3-super-120b"
+launch_server "mistral-small-4-119b"
 wait_for_server

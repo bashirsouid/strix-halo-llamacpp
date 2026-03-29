@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib.sh"
 source "$SCRIPT_DIR/config.env"
 
-export LLAMA_CTX_SIZE=32768
+export LLAMA_CTX_SIZE=131072
 export LLAMA_NGL=999
 export LLAMA_THREADS=16
 

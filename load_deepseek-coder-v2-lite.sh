@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib.sh"
 source "$SCRIPT_DIR/config.env"
 
-export LLAMA_CTX_SIZE=65536
+export LLAMA_CTX_SIZE=131072
 export LLAMA_NGL=999
 export LLAMA_THREADS=16
 
@@ -24,6 +24,8 @@ if [[ ! -f "$FILE" ]]; then
 else
     _lib_ok "Model already present — skipping download."
 fi
+
+export LLAMA_CHAT_TEMPLATE_FILE="/mnt/data/models/llm-templates/deepseek-coder-v2-lite.jinja"
 
 export MODEL_FLAG="-m"
 export MODEL_VALUE="$FILE"
