@@ -35,7 +35,7 @@ services:
       - "--cache-type-v"
       - "q8_0"
       - "--model-draft"
-      - "http://llama-draft:8001"
+      - "${DRAFT_MODEL_PATH}"
       - "--draft-max"
       - "8"       # draft tokens per step, tune between 4-16
       - "--draft-min"  
@@ -91,27 +91,3 @@ services:
     ports:
       - "${SERVER_PORT:-8000}:8000"
 
-  llama-draft:
-    image: docker.io/kyuz0/amd-strix-halo-toolboxes:${LLAMA_IMAGE_TAG:-vulkan-radv}
-    container_name: strix-llamacpp-draft
-    entrypoint: ["llama-server"]
-    command:
-      - "-hf"
-      - "alamios/Mistral-Small-3.1-DRAFT-0.5B-GGUF"
-      - "--port"
-      - "8001"
-      - "--host"
-      - "0.0.0.0"
-      - "-ngl"
-      - "999"
-      - "--no-mmap"
-      - "--flash-attn"
-      - "auto"
-    devices:
-      - /dev/dri:/dev/dri
-      - /dev/kfd:/dev/kfd
-    group_add:
-      - video
-      - render
-    ports:
-      - "8001:8001"

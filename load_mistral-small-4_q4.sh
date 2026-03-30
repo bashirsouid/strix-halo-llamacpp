@@ -48,6 +48,19 @@ else
     _lib_ok "All 3 shards present locally — skipping download."
 fi
 
+# -- Optional: Download a small draft model for speculative decoding. Not required, but can improve latency if you have it.
+DRAFT_HF_REPO="bartowski/alamios_Mistral-Small-3.1-DRAFT-0.5B-GGUF"
+DRAFT_DEST="/mnt/data/models/bartowski/alamios_Mistral-Small-3.1-DRAFT-0.5B-GGUF"
+DRAFT_FILE="alamios_Mistral-Small-3.1-DRAFT-0.5B-Q4_K_M.gguf"
+DRAFT_PATH="${DRAFT_DEST}/${DRAFT_FILE}"
+if [[ ! -f "$DRAFT_PATH" ]]; then
+    HF_HUB_ENABLE_HF_TRANSFER=1 hf download "${DRAFT_HF_REPO}" \
+        --include "${DRAFT_FILE}" \
+        --local-dir "$DRAFT_DEST"
+fi
+export DRAFT_MODEL_PATH="$DRAFT_PATH"
+# -- End of optional draft model logic --
+
 # ── Point llama-server at part 1; it auto-chains 2 and 3 ─────────────
 export MODEL_FLAG="-m"
 export MODEL_VALUE="$PART1"
