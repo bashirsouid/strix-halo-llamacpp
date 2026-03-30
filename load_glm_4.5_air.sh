@@ -49,6 +49,32 @@ fi
 
 export LLAMA_CHAT_TEMPLATE_FILE="/mnt/data/models/llm-templates/glm4.5_chat_template.jinja"
 
+# -- Optional: Download a small draft model for speculative decoding. Not required, but can improve latency if you have it.
+DRAFT_HF_REPO="jukofyork/GLM-4.5-DRAFT-0.6B-v3.0-GGUF"
+DRAFT_DEST="/mnt/data/models/jukofyork/GLM-4.5-DRAFT-0.6B-v3.0-GGUF"
+DRAFT_FILE="jukofyork/GLM-4.5-DRAFT-0.6B-v3.0-GGUF"
+DRAFT_PATH="${DRAFT_DEST}/${DRAFT_FILE}"
+
+if [[ ! -f "$DRAFT_PATH" ]]; then
+    _lib_info "Downloading draft model for speculative decoding: ${DRAFT_HF_REPO}"
+    mkdir -p "$DRAFT_DEST"
+    HF_HUB_ENABLE_HF_TRANSFER=1 hf download "${DRAFT_HF_REPO}" \
+        --include "${DRAFT_FILE}" \
+        --local-dir "$DRAFT_DEST"
+fi
+
+if [[ -f "$DRAFT_PATH" ]]; then
+    export DRAFT_MODEL_PATH="$DRAFT_PATH"
+    export DRAFT_MAX="8"
+    export DRAFT_MIN="2"
+    export LLAMA_COMPOSE_FILE="docker-compose.spec.yml"
+    _lib_ok "Draft model ready for speculative decoding: ${DRAFT_PATH}"
+else
+    _lib_warn "Draft model not found after download — running without speculative decoding"
+    clear_draft_config
+fi
+# -- End of optional draft model logic --
+
 export MODEL_FLAG="-m"
 export MODEL_VALUE="$PART1"
 

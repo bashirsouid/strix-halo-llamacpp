@@ -52,6 +52,32 @@ else
     _lib_ok "All 3 shards present locally — skipping download."
 fi
 
+# -- Optional: Download draft model for speculative decoding (Nemotron Nano)
+DRAFT_HF_REPO="bartowski/nvidia_Llama-3.1-Nemotron-Nano-8B-v1-GGUF"
+DRAFT_DEST="/mnt/data/models/nvidia/Llama-3.1-Nemotron-Nano-8B-v1"
+DRAFT_FILE="nvidia_Llama-3.1-Nemotron-Nano-8B-v1-Q6_K_L.gguf"
+DRAFT_PATH="${DRAFT_DEST}/${DRAFT_FILE}"
+
+if [[ ! -f "$DRAFT_PATH" ]]; then
+    _lib_info "Downloading draft model for speculative decoding: ${DRAFT_HF_REPO}"
+    mkdir -p "$DRAFT_DEST"
+    HF_HUB_ENABLE_HF_TRANSFER=1 hf download "${DRAFT_HF_REPO}" \
+        --include "${DRAFT_FILE}" \
+        --local-dir "$DRAFT_DEST"
+fi
+
+if [[ -f "$DRAFT_PATH" ]]; then
+    export DRAFT_MODEL_PATH="$DRAFT_PATH"
+    export DRAFT_MAX="8"
+    export DRAFT_MIN="2"
+    export LLAMA_COMPOSE_FILE="docker-compose.spec.yml"
+    _lib_ok "Draft model ready for speculative decoding: ${DRAFT_PATH}"
+else
+    _lib_warn "Draft model not found after download — running without speculative decoding"
+    clear_draft_config
+fi
+# -- END
+
 # ── Point llama-server at part 1; it auto-chains 2 and 3 ─────────────
 export MODEL_FLAG="-m"
 export MODEL_VALUE="$PART1"

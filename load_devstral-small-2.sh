@@ -43,6 +43,32 @@ fi
 
 export LLAMA_CHAT_TEMPLATE_FILE="/mnt/data/models/llm-templates/devstral-small-2-instruct.jinja"
 
+# -- Optional: Download a small draft model for speculative decoding. Not required, but can improve latency if you have it.
+DRAFT_HF_REPO="bartowski/alamios_Mistral-Small-3.1-DRAFT-0.5B-GGUF"
+DRAFT_DEST="/mnt/data/models/bartowski/alamios_Mistral-Small-3.1-DRAFT-0.5B-GGUF"
+DRAFT_FILE="alamios_Mistral-Small-3.1-DRAFT-0.5B-Q4_K_M.gguf"
+DRAFT_PATH="${DRAFT_DEST}/${DRAFT_FILE}"
+
+if [[ ! -f "$DRAFT_PATH" ]]; then
+    _lib_info "Downloading draft model for speculative decoding: ${DRAFT_HF_REPO}"
+    mkdir -p "$DRAFT_DEST"
+    HF_HUB_ENABLE_HF_TRANSFER=1 hf download "${DRAFT_HF_REPO}" \
+        --include "${DRAFT_FILE}" \
+        --local-dir "$DRAFT_DEST"
+fi
+
+if [[ -f "$DRAFT_PATH" ]]; then
+    export DRAFT_MODEL_PATH="$DRAFT_PATH"
+    export DRAFT_MAX="8"
+    export DRAFT_MIN="2"
+    export LLAMA_COMPOSE_FILE="docker-compose.spec.yml"
+    _lib_ok "Draft model ready for speculative decoding: ${DRAFT_PATH}"
+else
+    _lib_warn "Draft model not found after download — running without speculative decoding"
+    clear_draft_config
+fi
+# -- End of optional draft model logic --
+
 export MODEL_FLAG="-m"
 export MODEL_VALUE="$FILE"
 
