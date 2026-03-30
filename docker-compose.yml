@@ -25,6 +25,7 @@ services:
       - "${LLAMA_NGL:-999}"
       - "--no-mmap"
       - "--flash-attn" # ROCM adds this at compile time, don't manually enable it. May be different for Vulkan.
+      - "auto"
       - "--parallel"  # Increasing parallelism decreases single request latency at the cost of overall throughput.
       - "1" # this line is with the above --parallel.
       - "-a"
@@ -33,6 +34,8 @@ services:
       - "q8_0"
       - "--cache-type-v"
       - "q8_0"
+      - "--model-draft"
+      - "http://llama-draft:8001"
       - "--speculative"
       - "--draft-max"
       - "8"       # draft tokens per step, tune between 4-16
@@ -95,7 +98,7 @@ services:
     entrypoint: ["llama-server"]
     command:
       - "-hf"
-      - "unsloth/Qwen2.5-1.5B-Instruct-GGUF"
+      - "alamios/Mistral-Small-3.1-DRAFT-0.5B-GGUF"
       - "--port"
       - "8001"
       - "--host"
@@ -103,6 +106,8 @@ services:
       - "-ngl"
       - "999"
       - "--no-mmap"
+      - "--flash-attn"
+      - "auto"
     devices:
       - /dev/dri:/dev/dri
       - /dev/kfd:/dev/kfd
