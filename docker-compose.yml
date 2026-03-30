@@ -36,7 +36,6 @@ services:
       - "q8_0"
       - "--model-draft"
       - "http://llama-draft:8001"
-      - "--speculative"
       - "--draft-max"
       - "8"       # draft tokens per step, tune between 4-16
       - "--draft-min"  
