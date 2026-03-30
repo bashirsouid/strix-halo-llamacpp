@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """
-bench_current.py — benchmark whatever model is running right now
-Thresholds are derived automatically from model size via the /v1/models API.
-This is a Python version of bench_current.sh with improvements:
-- Better error handling and logging
-- More modular and reusable code
-- Improved output formatting
-- Support for async requests (optional)
-- Better handling of edge cases
+bench_current.py — benchmark whatever model is running right now.
+
+Improvements over prior version:
+  - Streaming mode: decouples decode throughput from TTFT noise
+  - Draft-aware metrics: fetches n_drafted/n_accept from /metrics if available
+  - Decode-focused prompts: prompts chosen for high spec-decode acceptance
+  - Removed prefill-stress and TTFT tests (don't exercise draft model)
+  - Correct MoE active-param inference for Mistral-Small-4 (6.5B active)
+  - Realistic temperature (0.2) matching actual usage
+  - Longer max_tokens (512) for stable throughput measurement
+  - --no-draft flag for baseline comparison in one session
 """
 
 import json
@@ -18,35 +21,70 @@ import urllib.error
 import sys
 import re
 import argparse
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Optional, Tuple
 
-# ANSI color codes
-RED = "\033[0;31m"
-YLW = "\033[1;33m"
-GRN = "\033[0;32m"
-CYN = "\033[0;36m"
+RED  = "\033[0;31m"
+YLW  = "\033[1;33m"
+GRN  = "\033[0;32m"
+CYN  = "\033[0;36m"
+MAG  = "\033[0;35m"
 BOLD = "\033[1m"
-DIM = "\033[2m"
-NC = "\033[0m"
+DIM  = "\033[2m"
+NC   = "\033[0m"
+
+# ---------------------------------------------------------------------------
+# Prompts chosen to maximise spec-decode acceptance rate:
+#   - code gen: highly predictable token sequences
+#   - structured list: repetitive formatting patterns
+#   - prose explanation: longer output, realistic usage
+# ---------------------------------------------------------------------------
+PROMPTS = {
+    "Code gen (Python)": (
+        "Write a complete Python function that implements a binary search tree "
+        "with insert, search, and in-order traversal methods. Include docstrings."
+    ),
+    "Structured list": (
+        "List 20 common Linux command-line tools with a one-sentence description "
+        "of each. Format as a numbered list."
+    ),
+    "Prose explanation": (
+        "Write a detailed explanation of how AMD Strix Halo unified memory "
+        "architecture works, covering memory bandwidth, GTT tables, iGPU access, "
+        "and implications for LLM inference."
+    ),
+}
+
+# Known MoE model active-param overrides: model alias substring -> active B
+MOE_OVERRIDES = {
+    "mistral-small-4":    6.5,
+    "mixtral-8x7b":       12.6,
+    "mixtral-8x22b":      39.0,
+    "deepseek-coder-v2":  2.4,
+}
 
 
-def print_banner():
-    """Print the benchmark banner."""
+def print_banner() -> None:
     print(f"{BOLD}")
     print("╔══════════════════════════════════════════════════════════════════╗")
-    print("║      Strix Halo — llama.cpp Benchmark                            ║")
+    print("║      Strix Halo — llama.cpp Benchmark  (speculative-aware)       ║")
     print("╚══════════════════════════════════════════════════════════════════╝")
     print(f"{NC}")
 
 
 def infer_active_params_b(model_id: str) -> float:
-    """Infer the active parameters (in billions) from the model ID."""
     name = model_id.lower()
-    # Check for MoE models (e.g., 8B-a8B)
+    # Check explicit MoE overrides first
+    for key, val in MOE_OVERRIDES.items():
+        if key in name:
+            return val
+    # Generic MoE pattern: 8x7b, 119b-a6.5b
     moe = re.search(r'(\d+(?:\.\d+)?)b[-_]a(\d+(?:\.\d+)?)b', name)
     if moe:
         return float(moe.group(2))
-    # Check for dense models (e.g., 8B)
+    moe2 = re.search(r'(\d+)x(\d+(?:\.\d+)?)b', name)
+    if moe2:
+        return float(moe2.group(1)) * float(moe2.group(2)) * 0.6
+    # Dense fallback
     dense = re.findall(r'(\d+(?:\.\d+)?)b', name)
     if dense:
         return float(dense[-1])
@@ -54,240 +92,246 @@ def infer_active_params_b(model_id: str) -> float:
 
 
 def thresholds(active_b: float) -> Tuple[float, float, float]:
-    """Calculate performance thresholds based on active parameters."""
-    low = max(1.0, 300.0 / active_b)
-    good = max(2.0, 500.0 / active_b)
-    great = max(4.0, 800.0 / active_b)
+    low   = max(1.0,  300.0 / active_b)
+    good  = max(2.0,  500.0 / active_b)
+    great = max(4.0,  800.0 / active_b)
     return round(low, 1), round(good, 1), round(great, 1)
 
 
 def get_model_id(port: int) -> str:
-    """Fetch the model ID from the server."""
-    url = f"http://localhost:{port}/v1/models"
     try:
-        with urllib.request.urlopen(url, timeout=10) as resp:
-            data = json.loads(resp.read())
-            return data.get('data', [{}])[0].get('id', 'unknown')
-    except (urllib.error.URLError, json.JSONDecodeError) as e:
+        with urllib.request.urlopen(f"http://localhost:{port}/v1/models", timeout=10) as r:
+            return json.loads(r.read()).get("data", [{}])[0].get("id", "unknown")
+    except Exception as e:
         print(f"{RED}Failed to fetch model ID: {e}{NC}")
         sys.exit(1)
 
 
-def bench_request(
-    url: str,
+def fetch_draft_metrics(port: int) -> Optional[Dict]:
+    """
+    Pull speculative decoding stats from llama.cpp /metrics (Prometheus format).
+    Returns dict with n_drafted, n_accept, accept_rate or None if unavailable.
+    """
+    try:
+        with urllib.request.urlopen(f"http://localhost:{port}/metrics", timeout=5) as r:
+            text = r.read().decode()
+    except Exception:
+        return None
+
+    def extract(key: str) -> Optional[float]:
+        m = re.search(rf'^{re.escape(key)}\s+([\d.]+)', text, re.MULTILINE)
+        return float(m.group(1)) if m else None
+
+    drafted = extract("llamacpp:draft_tokens_total")
+    accepted = extract("llamacpp:draft_tokens_accepted_total")
+    if drafted is None or accepted is None:
+        return None
+    rate = (accepted / drafted * 100) if drafted > 0 else 0.0
+    return {"n_drafted": int(drafted), "n_accept": int(accepted), "accept_rate": rate}
+
+
+def bench_stream(
+    port: int,
     model: str,
     prompt: str,
     max_tokens: int,
-    timeout: int = 600
+    temperature: float,
+    timeout: int = 600,
 ) -> Dict:
-    """Send a benchmark request and return performance metrics."""
+    """
+    Stream the response and measure pure decode throughput.
+    TTFT = time to first token (prefill dominated).
+    decode_tps = tokens after first / time after first token (decode dominated).
+    """
     body = json.dumps({
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": max_tokens,
-        "stream": False,
-        "temperature": 0,
+        "stream": True,
+        "temperature": temperature,
     }).encode()
     req = urllib.request.Request(
-        url, data=body, headers={"Content-Type": "application/json"}
+        f"http://localhost:{port}/v1/chat/completions",
+        data=body,
+        headers={"Content-Type": "application/json"},
     )
+
     t0 = time.perf_counter()
+    t_first: Optional[float] = None
+    n_tokens = 0
+
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            t_first = time.perf_counter()
-            raw = resp.read()
-        t1 = time.perf_counter()
+            for raw_line in resp:
+                line = raw_line.decode().strip()
+                if not line.startswith("data:"):
+                    continue
+                payload = line[5:].strip()
+                if payload == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(payload)
+                except json.JSONDecodeError:
+                    continue
+                delta = chunk.get("choices", [{}])[0].get("delta", {})
+                content = delta.get("content", "")
+                if content:
+                    if t_first is None:
+                        t_first = time.perf_counter()
+                    n_tokens += 1
     except urllib.error.URLError as e:
         print(f"{RED}Request failed: {e}{NC}")
         sys.exit(1)
 
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError as e:
-        print(f"{RED}Failed to parse response: {e}{NC}")
-        sys.exit(1)
+    t1 = time.perf_counter()
+    if t_first is None:
+        t_first = t1
 
-    usage = data.get("usage", {})
-    n_gen = usage.get("completion_tokens", 0)
-    total_s = t1 - t0
-    tps = n_gen / total_s if total_s > 0 and n_gen > 0 else 0.0
-    ttft_ms = (t_first - t0) * 1000
-
-    choice = data.get("choices", [{}])[0]
-    msg = choice.get("message", {})
-    preview = (msg.get("content") or msg.get("reasoning_content") or "")[:70]
-    preview = preview.replace("\n", " ")
+    ttft_ms     = (t_first - t0) * 1000
+    decode_s    = t1 - t_first
+    decode_tps  = (n_tokens - 1) / decode_s if decode_s > 0 and n_tokens > 1 else 0.0
+    total_tps   = n_tokens / (t1 - t0) if (t1 - t0) > 0 else 0.0
 
     return {
-        "n_gen": n_gen,
-        "tps": tps,
-        "ttft_ms": ttft_ms,
-        "total_s": total_s,
-        "preview": preview,
+        "n_gen":        n_tokens,
+        "ttft_ms":      ttft_ms,
+        "decode_tps":   decode_tps,
+        "total_tps":    total_tps,
+        "total_s":      t1 - t0,
     }
 
 
-def run_benchmark(
+def run_suite(
     port: int,
     model: str,
     warmup: int,
     runs: int,
     max_tokens: int,
+    temperature: float,
     active_b: float,
-    thresholds: Tuple[float, float, float],
-) -> None:
-    """Run the benchmark for a given model and prompts."""
-    PROMPTS = {
-        "Short burst (TTFT)": "List the 5 most important things to know about Vulkan RADV on AMD.",
-        "Sustained decode (real throughput)": (
-            "Write a detailed explanation of how AMD Strix Halo unified memory "
-            "architecture works, covering memory bandwidth, GTT tables, iGPU access, "
-            "and implications for LLM inference."
-        ),
-        "Prefill stress (large prompt -> short answer)": (
-            "Summarize in one sentence: " + ("AMD Strix Halo is a unified memory APU. " * 150)
-        ),
-    }
-
-    all_medians = []
+    thresh: Tuple[float, float, float],
+    label_prefix: str = "",
+) -> List[float]:
+    """Run all prompts. Returns list of median decode_tps per prompt."""
+    all_medians: List[float] = []
 
     for label, prompt in PROMPTS.items():
-        sep = "-" * max(1, 54 - len(label))
-        print(f"{BOLD}-- {label} {sep}{NC}")
-        print(f"  {DIM}Prompt: {prompt[:80].replace(chr(10), ' ')}...{NC}\n")
+        display = f"{label_prefix}{label}"
+        sep = "-" * max(1, 54 - len(display))
+        print(f"{BOLD}-- {display} {sep}{NC}")
+        print(f"  {DIM}{prompt[:80]}...{NC}\n")
 
-        # Warmup runs
+        # Warmup
         for i in range(warmup):
             print(f"  {CYN}warmup {i+1}/{warmup}{NC} ", end="", flush=True)
-            try:
-                r = bench_request(
-                    f"http://localhost:{port}/v1/chat/completions",
-                    model,
-                    prompt,
-                    max_tokens,
-                )
-                print(
-                    f"{r['n_gen']:>4} tok | {r['tps']:>6.1f} tok/s | "
-                    f"TTFT {r['ttft_ms']:>5.0f} ms  (discarded)"
-                )
-            except Exception as e:
-                print(f"{RED}FAILED: {e}{NC}")
-                sys.exit(1)
+            r = bench_stream(port, model, prompt, max_tokens, temperature)
+            print(f"{r['n_gen']:>4} tok | decode {r['decode_tps']:>6.1f} tok/s  (discarded)")
 
         print()
         tps_list, ttft_list = [], []
-        # Measurement runs
+
         for i in range(runs):
             print(f"  run {i+1}/{runs} ", end="", flush=True)
-            r = bench_request(
-                f"http://localhost:{port}/v1/chat/completions",
-                model,
-                prompt,
-                max_tokens,
-            )
-            tps_list.append(r["tps"])
+            r = bench_stream(port, model, prompt, max_tokens, temperature)
+            tps_list.append(r["decode_tps"])
             ttft_list.append(r["ttft_ms"])
             print(
-                f"{r['n_gen']:>4} tok | {r['tps']:>6.1f} tok/s | "
-                f"TTFT {r['ttft_ms']:>5.0f} ms | {r['total_s']:.2f}s total"
+                f"{r['n_gen']:>4} tok | decode {r['decode_tps']:>6.1f} tok/s "
+                f"| TTFT {r['ttft_ms']:>5.0f} ms | {r['total_s']:.2f}s"
             )
 
-        med_tps = statistics.median(tps_list)
+        med_tps  = statistics.median(tps_list)
         med_ttft = statistics.median(ttft_list)
         all_medians.append(med_tps)
 
-        # Determine rating
-        if med_tps >= thresholds[2]:
-            rating = f"{GRN}EXCELLENT{NC}"
-        elif med_tps >= thresholds[1]:
-            rating = f"{GRN}GOOD{NC}"
-        elif med_tps >= thresholds[0]:
-            rating = f"{YLW}LOW{NC}"
-        else:
-            rating = f"{RED}SLOW -- check GPU layers / Vulkan device{NC}"
+        if   med_tps >= thresh[2]: rating = f"{GRN}EXCELLENT{NC}"
+        elif med_tps >= thresh[1]: rating = f"{GRN}GOOD{NC}"
+        elif med_tps >= thresh[0]: rating = f"{YLW}LOW{NC}"
+        else:                      rating = f"{RED}SLOW{NC}"
 
         print(
-            f"\n  Median: {BOLD}{med_tps:.1f} tok/s{NC}  TTFT: {med_ttft:.0f} ms"
-            f"  Range: {min(tps_list):.1f}-{max(tps_list):.1f}"
-            f"  Rating: {rating}\n"
+            f"\n  Median decode: {BOLD}{med_tps:.1f} tok/s{NC}  "
+            f"TTFT: {med_ttft:.0f} ms  "
+            f"Range: {min(tps_list):.1f}-{max(tps_list):.1f}  "
+            f"Rating: {rating}\n"
         )
 
-    overall = statistics.median(all_medians)
-    print(f"{BOLD}{'='*68}{NC}")
-    print(f"{BOLD}  Overall median : {overall:.1f} tok/s{NC}")
-    print(f"{BOLD}  Model          : {model}  (~{active_b:.1f}B active params){NC}\n")
-    print(f"  Reference ranges for ~{active_b:.1f}B active on Strix Halo (Vulkan RADV):")
-    print(f"    {RED}< {thresholds[0]} tok/s{NC}    GPU not fully active -- check -ngl and /dev/dri mount")
-    print(f"    {YLW}{thresholds[0]}-{thresholds[1]} tok/s{NC}   Partial acceleration or driver overhead")
-    print(f"    {GRN}{thresholds[1]}-{thresholds[2]} tok/s{NC}   Good -- expected range for this model size")
-    print(f"    {GRN}> {thresholds[2]} tok/s{NC}    Excellent")
-    print(f"{BOLD}{'='*68}{NC}\n")
+    return all_medians
 
 
-def main():
-    """Main function to parse arguments and run the benchmark."""
-    parser = argparse.ArgumentParser(description="Benchmark the current model running on Strix Halo.")
-    parser.add_argument(
-        "--port",
-        type=int,
-        default=8000,
-        help="Server port (default: 8000)",
-    )
-    parser.add_argument(
-        "--warmup",
-        type=int,
-        default=2,
-        help="Number of warmup runs (default: 2)",
-    )
-    parser.add_argument(
-        "--runs",
-        type=int,
-        default=4,
-        help="Number of measurement runs (default: 4)",
-    )
-    parser.add_argument(
-        "--max-tokens",
-        type=int,
-        default=256,
-        help="Maximum tokens to generate (default: 256)",
-    )
-
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Benchmark the current model on Strix Halo.")
+    parser.add_argument("--port",       type=int,   default=8000)
+    parser.add_argument("--warmup",     type=int,   default=1)
+    parser.add_argument("--runs",       type=int,   default=3)
+    parser.add_argument("--max-tokens", type=int,   default=512,
+                        help="Tokens to generate per run (default 512, longer = stabler)")
+    parser.add_argument("--temperature", type=float, default=0.2,
+                        help="Sampling temperature (default 0.2 — matches real usage)")
+    parser.add_argument("--no-draft",   action="store_true",
+                        help="Skip draft stats (useful when running without spec decode)")
     args = parser.parse_args()
 
     print_banner()
 
-    # Check if server is running
-    url = f"http://localhost:{args.port}/v1/models"
+    # Server health check
     try:
-        with urllib.request.urlopen(url, timeout=10) as resp:
-            if resp.getcode() != 200:
-                print(f"{RED}No server on port {args.port}. Run ./start.sh or a load_*.sh first.{NC}")
-                sys.exit(1)
-    except urllib.error.URLError:
-        print(f"{RED}No server on port {args.port}. Run ./start.sh or a load_*.sh first.{NC}")
+        with urllib.request.urlopen(f"http://localhost:{args.port}/v1/models", timeout=10) as r:
+            if r.getcode() != 200:
+                raise RuntimeError
+    except Exception:
+        print(f"{RED}No server on port {args.port}. Run ./start.sh first.{NC}")
         sys.exit(1)
 
-    # Get model ID
-    model = get_model_id(args.port)
-    print(f"  Model   : {BOLD}{model}{NC}")
-    print(f"  Warmup  : {args.warmup}   Measured: {args.runs}   Max tokens: {args.max_tokens}")
+    model    = get_model_id(args.port)
+    active_b = infer_active_params_b(model)
+    thresh   = thresholds(active_b)
+
+    print(f"  Model       : {BOLD}{model}{NC}")
+    print(f"  Active params: ~{active_b:.1f}B  "
+          f"(thresholds  low={thresh[0]}  good={thresh[1]}  great={thresh[2]} tok/s)")
+    print(f"  Warmup: {args.warmup}   Runs: {args.runs}   "
+          f"Max tokens: {args.max_tokens}   Temp: {args.temperature}")
     print()
 
-    # Infer active parameters and thresholds
-    active_b = infer_active_params_b(model)
-    THRESH_LOW, THRESH_GOOD, THRESH_GREAT = thresholds(active_b)
-    print(f"  Active params : ~{active_b:.1f}B  (thresholds  low={THRESH_LOW}  good={THRESH_GOOD}  great={THRESH_GREAT} tok/s)\n")
+    # Fetch draft stats snapshot BEFORE the run
+    pre_stats = None if args.no_draft else fetch_draft_metrics(args.port)
 
-    # Run benchmark
-    run_benchmark(
-        args.port,
-        model,
-        args.warmup,
-        args.runs,
-        args.max_tokens,
-        active_b,
-        (THRESH_LOW, THRESH_GOOD, THRESH_GREAT),
+    medians = run_suite(
+        args.port, model,
+        args.warmup, args.runs, args.max_tokens, args.temperature,
+        active_b, thresh,
     )
+
+    # Fetch draft stats snapshot AFTER the run and diff
+    post_stats = None if args.no_draft else fetch_draft_metrics(args.port)
+
+    overall = statistics.median(medians)
+    print(f"{BOLD}{'='*68}{NC}")
+    print(f"{BOLD}  Overall median decode : {overall:.1f} tok/s{NC}")
+    print(f"{BOLD}  Model                 : {model}  (~{active_b:.1f}B active){NC}")
+
+    if post_stats and pre_stats:
+        d_drafted = post_stats["n_drafted"] - pre_stats["n_drafted"]
+        d_accept  = post_stats["n_accept"]  - pre_stats["n_accept"]
+        rate      = (d_accept / d_drafted * 100) if d_drafted > 0 else 0.0
+        color     = GRN if rate >= 60 else (YLW if rate >= 40 else RED)
+        print(f"\n  {MAG}Speculative decoding stats (this session):{NC}")
+        print(f"    Drafted   : {d_drafted}")
+        print(f"    Accepted  : {d_accept}")
+        print(f"    Accept rate: {color}{rate:.1f}%{NC}  "
+              + ("(good)" if rate >= 60 else "(low — consider different draft model)" if rate < 40 else "(ok)"))
+    elif not args.no_draft:
+        print(f"\n  {DIM}Draft stats unavailable — /metrics endpoint not exposed{NC}")
+        print(f"  {DIM}Tip: check 'docker logs strix-llamacpp | grep -i draft'{NC}")
+
+    print()
+    print(f"  Reference ranges for ~{active_b:.1f}B active (Vulkan RADV):")
+    print(f"    {RED}< {thresh[0]} tok/s{NC}    Check -ngl, /dev/dri, flash-attn")
+    print(f"    {YLW}{thresh[0]}-{thresh[1]} tok/s{NC}   Partial acceleration")
+    print(f"    {GRN}{thresh[1]}-{thresh[2]} tok/s{NC}   Good")
+    print(f"    {GRN}> {thresh[2]} tok/s{NC}    Excellent")
+    print(f"{BOLD}{'='*68}{NC}\n")
 
 
 if __name__ == "__main__":
