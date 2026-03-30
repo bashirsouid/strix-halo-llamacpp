@@ -20,16 +20,26 @@ services:
       - "--ctx-size"
       - "${LLAMA_CTX_SIZE:-32768}"
       - "--threads"
-      - "${LLAMA_THREADS:-16}"
+      - "${LLAMA_THREADS:-1}"
       - "-ngl"
       - "${LLAMA_NGL:-999}"
       - "--no-mmap"
-      - "-fa" # ROCM adds this at compile time, don't manually enable it. May be different for Vulkan.
-      - "1" # this line is with the above -fa.
+      - "--flash-attn" # ROCM adds this at compile time, don't manually enable it. May be different for Vulkan.
       - "--parallel"  # Increasing parallelism decreases single request latency at the cost of overall throughput.
       - "1" # this line is with the above --parallel.
       - "-a"
       - "${MODEL_ALIAS:-model}"
+      - "--cache-type-k"
+      - "q8_0"
+      - "--cache-type-v"
+      - "q8_0"
+      - "--speculative"
+      - "--draft-max"
+      - "8"       # draft tokens per step, tune between 4-16
+      - "--draft-min"  
+      - "2"
+      - "--ubatch-size"
+      - "1024"
       - "--jinja" # Tool support
       # TODO: Fix
       #- "${LLAMA_CHAT_TEMPLATE_FILE:+--chat-template-file}"
@@ -58,7 +68,7 @@ services:
       HF_HOME:      "/mnt/data/llama.cpp-cache/hf"
       HF_HUB_CACHE: "/mnt/data/llama.cpp-cache/hf/hub"
       HSA_ENABLE_SDMA: "0"
-      GGML_VK_PREFER_HOST_MEMORY: "1"
+      GGML_VK_PREFER_HOST_MEMORY: "0"
 
     volumes:
       # ── Persistent llama.cpp download cache ──────────────────────────────────
@@ -78,3 +88,26 @@ services:
 
     ports:
       - "${SERVER_PORT:-8000}:8000"
+
+  llama-draft:
+    image: docker.io/kyuz0/amd-strix-halo-toolboxes:${LLAMA_IMAGE_TAG:-vulkan-radv}
+    container_name: strix-llamacpp-draft
+    entrypoint: ["llama-server"]
+    command:
+      - "-hf"
+      - "unsloth/Qwen2.5-1.5B-Instruct-GGUF"
+      - "--port"
+      - "8001"
+      - "--host"
+      - "0.0.0.0"
+      - "-ngl"
+      - "999"
+      - "--no-mmap"
+    devices:
+      - /dev/dri:/dev/dri
+      - /dev/kfd:/dev/kfd
+    group_add:
+      - video
+      - render
+    ports:
+      - "8001:8001"

@@ -7,16 +7,28 @@ source "$SCRIPT_DIR/config.env"
 
 export LLAMA_CTX_SIZE=131072
 export LLAMA_NGL=999
-export LLAMA_THREADS=16
+export LLAMA_THREADS=1
 
 HF_REPO="bartowski/DeepSeek-Coder-V2-Lite-Instruct-GGUF"
 DEST="/mnt/data/models/deepseek/DeepSeek-Coder-V2-Lite-Instruct"
 FILE="${DEST}/DeepSeek-Coder-V2-Lite-Instruct-Q8_0_L.gguf"
 
+# ── bench_all.py check mode ───────────────────────────────────────────────────
+# When BENCH_MODE=check, only verify files are present — no download, no server.
+# Exit 0 = files ready.  Exit 2 = not downloaded, skip this model.
+if [[ "${BENCH_MODE:-}" == "check" ]]; then
+    if [[ -f "$FILE" ]]; then
+        exit 0
+    else
+        exit 2
+    fi
+fi
+# ── end of BENCH_MODE=check logic ─────────────────────────────────────────────
+
 if [[ ! -f "$FILE" ]]; then
     _lib_info "Downloading DeepSeek-Coder-V2-Lite Q8_0_L from HF: ${HF_REPO}"
     mkdir -p "$DEST"
-    hf download "${HF_REPO}" \
+    HF_HUB_ENABLE_HF_TRANSFER=1 hf download "${HF_REPO}" \
         --include "DeepSeek-Coder-V2-Lite-Instruct-Q8_0_L.gguf" \
         --local-dir "$DEST"
     [[ -f "$FILE" ]] || { _lib_fail "Download completed but expected file not found: $FILE"; exit 1; }

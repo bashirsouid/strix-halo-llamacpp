@@ -7,15 +7,27 @@ source "$SCRIPT_DIR/config.env"
 
 export LLAMA_CTX_SIZE=32768
 export LLAMA_NGL=999
-export LLAMA_THREADS=16
+export LLAMA_THREADS=1
 
 DEST="/mnt/data/models/qwen/Qwen2.5-7B-Instruct"
 FILE="${DEST}/qwen2.5-7b-instruct-q8_0.gguf"
 
+# ── bench_all.py check mode ───────────────────────────────────────────────────
+# When BENCH_MODE=check, only verify files are present — no download, no server.
+# Exit 0 = files ready.  Exit 2 = not downloaded, skip this model.
+if [[ "${BENCH_MODE:-}" == "check" ]]; then
+    if [[ -f "$FILE" ]]; then
+        exit 0
+    else
+        exit 2
+    fi
+fi
+# ── end of BENCH_MODE=check logic ─────────────────────────────────────────────
+
 if [[ ! -f "$FILE" ]]; then
     _lib_info "Downloading Qwen2.5-7B-Instruct Q8_0..."
     mkdir -p "$DEST"
-    hf download Qwen/Qwen2.5-7B-Instruct-GGUF \
+    HF_HUB_ENABLE_HF_TRANSFER=1 hf download Qwen/Qwen2.5-7B-Instruct-GGUF \
         --include "*q8_0*" \
         --local-dir "$DEST"
 fi

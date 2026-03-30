@@ -7,17 +7,29 @@ source "$SCRIPT_DIR/config.env"
 
 export LLAMA_CTX_SIZE=16384
 export LLAMA_NGL=999
-export LLAMA_THREADS=20
+export LLAMA_THREADS=1
 
 HF_REPO="bartowski/Llama-3.3-70B-Instruct-GGUF"
 BASE_DIR="/mnt/data/models/meta/Llama-3.3-70B-Instruct"
 SHARD_DIR="${BASE_DIR}/Llama-3.3-70B-Instruct-Q6_K_L"
 
+# ── bench_all.py check mode ───────────────────────────────────────────────────
+# When BENCH_MODE=check, only verify files are present — no download, no server.
+# Exit 0 = files ready.  Exit 2 = not downloaded, skip this model.
+if [[ "${BENCH_MODE:-}" == "check" ]]; then
+    if [[ -n "$(find "$SHARD_DIR" -name "*.gguf" 2>/dev/null | head -1)" ]]; then
+        exit 0
+    else
+        exit 2
+    fi
+fi
+# ── end of BENCH_MODE=check logic ─────────────────────────────────────────────
+
 if [[ -z "$(find "$SHARD_DIR" -name "*.gguf" 2>/dev/null | head -1)" ]]; then
     _lib_info "Downloading Llama-3.3-70B Q6_K_L shards from HF: ${HF_REPO}"
     _lib_info "This will take a while (~58.4 GB total)..."
     mkdir -p "$SHARD_DIR"
-    hf download "${HF_REPO}" \
+    HF_HUB_ENABLE_HF_TRANSFER=1 hf download "${HF_REPO}" \
         --include "Llama-3.3-70B-Instruct-Q6_K_L/*" \
         --local-dir "$BASE_DIR"
     [[ -n "$(find "$SHARD_DIR" -name "*.gguf" 2>/dev/null | head -1)" ]] \

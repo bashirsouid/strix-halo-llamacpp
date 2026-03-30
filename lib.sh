@@ -152,9 +152,9 @@ launch_server() {
   echo -e "${BOLD}── Launching llama-server ────────────────────────────────────────${NC}"
   echo -e "  →  Model flag : ${MODEL_FLAG}  ${MODEL_VALUE}"
   echo -e "  →  Alias      : ${alias}"
-  echo -e "  →  Context    : ${LLAMA_CTX_SIZE:-32768} tokens"
-  echo -e "  →  GPU layers : ${LLAMA_NGL:-999}"
-  echo -e "  →  Threads    : ${LLAMA_THREADS:-16}"
+  echo -e "  →  Context    : ${LLAMA_CTX_SIZE} tokens"
+  echo -e "  →  GPU layers : ${LLAMA_NGL}"
+  echo -e "  →  Threads    : ${LLAMA_THREADS}"
   echo ""
 
   docker compose     --env-file "${SCRIPT_DIR}/config.env"     -f "${SCRIPT_DIR}/docker-compose.yml"     up -d --force-recreate

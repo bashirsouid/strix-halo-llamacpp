@@ -9,7 +9,7 @@ source "$SCRIPT_DIR/config.env"
 # MoE 119B, 6.5B active params — KV cache scales with total layers, keep ctx moderate.
 export LLAMA_CTX_SIZE=32768
 export LLAMA_NGL=999
-export LLAMA_THREADS=16
+export LLAMA_THREADS=1
 
 HF_REPO="unsloth/Mistral-Small-4-119B-2603-GGUF"
 QUANT="UD-Q4_K_M"
@@ -17,6 +17,18 @@ DEST_DIR="/mnt/data/models/unsloth/Mistral-Small-4-119B-2603-GGUF/UD-Q4_K_M"
 PART1="${DEST_DIR}/Mistral-Small-4-119B-2603-UD-Q4_K_M-00001-of-00003.gguf"
 PART2="${DEST_DIR}/Mistral-Small-4-119B-2603-UD-Q4_K_M-00002-of-00003.gguf"
 PART3="${DEST_DIR}/Mistral-Small-4-119B-2603-UD-Q4_K_M-00003-of-00003.gguf"
+
+# ── bench_all.py check mode ───────────────────────────────────────────────────
+# When BENCH_MODE=check, only verify files are present — no download, no server.
+# Exit 0 = files ready.  Exit 2 = not downloaded, skip this model.
+if [[ "${BENCH_MODE:-}" == "check" ]]; then
+    if [[ -f "$PART1" ]]; then
+        exit 0
+    else
+        exit 2
+    fi
+fi
+# ── end of BENCH_MODE=check logic ─────────────────────────────────────────────
 
 # ── Check / download missing shards ──────────────────────────────────
 MISSING=0
