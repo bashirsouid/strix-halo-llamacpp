@@ -6,6 +6,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib.sh"
 source "$SCRIPT_DIR/config.env"
 
+# Reset any speculative-decoding state from previous runs
+clear_draft_config
+
 # 120B MoE — 12B active params per token, so generation is fast.
 # KV cache still scales with total layers so keep ctx moderate.
 export LLAMA_CTX_SIZE=16384

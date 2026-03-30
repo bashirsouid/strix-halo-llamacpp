@@ -6,6 +6,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib.sh"
 source "$SCRIPT_DIR/config.env"
 
+# Reset any speculative-decoding state from previous runs
+clear_draft_config
+
 # MoE 119B, 6.5B active params — KV cache scales with total layers, keep ctx moderate.
 export LLAMA_CTX_SIZE=32768
 export LLAMA_NGL=999

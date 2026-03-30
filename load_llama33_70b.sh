@@ -5,6 +5,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib.sh"
 source "$SCRIPT_DIR/config.env"
 
+# Reset any speculative-decoding state from previous runs
+clear_draft_config
+
 export LLAMA_CTX_SIZE=16384
 export LLAMA_NGL=999
 export LLAMA_THREADS=1

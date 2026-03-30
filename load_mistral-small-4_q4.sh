@@ -6,6 +6,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib.sh"
 source "$SCRIPT_DIR/config.env"
 
+# Reset any speculative-decoding state from previous runs
+clear_draft_config
+
 # MoE 119B, 6.5B active params — KV cache scales with total layers, keep ctx moderate.
 export LLAMA_CTX_SIZE=32768
 export LLAMA_NGL=999
@@ -53,12 +56,25 @@ DRAFT_HF_REPO="bartowski/alamios_Mistral-Small-3.1-DRAFT-0.5B-GGUF"
 DRAFT_DEST="/mnt/data/models/bartowski/alamios_Mistral-Small-3.1-DRAFT-0.5B-GGUF"
 DRAFT_FILE="alamios_Mistral-Small-3.1-DRAFT-0.5B-Q4_K_M.gguf"
 DRAFT_PATH="${DRAFT_DEST}/${DRAFT_FILE}"
+
 if [[ ! -f "$DRAFT_PATH" ]]; then
+    _lib_info "Downloading draft model for speculative decoding: ${DRAFT_HF_REPO}"
+    mkdir -p "$DRAFT_DEST"
     HF_HUB_ENABLE_HF_TRANSFER=1 hf download "${DRAFT_HF_REPO}" \
         --include "${DRAFT_FILE}" \
         --local-dir "$DRAFT_DEST"
 fi
-export DRAFT_MODEL_PATH="$DRAFT_PATH"
+
+if [[ -f "$DRAFT_PATH" ]]; then
+    export DRAFT_MODEL_PATH="$DRAFT_PATH"
+    export DRAFT_MAX="8"
+    export DRAFT_MIN="2"
+    export LLAMA_COMPOSE_FILE="docker-compose.spec.yml"
+    _lib_ok "Draft model ready for speculative decoding: ${DRAFT_PATH}"
+else
+    _lib_warn "Draft model not found after download — running without speculative decoding"
+    clear_draft_config
+fi
 # -- End of optional draft model logic --
 
 # ── Point llama-server at part 1; it auto-chains 2 and 3 ─────────────

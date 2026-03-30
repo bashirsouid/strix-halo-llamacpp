@@ -13,14 +13,21 @@ _lib_ok()   { echo -e "${GRN}[ OK ]${NC}  $*"; }
 _lib_warn() { echo -e "${YLW}[WARN]${NC}  $*"; }
 _lib_fail() { echo -e "${RED}[FAIL]${NC}  $*"; }
 
-_SEARCH_DIRS=()   # callers populate this; default is empty (find_gguf will skip search)
+# ── Draft / speculative decoding helpers ─────────────────────────────────────
+# Loaders should call clear_draft_config first, then optionally export
+# DRAFT_MODEL_PATH / DRAFT_MAX / DRAFT_MIN and LLAMA_COMPOSE_FILE when they
+# actually want speculative decoding enabled.
+clear_draft_config() {
+  unset DRAFT_MODEL_PATH
+  unset DRAFT_MAX
+  unset DRAFT_MIN
+  unset LLAMA_COMPOSE_FILE
+}
+
+_SEARCH_DIRS=()   # callers populate this; default is empty
 
 # ── Model search directories ──────────────────────────────────────────────────
-# These are checked in order before attempting any download.
-# Add your own paths to EXTRA_MODEL_SEARCH_DIRS in config.env (colon-separated).
-#
-# Covers: llama-server -hf cache, HF CLI default cache, ComfyUI models,
-#         Ollama blobs, text-gen-webui, LM Studio, Open WebUI, manual downloads.
+# Used by scan_models.sh to discover all GGUFs on disk.
 _build_search_dirs() {
   local hf_home="${HF_HOME:-${HOME}/.cache/huggingface}"
   local hf_hub="${hf_home}/hub"
@@ -74,90 +81,32 @@ _build_search_dirs() {
   _SEARCH_DIRS=("${filtered[@]}")
 }
 
-# ── find_gguf KEYWORD [PREF_QUANT] ───────────────────────────────────────────
-# Search all model directories for a GGUF matching KEYWORD.
-# Sets FOUND_GGUF_PATH on success; returns 0 on hit, 1 on miss.
-find_gguf() {
-  local keyword="${1,,}"   # lower-case
-  local pref_quant="${2:-Q4_K_M}"
-
-  _build_search_dirs
-  FOUND_GGUF_PATH=""
-
-  local -a candidates=()
-
-  for dir in "${_SEARCH_DIRS[@]}"; do
-    while IFS= read -r -d '' f; do
-      local base
-      base=$(basename "$f" | tr '[:upper:]' '[:lower:]')
-      # Match if the filename contains the keyword (spaces→dashes normalised)
-      local norm_key="${keyword// /-}"
-      if [[ "$base" == *"${norm_key}"* ]]; then
-        candidates+=("$f")
-      fi
-    done < <(find "$dir" -maxdepth 10 -name "*.gguf" -print0 2>/dev/null)
-  done
-
-  (( ${#candidates[@]} == 0 )) && return 1
-
-  # Prefer the requested quant
-  local pref_lower="${pref_quant,,}"
-  for f in "${candidates[@]}"; do
-    local base
-    base=$(basename "$f" | tr '[:upper:]' '[:lower:]')
-    if [[ "$base" == *"${pref_lower}"* ]]; then
-      FOUND_GGUF_PATH="$f"
-      return 0
-    fi
-  done
-
-  # Fall back to first match
-  FOUND_GGUF_PATH="${candidates[0]}"
-  return 0
-}
-
-# ── resolve_model KEYWORD HF_REPO [PREF_QUANT] ───────────────────────────────
-# 1. Search locally; if found, sets MODEL_FLAG=-m  MODEL_VALUE=<path>
-# 2. If not found, fall back to HF download: MODEL_FLAG=-hf  MODEL_VALUE=<repo>
-# Exports MODEL_FLAG, MODEL_VALUE for docker-compose command substitution.
-resolve_model() {
-  local keyword="$1"
-  local hf_repo="$2"
-  local pref_quant="${3:-Q4_K_M}"
-
-  echo -e "${BOLD}── Model Resolution ─────────────────────────────────────────────${NC}"
-  echo -e "  Looking for: ${CYN}${keyword}${NC}  (preferred quant: ${pref_quant})"
-  echo -e "  Searching ${#_SEARCH_DIRS[@]}+ directories..."
-
-  if find_gguf "$keyword" "$pref_quant"; then
-    local fsize
-    fsize=$(du -sh "$FOUND_GGUF_PATH" 2>/dev/null | cut -f1 || echo "?")
-    _lib_ok "Found local GGUF (${fsize}): ${FOUND_GGUF_PATH}"
-    export MODEL_FLAG="-m"
-    export MODEL_VALUE="$FOUND_GGUF_PATH"
-  else
-    _lib_warn "Not found locally — will download from HF: ${hf_repo}"
-    export MODEL_FLAG="-hf"
-    export MODEL_VALUE="$hf_repo"
-  fi
-  echo ""
-}
-
 # ── launch_server [ALIAS] ─────────────────────────────────────────────────────
-# Starts the Vulkan container via docker-compose.yml.
+# Starts the Vulkan container via the selected docker compose file.
+#   LLAMA_COMPOSE_FILE (optional) selects an alternate compose YAML
+#   (e.g., docker-compose.spec.yml for speculative decoding configs).
 launch_server() {
   local alias="${1:-model}"
   export MODEL_ALIAS="$alias"
 
+  local compose_file="${SCRIPT_DIR}/${LLAMA_COMPOSE_FILE:-docker-compose.yml}"
+
   echo -e "${BOLD}── Launching llama-server ────────────────────────────────────────${NC}"
-  echo -e "  →  Model flag : ${MODEL_FLAG}  ${MODEL_VALUE}"
-  echo -e "  →  Alias      : ${alias}"
-  echo -e "  →  Context    : ${LLAMA_CTX_SIZE} tokens"
-  echo -e "  →  GPU layers : ${LLAMA_NGL}"
-  echo -e "  →  Threads    : ${LLAMA_THREADS}"
+  echo -e "  →  Compose YML : ${compose_file##*/}"
+  echo -e "  →  Model flag  : ${MODEL_FLAG}  ${MODEL_VALUE}"
+  echo -e "  →  Alias       : ${alias}"
+  echo -e "  →  Context     : ${LLAMA_CTX_SIZE} tokens"
+  echo -e "  →  GPU layers  : ${LLAMA_NGL}"
+  echo -e "  →  Threads     : ${LLAMA_THREADS}"
+  if [[ -n "${DRAFT_MODEL_PATH:-}" ]]; then
+    echo -e "  →  Draft model : ${DRAFT_MODEL_PATH}"
+  fi
   echo ""
 
-  docker compose     --env-file "${SCRIPT_DIR}/config.env"     -f "${SCRIPT_DIR}/docker-compose.yml"     up -d --force-recreate
+  docker compose \
+    --env-file "${SCRIPT_DIR}/config.env" \
+    -f "${compose_file}" \
+    up -d --force-recreate
 }
 
 # ── wait_for_server ───────────────────────────────────────────────────────────
@@ -206,11 +155,8 @@ wait_for_server() {
   echo -e "                    ${CYN}http://${lan_ip}:${port}/v1${NC}  (LAN)"
   echo ""
   echo -e "  Quick test:"
-  printf '  curl http://localhost:%s/v1/chat/completions \\
-' "${port}"
-  printf '    -H "Content-Type: application/json" \\
-'
-  printf '    -d ''{"model":"%s","messages":[{"role":"user","content":"hello"}],"max_tokens":32}''
-' "${MODEL_ALIAS:-model}"
+  printf '  curl http://localhost:%s/v1/chat/completions \\\n' "${port}"
+  printf '    -H "Content-Type: application/json" \\\n'
+  printf '    -d ''{"model":"%s","messages":[{"role":"user","content":"hello"}],"max_tokens":32}''\n' "${MODEL_ALIAS:-model}"
   echo ""
 }

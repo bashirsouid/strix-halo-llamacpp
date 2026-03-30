@@ -34,6 +34,14 @@ services:
       - "q8_0"
       - "--cache-type-v"
       - "q8_0"
+      - "--model-draft"
+      - "${DRAFT_MODEL_PATH}"
+      - "--draft-max"
+      - "${DRAFT_MAX:-8}"
+      - "--draft-min"
+      - "${DRAFT_MIN:-2}"
+      - "--ubatch-size"
+      - "1024"
       - "--jinja" # Tool support
       # TODO: Fix
       #- "${LLAMA_CHAT_TEMPLATE_FILE:+--chat-template-file}"
