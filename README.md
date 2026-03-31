@@ -33,14 +33,32 @@ pip install huggingface_hub hf_transfer
 # 3. Build llama.cpp from source (one-time, ~2 min)
 python server.py build
 
-# 4. Serve a model (downloads automatically if needed)
-python server.py serve mistral-small-4
-python server.py serve glm-4.5-air
-python server.py serve nemotron-3-super
+# 4. Serve a model (shows interactive picker, or specify by name)
+python server.py serve                    # interactive picker
+python server.py serve qwen3-coder       # by name (substring match)
 
 # 5. Stop the server
 python server.py stop
 ```
+
+## Recommended models
+
+All models are MoE — they only activate a fraction of their parameters per
+token, which is ideal for the Strix Halo's 215 GB/s bandwidth wall.  Ordered
+by what they're best at:
+
+| Model | Quant | Size | Best for | tok/s (est.) |
+|-------|-------|------|----------|:------------:|
+| Qwen3 Coder Next | Q6_K | ~62 GB | Coding agents, tool calling | ~40 |
+| GLM 4.7 Flash | Q8_K_XL | ~30 GB | Code + chat, interleaved thinking | ~55 |
+| Qwen3.5 35B | Q8_K_XL | ~48 GB | Reasoning, summarization, vision | ~50 |
+| Mistral Small 4 | Q4_K_M | ~57 GB | All-round chat + code | ~15 |
+| Nemotron 3 Super | Q4_K_M | ~63 GB | Long-context reasoning, multi-agent | ~20 |
+| Nemotron Nano | Q4_K_M | ~17 GB | Speed, quick iteration, drafting | ~60 |
+
+**If you only download one:** Qwen3 Coder Next for coding, GLM 4.7 Flash for
+everything else.  Both are fast (3B active params) and fit comfortably in
+your 90 GB GPU allocation.
 
 ## Commands
 
@@ -58,7 +76,7 @@ python server.py stop
 ### Serve options
 
 ```bash
-python server.py serve mistral-small-4 \
+python server.py serve qwen3-coder-next-q6 \
     --port 8000 \
     --ctx 32768 \
     --threads 4 \
@@ -82,10 +100,12 @@ Different models benefit from different speculation approaches on UMA:
 
 | Model              | Active params | Strategy        | Why                                |
 |--------------------|:------------:|-----------------|------------------------------------|
-| Mistral Small 4    | 6.5B         | draft + ngram   | Tiny active params → cheap verification |
-| GLM 4.5 Air        | 32B          | ngram only      | 32B active → draft wastes bandwidth |
+| Qwen3 Coder Next   | 3B           | ngram only      | Tiny active params, fast already   |
+| GLM 4.7 Flash      | 3B           | ngram only      | Same — n-gram helps on code output |
+| Qwen3.5 35B        | 3B           | ngram only      | Fast, n-gram helps on reasoning    |
+| Mistral Small 4    | 6.5B         | draft + ngram   | Small enough for draft to help     |
 | Nemotron 3 Super   | 12B          | ngram only      | Has MTP heads (not yet supported)  |
-| Small models (<8B) | —            | none            | Already fast enough                |
+| Nemotron Nano      | 3B           | none            | Already ~60 tok/s, not worth it    |
 
 **N-gram self-speculation** (`--spec-type ngram-mod`) drafts from patterns already
 in the context window.  It uses zero extra memory and zero extra bandwidth — ideal
@@ -211,7 +231,7 @@ curl http://localhost:8000/v1/models
 curl http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "mistral-small-4-119b",
+    "model": "qwen3-coder-next-q6",
     "messages": [{"role": "user", "content": "Hello!"}],
     "max_tokens": 256
   }'
@@ -227,9 +247,9 @@ files are no longer needed.  The Python rewrite:
 - Eliminates ~500 lines of duplicated bash across 10+ loader scripts
 - Builds llama.cpp natively (faster than Docker containers)
 - Defines all model config as data (not imperative scripts)
-- Fixes the GLM 4.5 Air draft-model path bug
 - Replaces draft-model speculation with n-gram for models where it doesn't help
 - Tunes batch sizes and threads based on community benchmarks
+- Curated model list focused on best-in-class for each use case
 
 ## Updating llama.cpp
 
@@ -242,8 +262,8 @@ python server.py build --rebuild   # clean rebuild from scratch
 
 Things to revisit as llama.cpp and the ecosystem evolve:
 
-**Multi-Token Prediction (MTP) for Nemotron 3 Super and GLM 4.5/4.7.**
-Nemotron 3 Super, GLM 4.5 Air, and GLM 4.7 all ship with built-in MTP
+**Multi-Token Prediction (MTP) for Nemotron 3 Super and GLM 4.7.**
+Nemotron 3 Super and GLM 4.7 ship with built-in MTP
 heads that enable self-speculative decoding without a separate draft model.
 llama.cpp currently skips these layers when loading the model.  There is
 active development (PR #20700 adds MTP for Qwen3.5, PR #18886 defines an
@@ -286,7 +306,7 @@ Eagle-3 is the current state-of-the-art speculative decoding algorithm
 but there is active discussion (#15902) and a PR in progress (#18039).
 Eagle-3 checkpoints are available on Hugging Face for several model
 families.  When support lands, this could be a significant speedup for
-dense models like Llama 3.3 70B that currently crawl on Strix Halo.
+larger dense models and MoE models with higher active param counts.
 
 ## Troubleshooting
 
