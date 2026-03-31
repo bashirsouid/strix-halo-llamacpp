@@ -118,7 +118,7 @@ class ModelConfig:
             "--ctx-size",     str(self.ctx_size),
             "-ngl",           "999",
             "--no-mmap",
-            "--flash-attn",
+            "--flash-attn",   "on",
             "--parallel",     "1",
             "-a",             self.alias,
             "--cache-type-k", "q8_0",
