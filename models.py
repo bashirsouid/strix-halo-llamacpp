@@ -288,27 +288,28 @@ MODELS: list[ModelConfig] = [
 
     # ── Qwen3-Coder-Next  (80B MoE, 3B active) ─────────────────────────────
     # #1 on SWE-rebench.  Designed for coding agents + tool use.
-    # Q5_K_M is ~55 GB → leaves ~25 GB for KV cache + OS in 80 GB budget.
+    # UD-Q6_K_XL is ~73 GB → leaves ~23 GB for KV cache + OS in 80 GB budget.
     # MoE means only 3B active params are read per token, so the speed penalty
-    # of Q5 over Q4 is minimal — but the quality improvement is noticeable.
+    # of Q6 over Q4 is minimal — but the quality improvement is significant.
     # Known Vulkan/Strix Halo quirk: ubatch > 512 halves PP speed (issue #18725).
     ModelConfig(
         name="Qwen3 Coder Next",
         alias="qwen3-coder-next",
         hf_repo="unsloth/Qwen3-Coder-Next-GGUF",
         dest_dir=MODELS_DIR / "unsloth/Qwen3-Coder-Next-GGUF",
-        download_include="Qwen3-Coder-Next-Q5_K_M.gguf",
-        shard_glob="*Q5_K_M*.gguf",
+        download_include="Qwen3-Coder-Next-UD-Q6_K_XL.gguf",
+        shard_glob="*UD-Q6_K_XL*.gguf",
         ctx_size=32768,
         ubatch_size=512,       # workaround for Vulkan PP regression on this model
         spec=SpecConfig(strategy="ngram"),
         extra_args=["--temp", "1.0", "--top-p", "0.95", "--top-k", "40", "--min-p", "0.01"],
         notes=(
             "MoE 80B (3B active).  #1 on SWE-rebench, excellent tool calling.  "
-            "~55 GB at Q5_K_M — higher quality than Q4 with minimal speed penalty "
+            "~73 GB at UD-Q6_K_XL — near-lossless quality with minimal speed penalty "
             "since only 3B active params are read per token regardless of quant.  "
-            "Non-thinking model: ultra-fast code responses, no <think> blocks.  "
-            "Strix Halo note: use -ub 512, not 256 (known Vulkan PP regression)."
+            "Non-thinking model: ultra-fast code responses, no  Witt blocks.  "
+            "Strix Halo note: use -ub 512, not 256 (known Vulkan PP regression).  "
+            "If too tight on memory, drop to Q6_K (~65 GB) or Q5_K_M (~55 GB)."
         ),
     ),
 
@@ -341,8 +342,8 @@ MODELS: list[ModelConfig] = [
         alias="glm-4.7-flash",
         hf_repo="unsloth/GLM-4.7-Flash-GGUF",
         dest_dir=MODELS_DIR / "unsloth/GLM-4.7-Flash-GGUF",
-        download_include="GLM-4.7-Flash-Q8_K_XL.gguf",
-        shard_glob="*Q8_K_XL*.gguf",
+        download_include="GLM-4.7-Flash-UD-Q8_K_XL.gguf",
+        shard_glob="*UD-Q8_K_XL*.gguf",
         ctx_size=32768,
         spec=SpecConfig(strategy="ngram"),
         extra_args=[
