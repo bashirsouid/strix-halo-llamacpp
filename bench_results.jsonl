@@ -6,3 +6,7 @@
 {"timestamp": "2026-03-30 21:30", "backend": "radv", "model": "nemotron-3-super-120b", "avg_tok_s": 12.1}
 {"timestamp": "2026-03-30 21:32", "backend": "radv", "model": "qwen3-coder-next", "avg_tok_s": 39.6}
 {"timestamp": "2026-03-30 21:33", "backend": "radv", "model": "glm-4.7-flash", "avg_tok_s": 36.5}
+{"timestamp": "2026-03-30 21:37", "backend": "amdvlk", "model": "mistral-small-4-119b", "avg_tok_s": 25.8}
+{"timestamp": "2026-03-30 21:42", "backend": "amdvlk", "model": "nemotron-3-super-120b", "avg_tok_s": 12.2}
+{"timestamp": "2026-03-30 21:44", "backend": "amdvlk", "model": "qwen3-coder-next", "avg_tok_s": 39.6}
+{"timestamp": "2026-03-30 21:46", "backend": "amdvlk", "model": "glm-4.7-flash", "avg_tok_s": 36.5}
