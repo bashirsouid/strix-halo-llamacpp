@@ -30,8 +30,8 @@ DEPS=(
     # Vulkan dev headers — check for the pkg-config file
     "/usr/lib/*/pkgconfig/vulkan.pc|libvulkan-dev|vulkan-loader-devel"
     "glslangValidator|glslang-tools|glslang"
+    "glslc|glslc|shaderc"
     "spirv-val|spirv-tools|spirv-tools"
-    "glslc"
 )
 
 install_system_deps() {

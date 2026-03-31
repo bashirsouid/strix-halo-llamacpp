@@ -22,10 +22,10 @@ API with per-model performance tuning.
 ```bash
 # 1. Install build dependencies
 # Fedora:
-sudo dnf install cmake ninja-build gcc-c++ vulkan-headers vulkan-loader-devel glslang spirv-tools git
+sudo dnf install cmake ninja-build gcc-c++ vulkan-headers vulkan-loader-devel glslang shaderc spirv-tools git
 
-# Ubuntu:
-sudo apt install cmake ninja-build build-essential libvulkan-dev glslang-tools spirv-tools git
+# Ubuntu/Debian:
+sudo apt install cmake ninja-build build-essential libvulkan-dev glslang-tools glslc spirv-tools git
 
 # 2. Install Python dependencies
 pip install huggingface_hub hf_transfer

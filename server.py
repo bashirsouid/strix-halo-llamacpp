@@ -63,8 +63,8 @@ def fail(msg: str):  print(_c(31, f"  ✗  {msg}"), file=sys.stderr)
 #  BUILD
 # ═══════════════════════════════════════════════════════════════════════════════
 
-BUILD_DEPS_FEDORA = "cmake ninja-build gcc-c++ vulkan-headers vulkan-loader-devel glslang spirv-tools"
-BUILD_DEPS_UBUNTU = "cmake ninja-build build-essential libvulkan-dev glslang-tools spirv-tools"
+BUILD_DEPS_FEDORA = "cmake ninja-build gcc-c++ vulkan-headers vulkan-loader-devel glslang shaderc spirv-tools"
+BUILD_DEPS_UBUNTU = "cmake ninja-build build-essential libvulkan-dev glslang-tools glslc spirv-tools"
 
 
 def check_build_deps():
@@ -142,6 +142,78 @@ def ensure_built():
 #  DOWNLOAD
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _find_hf_cli() -> str | None:
+    """Find the HuggingFace CLI binary name."""
+    for name in ("hf", "huggingface-cli"):
+        if shutil.which(name):
+            return name
+    return None
+
+
+def _hf_download_cli(cli: str, repo: str, pattern: str, local_dir: str):
+    """Download via the `hf` or `huggingface-cli` binary."""
+    is_glob = any(c in pattern for c in "*?[")
+
+    if is_glob:
+        # Glob pattern → use --include
+        cmd = [cli, "download", repo, "--include", pattern, "--local-dir", local_dir]
+    else:
+        # Exact filename → pass as positional arg (more reliable)
+        cmd = [cli, "download", repo, pattern, "--local-dir", local_dir]
+
+    info(f"Running: {' '.join(cmd)}")
+    subprocess.run(
+        cmd,
+        env={**os.environ, "HF_HUB_ENABLE_HF_TRANSFER": "1"},
+        check=True,
+    )
+
+
+def _hf_download_python(repo: str, pattern: str, local_dir: str):
+    """Download via the huggingface_hub Python API (fallback)."""
+    info(f"Using Python API fallback to download from {repo} ...")
+    code = textwrap.dedent(f"""\
+        import os
+        os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+        from huggingface_hub import snapshot_download, hf_hub_download
+        import glob
+
+        repo = {repo!r}
+        pattern = {pattern!r}
+        local_dir = {local_dir!r}
+        is_glob = any(c in pattern for c in "*?[")
+
+        if is_glob:
+            snapshot_download(repo, allow_patterns=[pattern], local_dir=local_dir)
+        else:
+            hf_hub_download(repo, filename=pattern, local_dir=local_dir)
+    """)
+    subprocess.run([sys.executable, "-c", code], check=True)
+
+
+def _hf_download(repo: str, pattern: str, local_dir: str):
+    """Download files from HuggingFace, trying CLI first then Python API."""
+    cli = _find_hf_cli()
+
+    if cli:
+        try:
+            _hf_download_cli(cli, repo, pattern, local_dir)
+            return
+        except subprocess.CalledProcessError:
+            warn(f"CLI download failed with '{cli}', trying Python API fallback ...")
+
+    # Fallback: use the Python API directly
+    try:
+        _hf_download_python(repo, pattern, local_dir)
+    except subprocess.CalledProcessError:
+        fail("Download failed with both CLI and Python API.")
+        fail(f"  Repo:    {repo}")
+        fail(f"  Pattern: {pattern}")
+        fail(f"  Dest:    {local_dir}")
+        info("Try manually:  hf download {repo} {pattern} --local-dir {local_dir}")
+        sys.exit(1)
+
+
 def download_model(cfg: ModelConfig):
     """Download model (and draft model if configured) from Hugging Face."""
     if cfg.is_downloaded:
@@ -150,29 +222,20 @@ def download_model(cfg: ModelConfig):
         info(f"Downloading {cfg.name} from {cfg.hf_repo} ...")
         cfg.dest_dir.mkdir(parents=True, exist_ok=True)
 
-        # We download to the parent of dest_dir because the HF include pattern
-        # often contains a subdirectory (e.g. "UD-Q4_K_M/*.gguf").
-        local_dir = str(cfg.dest_dir.parent)
-        # If the include pattern starts with a subdir, download to grandparent
+        # Download to dest_dir directly for single-file models,
+        # or to the parent when the include pattern has a subdir.
+        local_dir = str(cfg.dest_dir)
         if "/" in cfg.download_include:
             local_dir = str(cfg.dest_dir.parent)
 
-        subprocess.run(
-            [
-                sys.executable, "-m", "huggingface_hub", "download",
-                cfg.hf_repo,
-                "--include", cfg.download_include,
-                "--local-dir", local_dir,
-            ],
-            env={**os.environ, "HF_HUB_ENABLE_HF_TRANSFER": "1"},
-            check=True,
-        )
+        _hf_download(cfg.hf_repo, cfg.download_include, local_dir)
 
         if cfg.is_downloaded:
             ok(f"Download complete: {cfg.model_path}")
         else:
             fail(f"Download finished but shard not found in {cfg.dest_dir}")
             fail(f"  Expected glob: {cfg.shard_glob}")
+            info(f"  Check what was actually downloaded: ls -la {cfg.dest_dir}")
             info("You may need to adjust dest_dir or shard_glob in models.py.")
             sys.exit(1)
 
@@ -181,16 +244,7 @@ def download_model(cfg: ModelConfig):
     if draft is not None and not draft.path.exists():
         info(f"Downloading draft model from {draft.hf_repo} ...")
         draft.dest_dir.mkdir(parents=True, exist_ok=True)
-        subprocess.run(
-            [
-                sys.executable, "-m", "huggingface_hub", "download",
-                draft.hf_repo,
-                "--include", draft.filename,
-                "--local-dir", str(draft.dest_dir),
-            ],
-            env={**os.environ, "HF_HUB_ENABLE_HF_TRANSFER": "1"},
-            check=True,
-        )
+        _hf_download(draft.hf_repo, draft.filename, str(draft.dest_dir))
         if draft.path.exists():
             ok(f"Draft model ready: {draft.path}")
         else:
