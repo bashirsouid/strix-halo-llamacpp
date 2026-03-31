@@ -126,9 +126,9 @@ ensure_built() {
 
 # ── 4. Serve ─────────────────────────────────────────────────────────────────
 
-serve_default() {
-    _info "Launching default model ..."
-    exec python3 "$SCRIPT_DIR/server.py" serve mistral-small-4
+serve_model() {
+    _info "Ready to serve!"
+    exec python3 "$SCRIPT_DIR/server.py" serve
 }
 
 # ── Main ─────────────────────────────────────────────────────────────────────
@@ -141,4 +141,4 @@ install_pip_deps
 ensure_built
 
 echo
-serve_default
+serve_model

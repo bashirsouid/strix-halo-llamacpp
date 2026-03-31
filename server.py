@@ -28,7 +28,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-from models import MODELS, DEFAULT_MODEL, get_model, ModelConfig
+from models import MODELS, get_model, ModelConfig
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 
@@ -38,6 +38,7 @@ LLAMA_BUILD  = LLAMA_SRC / "build"
 LLAMA_SERVER = LLAMA_BUILD / "bin" / "llama-server"
 LLAMA_BENCH  = LLAMA_BUILD / "bin" / "llama-bench"
 PID_FILE     = PROJECT_DIR / ".server.pid"
+STATE_FILE   = PROJECT_DIR / ".server.json"   # tracks model alias + backend of running server
 
 # ── Environment for Vulkan on Strix Halo ─────────────────────────────────────
 
@@ -57,6 +58,46 @@ def info(msg: str):  print(_c(36, f"  ℹ  {msg}"))
 def ok(msg: str):    print(_c(32, f"  ✓  {msg}"))
 def warn(msg: str):  print(_c(33, f"  ⚠  {msg}"), file=sys.stderr)
 def fail(msg: str):  print(_c(31, f"  ✗  {msg}"), file=sys.stderr)
+
+
+# ── Model picker TUI ────────────────────────────────────────────────────────
+
+def pick_model(prompt_text: str = "Pick a model") -> ModelConfig:
+    """Show a numbered list of models and let the user pick one."""
+    print()
+    print(f"  {prompt_text}:")
+    print()
+    for i, m in enumerate(MODELS, 1):
+        dl = _c(32, "✓") if m.is_downloaded else _c(90, "·")
+        quant = f"  {_c(33, m.quant)}" if m.quant else ""
+        spec = f"  [{m.spec.strategy}]" if m.spec.strategy else ""
+        print(f"  {dl} {i:>2d}) {m.name:<34s}{_c(90, spec)}")
+    print()
+
+    while True:
+        try:
+            raw = input(f"  Enter number (1-{len(MODELS)}): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            sys.exit(0)
+        if not raw:
+            continue
+        try:
+            idx = int(raw)
+            if 1 <= idx <= len(MODELS):
+                chosen = MODELS[idx - 1]
+                print()
+                return chosen
+        except ValueError:
+            pass
+        print(f"    Invalid choice. Enter a number between 1 and {len(MODELS)}.")
+
+
+def resolve_model(model_arg: str | None, prompt_text: str = "Pick a model") -> ModelConfig:
+    """Resolve a model from CLI arg, or show picker if None."""
+    if model_arg:
+        return get_model(model_arg)
+    return pick_model(prompt_text)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -279,32 +320,42 @@ def stop_server():
     except OSError:
         info(f"PID {pid} already gone.")
     PID_FILE.unlink(missing_ok=True)
+    STATE_FILE.unlink(missing_ok=True)
 
 
-def wait_for_server(port: int = 8000, timeout: int = 300) -> bool:
+def wait_for_server(port: int = 8000, timeout: int = 360, verbose: bool = False) -> bool:
     """Poll /v1/models until the server is ready."""
     url = f"http://127.0.0.1:{port}/v1/models"
     deadline = time.time() + timeout
-    info(f"Waiting for server on port {port} (timeout {timeout}s) ...")
+    if verbose:
+        info(f"Waiting for server on port {port} (timeout {timeout}s) ...")
 
+    dots = 0
     while time.time() < deadline:
         try:
             with urllib.request.urlopen(url, timeout=2) as resp:
                 if resp.status == 200:
-                    ok("Server is ready!")
-                    ok(f"  API:     http://localhost:{port}/v1")
-                    ok(f"  Models:  http://localhost:{port}/v1/models")
+                    if not verbose:
+                        print()  # end the dot line
+                    ok(f"Server ready — http://localhost:{port}/v1")
                     return True
         except Exception:
             pass
+        if not verbose:
+            print(".", end="", flush=True)
+            dots += 1
+            if dots % 60 == 0:
+                print()  # wrap long dot lines
         time.sleep(2)
 
+    if not verbose:
+        print()
     fail(f"Server did not become ready within {timeout}s")
     return False
 
 
 def launch_server(cfg: ModelConfig, port: int = 8000, backend: str = "radv",
-                  extra_args: list[str] | None = None):
+                  extra_args: list[str] | None = None, verbose: bool = False):
     """Start llama-server as a background process."""
     ensure_built()
     download_model(cfg)
@@ -333,11 +384,13 @@ def launch_server(cfg: ModelConfig, port: int = 8000, backend: str = "radv",
 
     cmd = [str(LLAMA_SERVER)] + args
 
-    info(f"Starting: {cfg.name} ({cfg.alias})")
-    info(f"Backend:  Vulkan ({backend.upper()})")
-    if cfg.spec.strategy:
-        info(f"Speculation: {cfg.spec.strategy}")
-    info(f"Command:  {' '.join(cmd[:6])} ...")
+    # Header
+    spec_str = f"  spec={cfg.spec.strategy}" if cfg.spec.strategy else ""
+    print()
+    info(f"{cfg.name}  ·  {backend.upper()}  ·  ctx={cfg.ctx_size}{spec_str}")
+
+    if verbose:
+        info(f"Command: {' '.join(cmd[:8])} ...")
 
     proc = subprocess.Popen(
         cmd,
@@ -346,25 +399,36 @@ def launch_server(cfg: ModelConfig, port: int = 8000, backend: str = "radv",
         stderr=subprocess.STDOUT,
     )
     PID_FILE.write_text(str(proc.pid))
+    STATE_FILE.write_text(json.dumps({
+        "model": cfg.alias,
+        "backend": backend,
+        "port": port,
+    }))
 
-    # Stream output in background while polling for readiness
+    # Stream output in background
     import threading
 
     def _tail():
         assert proc.stdout is not None
         for line in proc.stdout:
             decoded = line.decode("utf-8", errors="replace").rstrip()
-            print(f"  │ {decoded}")
+            if verbose:
+                print(f"  │ {decoded}")
 
     tailer = threading.Thread(target=_tail, daemon=True)
     tailer.start()
 
-    if wait_for_server(port):
-        info(f"Server running as PID {proc.pid}.  Stop with: python server.py stop")
+    if not verbose:
+        print("  Loading ", end="", flush=True)
+
+    if wait_for_server(port, verbose=verbose):
+        if verbose:
+            info(f"PID {proc.pid}.  Stop with: python server.py stop")
     else:
-        fail("Server failed to start.  Check output above.")
+        fail("Server failed to start.  Re-run with --verbose to see output.")
         proc.terminate()
         PID_FILE.unlink(missing_ok=True)
+        STATE_FILE.unlink(missing_ok=True)
         sys.exit(1)
 
 
@@ -443,10 +507,19 @@ def bench(port: int = 8000, model_alias: str | None = None, backend: str = "radv
     if avg_tok_s > 0 and model_alias and model_alias != "unknown":
         report_file = PROJECT_DIR / "bench_results.jsonl"
         timestamp = time.strftime("%Y-%m-%d %H:%M")
+
+        # Look up quant from model catalog
+        quant = ""
+        try:
+            quant = get_model(model_alias).quant
+        except ValueError:
+            pass
+
         record = {
             "timestamp": timestamp,
             "backend": backend,
             "model": model_alias,
+            "quant": quant,
             "avg_tok_s": round(avg_tok_s, 1),
         }
         with open(report_file, "a") as f:
@@ -524,13 +597,13 @@ def bench_all(port: int = 8000, backend: str = "radv"):
 def list_models():
     """Print a table of available models."""
     print()
-    print(f"  {'Alias':<28s} {'Name':<26s} {'Spec':<14s} {'Downloaded':>10s}")
-    print(f"  {'─'*28} {'─'*26} {'─'*14} {'─'*10}")
+    print(f"  {'Alias':<28s} {'Quant':<14s} {'Spec':<14s} {'DL':>3s}")
+    print(f"  {'─'*28} {'─'*14} {'─'*14} {'─'*3}")
     for m in MODELS:
-        spec = m.spec.strategy or "none"
-        dl = "✓" if m.is_downloaded else "✗"
-        default = " ◀" if m.alias == DEFAULT_MODEL else ""
-        print(f"  {m.alias:<28s} {m.name:<26s} {spec:<14s} {dl:>10s}{default}")
+        spec = m.spec.strategy or "—"
+        dl = "✓" if m.is_downloaded else "·"
+        quant = m.quant or "—"
+        print(f"  {m.alias:<28s} {quant:<14s} {spec:<14s} {dl:>3s}")
     print()
     if any(m.notes for m in MODELS):
         print("  Notes:")
@@ -564,8 +637,8 @@ def main():
 
     # serve
     p_serve = sub.add_parser("serve", help="Download + launch a model")
-    p_serve.add_argument("model", nargs="?", default=DEFAULT_MODEL,
-                         help=f"Model alias or name (default: {DEFAULT_MODEL})")
+    p_serve.add_argument("model", nargs="?", default=None,
+                         help="Model alias or name (interactive picker if omitted)")
     p_serve.add_argument("--port", type=int, default=8000)
     p_serve.add_argument("--ctx", type=int, default=None,
                          help="Override context size")
@@ -575,6 +648,8 @@ def main():
                          help="Vulkan driver (default: radv)")
     p_serve.add_argument("--no-spec", action="store_true",
                          help="Disable speculative decoding")
+    p_serve.add_argument("--verbose", "-v", action="store_true",
+                         help="Show full llama-server output while loading")
     p_serve.add_argument("--extra", nargs=argparse.REMAINDER, default=[],
                          help="Extra args passed to llama-server")
 
@@ -597,7 +672,8 @@ def main():
 
     # download
     p_dl = sub.add_parser("download", help="Download a model without serving")
-    p_dl.add_argument("model", help="Model alias or name")
+    p_dl.add_argument("model", nargs="?", default=None,
+                      help="Model alias or name (interactive picker if omitted)")
 
     args = parser.parse_args()
 
@@ -612,7 +688,7 @@ def main():
         list_models()
 
     elif args.command == "serve":
-        cfg = get_model(args.model)
+        cfg = resolve_model(args.model, "Pick a model to serve")
         if args.ctx is not None:
             cfg.ctx_size = args.ctx
         if args.threads is not None:
@@ -620,7 +696,7 @@ def main():
         if args.no_spec:
             cfg.spec.strategy = None
         launch_server(cfg, port=args.port, backend=args.backend,
-                      extra_args=args.extra)
+                      extra_args=args.extra, verbose=args.verbose)
 
     elif args.command == "stop":
         stop_server()
@@ -629,13 +705,23 @@ def main():
         if args.model:
             bench_single(args.model, port=args.port, backend=args.backend)
         else:
-            bench(port=args.port, backend=args.backend)
+            # Benchmarking a running server — read its actual state
+            state_backend = "radv"
+            state_model = None
+            if STATE_FILE.exists():
+                try:
+                    state = json.loads(STATE_FILE.read_text())
+                    state_backend = state.get("backend", "radv")
+                    state_model = state.get("model")
+                except (json.JSONDecodeError, KeyError):
+                    pass
+            bench(port=args.port, model_alias=state_model, backend=state_backend)
 
     elif args.command == "bench-all":
         bench_all(port=args.port, backend=args.backend)
 
     elif args.command == "download":
-        cfg = get_model(args.model)
+        cfg = resolve_model(args.model, "Pick a model to download")
         download_model(cfg)
 
 

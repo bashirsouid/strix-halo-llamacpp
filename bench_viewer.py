@@ -30,11 +30,21 @@ def load_records(path: Path) -> list[dict]:
     return records
 
 
+def _series_key(r: dict) -> str:
+    """Build a display label from a JSONL record, including quant if present."""
+    quant = r.get("quant", "")
+    model = r["model"]
+    backend = r["backend"]
+    if quant:
+        return f"{model} [{quant}] ({backend})"
+    return f"{model} ({backend})"
+
+
 def generate_html(records: list[dict]) -> str:
-    # Build datasets grouped by model+backend
+    # Build datasets grouped by model+quant+backend
     series: dict[str, list[dict]] = {}
     for r in records:
-        key = f"{r['model']} ({r['backend']})"
+        key = _series_key(r)
         series.setdefault(key, []).append(r)
 
     # Get sorted unique timestamps
@@ -70,11 +80,11 @@ def generate_html(records: list[dict]) -> str:
     # Latest snapshot for bar chart
     latest: dict[str, dict] = {}
     for r in records:
-        key = f"{r['model']} ({r['backend']})"
+        key = _series_key(r)
         if key not in latest or r["timestamp"] > latest[key]["timestamp"]:
             latest[key] = r
     bar_items = sorted(latest.values(), key=lambda x: -x["avg_tok_s"])
-    bar_labels = [f"{r['model']} ({r['backend']})" for r in bar_items]
+    bar_labels = [_series_key(r) for r in bar_items]
     bar_values = [r["avg_tok_s"] for r in bar_items]
     bar_colors = [palette[i % len(palette)] for i in range(len(bar_items))]
 

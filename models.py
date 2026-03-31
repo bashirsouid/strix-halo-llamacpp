@@ -80,12 +80,13 @@ class SpecConfig:
 
 @dataclass
 class ModelConfig:
-    name: str                   # human-readable name
+    name: str                   # human-readable name (include quant for clarity)
     alias: str                  # OpenAI-compatible model alias
     hf_repo: str                # Hugging Face repo  (owner/repo)
     dest_dir: Path              # local directory for the GGUF files
     download_include: str       # glob pattern passed to `hf download --include`
     shard_glob: str             # glob to find shard-1 (the file passed to -m)
+    quant: str = ""             # quantization level (e.g. "Q4_K_M", "Q6_K", "Q8_K_XL")
     ctx_size: int = 32768
     batch_size: int = 4096      # -b   (logical max batch)
     ubatch_size: int = 256      # -ub  (physical max ubatch)
@@ -142,15 +143,14 @@ class ModelConfig:
 MODELS: list[ModelConfig] = [
 
     # ── Mistral Small 4  (119B MoE, 6.5B active) ────────────────────────────
-    # Draft-model speculation *does* help here because active params are tiny.
-    # Combined with ngram for extra wins on repetitive output.
     ModelConfig(
-        name="Mistral Small 4 Q4",
-        alias="mistral-small-4-119b",
+        name="Mistral Small 4 (Q4_K_M)",
+        alias="mistral-small-4-q4",
         hf_repo="unsloth/Mistral-Small-4-119B-2603-GGUF",
         dest_dir=MODELS_DIR / "unsloth/Mistral-Small-4-119B-2603-GGUF/UD-Q4_K_M",
         download_include="UD-Q4_K_M/*.gguf",
         shard_glob="*-00001-of-*.gguf",
+        quant="UD-Q4_K_M",
         ctx_size=32768,
         spec=SpecConfig(
             strategy="draft+ngram",
@@ -166,204 +166,175 @@ MODELS: list[ModelConfig] = [
     ),
 
     # ── GLM 4.5 Air  (106B MoE, 32B active) ─────────────────────────────────
-    # 32B active params means draft-model speculation wastes too much bandwidth
-    # on UMA.  N-gram self-speculation is the right play.
     ModelConfig(
-        name="GLM 4.5 Air",
-        alias="glm-4.5-air",
+        name="GLM 4.5 Air (IQ4_XS)",
+        alias="glm-4.5-air-iq4",
         hf_repo="unsloth/GLM-4.5-Air-GGUF",
         dest_dir=MODELS_DIR / "zai/GLM-4.5-Air/IQ4_XS",
         download_include="IQ4_XS/*.gguf",
         shard_glob="*-00001-of-*.gguf",
+        quant="IQ4_XS",
         ctx_size=32768,
         spec=SpecConfig(strategy="ngram"),
         chat_template_file="/mnt/data/models/llm-templates/glm4.5_chat_template.jinja",
         notes=(
             "MoE 106B (32B active).  GLM 4.5 has built-in MTP heads but "
-            "llama.cpp does not support MTP yet — those layers are skipped.  "
-            "N-gram speculation is the best current option."
+            "llama.cpp does not support MTP yet — those layers are skipped."
         ),
     ),
 
     # ── Nemotron 3 Super  (120B MoE, 12B active) ────────────────────────────
-    # Hybrid Mamba2-Transformer with latent MoE + MTP heads.
-    # MTP is *not* yet supported in llama.cpp (PR #20700 is WIP, Qwen3.5 only).
-    # Until MTP lands, n-gram speculation is the best we can do.
     ModelConfig(
-        name="Nemotron 3 Super",
-        alias="nemotron-3-super-120b",
+        name="Nemotron 3 Super (Q4_K_M)",
+        alias="nemotron-super-q4",
         hf_repo="unsloth/Nemotron-3-Super-120B-A12B-GGUF",
         dest_dir=MODELS_DIR / "nvidia/nemotron-3-super/UD-Q4_K_M",
         download_include="UD-Q4_K_M/*.gguf",
         shard_glob="*-00001-of-*.gguf",
+        quant="UD-Q4_K_M",
         ctx_size=16384,
         spec=SpecConfig(strategy="ngram"),
-        notes=(
-            "Hybrid Mamba2-Transformer MoE 120B (12B active).  Has built-in "
-            "MTP heads for self-speculative decoding, but llama.cpp does not "
-            "support MTP inference yet.  N-gram speculation helps in the meantime.  "
-            "Draft-model speculation was tested with Nemotron Nano 8B Q6 but the "
-            "8B draft is too large for UMA — it consumes bandwidth that the 12B "
-            "active-param target model needs."
-        ),
+        notes="Hybrid Mamba2-Transformer MoE 120B (12B active).  MTP not yet supported.",
     ),
 
     # ── Devstral Small 2 ─────────────────────────────────────────────────────
     ModelConfig(
-        name="Devstral Small 2",
-        alias="devstral-small-2",
+        name="Devstral Small 2 (Q4_K_M)",
+        alias="devstral-small-2-q4",
         hf_repo="mistralai/Devstral-Small-2503-GGUF",
         dest_dir=MODELS_DIR / "mistralai/Devstral-Small-2503-GGUF",
         download_include="*.gguf",
         shard_glob="*.gguf",
+        quant="Q4_K_M",
         ctx_size=32768,
         spec=SpecConfig(strategy="ngram"),
-        notes="24B dense coding model.  N-gram speculation helps with code output.",
+        notes="24B dense coding model.",
     ),
 
     # ── Llama 3.3 70B ────────────────────────────────────────────────────────
     ModelConfig(
-        name="Llama 3.3 70B",
-        alias="llama-3.3-70b",
+        name="Llama 3.3 70B (Q4_K_M)",
+        alias="llama-3.3-70b-q4",
         hf_repo="bartowski/Llama-3.3-70B-Instruct-GGUF",
         dest_dir=MODELS_DIR / "bartowski/Llama-3.3-70B-Instruct-GGUF",
         download_include="*Q4_K_M*.gguf",
         shard_glob="*Q4_K_M*-00001-of-*.gguf",
+        quant="Q4_K_M",
         ctx_size=8192,
         spec=SpecConfig(strategy="ngram"),
-        notes=(
-            "Dense 70B — bandwidth-bound on Strix Halo (~5 tok/s).  "
-            "N-gram speculation helps on repetitive output but don't expect miracles."
-        ),
+        notes="Dense 70B — bandwidth-bound on Strix Halo (~5 tok/s).",
     ),
 
     # ── Nemotron Nano ────────────────────────────────────────────────────────
     ModelConfig(
-        name="Nemotron Nano",
-        alias="nemotron-nano",
+        name="Nemotron Nano (UD-Q8_K_XL)",
+        alias="nemotron-nano-q8",
         hf_repo="unsloth/Nemotron-3-Nano-30B-A3B-GGUF",
         dest_dir=MODELS_DIR / "nvidia/nemotron-nano",
-        download_include="*Q4_K_M*.gguf",
-        shard_glob="*Q4_K_M*.gguf",
+        download_include="*UD-Q8_K_XL*",
+        shard_glob="*UD-Q8_K_XL*.gguf",
+        quant="UD-Q8_K_XL",
         ctx_size=32768,
         notes="MoE 30B (3B active).  Already very fast; speculation rarely helps.",
     ),
 
     # ── Qwen 2.5 Chat 7B ────────────────────────────────────────────────────
     ModelConfig(
-        name="Qwen 2.5 7B Chat",
-        alias="qwen-2.5-7b",
+        name="Qwen 2.5 7B Chat (Q4_K_M)",
+        alias="qwen-2.5-7b-q4",
         hf_repo="Qwen/Qwen2.5-7B-Instruct-GGUF",
         dest_dir=MODELS_DIR / "qwen/Qwen2.5-7B-Instruct-GGUF",
         download_include="*q4_k_m*.gguf",
         shard_glob="*q4_k_m*.gguf",
+        quant="Q4_K_M",
         ctx_size=32768,
         notes="Dense 7B.  Very fast on Strix Halo without speculation.",
     ),
 
     # ── Qwen 2.5 Coder 7B ───────────────────────────────────────────────────
     ModelConfig(
-        name="Qwen 2.5 Coder 7B",
-        alias="qwen-coder-7b",
+        name="Qwen 2.5 Coder 7B (Q4_K_M)",
+        alias="qwen-coder-7b-q4",
         hf_repo="Qwen/Qwen2.5-Coder-7B-Instruct-GGUF",
         dest_dir=MODELS_DIR / "qwen/Qwen2.5-Coder-7B-Instruct-GGUF",
         download_include="*q4_k_m*.gguf",
         shard_glob="*q4_k_m*.gguf",
+        quant="Q4_K_M",
         ctx_size=32768,
         notes="Dense 7B coding model.",
     ),
 
     # ── DeepSeek Coder V2 Lite ───────────────────────────────────────────────
     ModelConfig(
-        name="DeepSeek Coder V2 Lite",
-        alias="deepseek-coder-v2-lite",
+        name="DeepSeek Coder V2 Lite (Q4_K_M)",
+        alias="deepseek-coder-v2-lite-q4",
         hf_repo="bartowski/DeepSeek-Coder-V2-Lite-Instruct-GGUF",
         dest_dir=MODELS_DIR / "bartowski/DeepSeek-Coder-V2-Lite-Instruct-GGUF",
         download_include="*Q4_K_M*.gguf",
         shard_glob="*Q4_K_M*.gguf",
+        quant="Q4_K_M",
         ctx_size=16384,
         spec=SpecConfig(strategy="ngram"),
         notes="MoE 16B (2.4B active).  Very fast; n-gram can still help on code.",
     ),
 
     # ── Qwen3-Coder-Next  (80B MoE, 3B active) ─────────────────────────────
-    # #1 on SWE-rebench.  Designed for coding agents + tool use.
-    # Q6_K is ~62 GB (sharded, in Q6_K/ subdirectory on HF).
-    # NOTE: Do NOT use Q6_K_XL — it has a known bug where architecture and
-    # context length can't be detected, causing incoherent output.
-    # MoE means only 3B active params are read per token, so the speed penalty
-    # of Q6 over Q4 is minimal — but the quality improvement is significant.
-    # Known Vulkan/Strix Halo quirk: ubatch > 512 halves PP speed (issue #18725).
     ModelConfig(
-        name="Qwen3 Coder Next",
-        alias="qwen3-coder-next",
+        name="Qwen3 Coder Next (Q6_K)",
+        alias="qwen3-coder-next-q6",
         hf_repo="unsloth/Qwen3-Coder-Next-GGUF",
         dest_dir=MODELS_DIR / "unsloth/Qwen3-Coder-Next-GGUF/Q6_K",
         download_include="Q6_K/*.gguf",
         shard_glob="*-00001-of-*.gguf",
+        quant="Q6_K",
         ctx_size=32768,
-        ubatch_size=512,       # workaround for Vulkan PP regression on this model
+        ubatch_size=512,
         spec=SpecConfig(strategy="ngram"),
         extra_args=["--temp", "1.0", "--top-p", "0.95", "--top-k", "40", "--min-p", "0.01"],
         notes=(
-            "MoE 80B (3B active).  #1 on SWE-rebench, excellent tool calling.  "
-            "~62 GB at Q6_K — near-lossless quality with minimal speed penalty "
-            "since only 3B active params are read per token regardless of quant.  "
-            "Non-thinking model: ultra-fast code responses, no <think> blocks.  "
-            "Strix Halo note: use -ub 512, not 256 (known Vulkan PP regression).  "
-            "WARNING: Do NOT use Q6_K_XL — it has a known architecture detection "
-            "bug.  Use Q6_K (non-XL) instead.  "
-            "If too tight on memory, switch to Q4_K_M (~48 GB single file)."
+            "MoE 80B (3B active).  #1 on SWE-rebench.  ~62 GB at Q6_K.  "
+            "WARNING: Do NOT use Q6_K_XL — known architecture detection bug."
         ),
     ),
 
     # ── Qwen3.5 35B-A3B  (35B MoE, 3B active) ──────────────────────────────
-    # General-purpose model with optional thinking mode.  Small enough for Q8.
-    # Q8_K_XL is ~35 GB → tons of headroom in 80 GB budget.
     ModelConfig(
-        name="Qwen3.5 35B",
-        alias="qwen3.5-35b",
+        name="Qwen3.5 35B (Q8_K_XL)",
+        alias="qwen3.5-35b-q8",
         hf_repo="unsloth/Qwen3.5-35B-A3B-GGUF",
         dest_dir=MODELS_DIR / "unsloth/Qwen3.5-35B-A3B-GGUF",
         download_include="*UD-Q8_K_XL*",
         shard_glob="*UD-Q8_K_XL*.gguf",
+        quant="UD-Q8_K_XL",
         ctx_size=32768,
         spec=SpecConfig(strategy="ngram"),
         notes=(
-            "MoE 35B (3B active).  General-purpose with thinking mode toggle.  "
-            "~35 GB at Q8_K_XL — high quality, plenty of room in 80 GB budget.  "
-            "Thinking on by default; add /no_think in prompt to disable.  "
-            "Same 3B active as Qwen3-Coder-Next so similar tok/s."
+            "MoE 35B (3B active).  General-purpose with thinking mode.  "
+            "~48 GB at Q8_K_XL.  Thinking on by default; /no_think to disable."
         ),
     ),
 
     # ── GLM 4.7 Flash  (30B MoE, 3B active) ─────────────────────────────────
-    # Best 30B-class model on SWE-Bench and GPQA.  200K context.
-    # Q8_K_XL is ~30 GB → easily fits with room to spare.
-    # Needs specific sampling params: repeat-penalty 1.0, min-p 0.01.
     ModelConfig(
-        name="GLM 4.7 Flash",
-        alias="glm-4.7-flash",
+        name="GLM 4.7 Flash (Q8_K_XL)",
+        alias="glm-4.7-flash-q8",
         hf_repo="unsloth/GLM-4.7-Flash-GGUF",
         dest_dir=MODELS_DIR / "unsloth/GLM-4.7-Flash-GGUF",
         download_include="GLM-4.7-Flash-Q8_K_XL.gguf",
         shard_glob="*Q8_K_XL*.gguf",
+        quant="Q8_K_XL",
         ctx_size=32768,
         spec=SpecConfig(strategy="ngram"),
         extra_args=[
-            "--repeat-penalty", "1.0",   # critical: looping issues without this
-            "--min-p", "0.01",           # llama.cpp default 0.05 is too high for GLM
+            "--repeat-penalty", "1.0",
+            "--min-p", "0.01",
         ],
         notes=(
             "MoE 30B (3B active).  Best 30B model on SWE-Bench + GPQA.  "
-            "~30 GB at Q8 — highest quality at this size, fits easily.  "
-            "Important: needs --repeat-penalty 1.0 and --min-p 0.01 "
-            "(set automatically).  Successor to your GLM 4.5 Air."
+            "~30 GB at Q8.  Needs --repeat-penalty 1.0 (set automatically)."
         ),
     ),
 ]
-
-DEFAULT_MODEL = "mistral-small-4-119b"
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────

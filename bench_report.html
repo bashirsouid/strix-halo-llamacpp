@@ -42,26 +42,26 @@
 <div class="container">
   <h1>⚡ Strix Halo Bench Results</h1>
   <p class="subtitle">
-    13 records &middot;
-    10 model+backend combos &middot;
-    11 sessions
+    2 records &middot;
+    2 model+backend combos &middot;
+    2 sessions
   </p>
 
   <div class="stats">
     <div class="stat">
-      <div class="stat-value">13</div>
+      <div class="stat-value">2</div>
       <div class="stat-label">Records</div>
     </div>
     <div class="stat">
-      <div class="stat-value">6</div>
+      <div class="stat-value">2</div>
       <div class="stat-label">Models</div>
     </div>
     <div class="stat">
-      <div class="stat-value">11</div>
+      <div class="stat-value">2</div>
       <div class="stat-label">Sessions</div>
     </div>
     <div class="stat">
-      <div class="stat-value">2</div>
+      <div class="stat-value">1</div>
       <div class="stat-label">Backends</div>
     </div>
   </div>
@@ -84,10 +84,10 @@ Chart.defaults.borderColor = '#21262d';
 new Chart(document.getElementById('lineChart'), {
   type: 'line',
   data: {
-    labels: ["2026-03-30 18:11", "2026-03-30 21:16", "2026-03-30 21:25", "2026-03-30 21:30", "2026-03-30 21:32", "2026-03-30 21:33", "2026-03-30 21:37", "2026-03-30 21:42", "2026-03-30 21:44", "2026-03-30 21:46", "2026-03-30 22:14"],
+    labels: ["2026-03-31 08:04", "2026-03-31 08:14"],
     datasets: [{
-            label: "glm-4.5-air (radv)",
-            data: [23.0, null, null, null, null, null, null, null, null, null, null],
+            label: "mistral-small-4-q4 [UD-Q4_K_M] (radv)",
+            data: [null, 22.9],
             borderColor: '#e63946',
             backgroundColor: '#e6394633',
             borderWidth: 2,
@@ -97,98 +97,10 @@ new Chart(document.getElementById('lineChart'), {
             tension: 0.2,
             spanGaps: true,
         }, {
-            label: "glm-4.7-flash (amdvlk)",
-            data: [null, null, null, null, null, null, null, null, null, 36.5, null],
+            label: "nemotron-nano-q8 [UD-Q8_K_XL] (radv)",
+            data: [43.8, null],
             borderColor: '#457b9d',
             backgroundColor: '#457b9d33',
-            borderWidth: 2,
-            borderDash: [6, 3],
-            pointRadius: 4,
-            pointHoverRadius: 6,
-            tension: 0.2,
-            spanGaps: true,
-        }, {
-            label: "glm-4.7-flash (radv)",
-            data: [null, null, null, null, null, 36.5, null, null, null, null, null],
-            borderColor: '#2a9d8f',
-            backgroundColor: '#2a9d8f33',
-            borderWidth: 2,
-            borderDash: [],
-            pointRadius: 4,
-            pointHoverRadius: 6,
-            tension: 0.2,
-            spanGaps: true,
-        }, {
-            label: "mistral-small-4-119b (amdvlk)",
-            data: [null, null, null, null, null, null, 25.8, null, null, null, null],
-            borderColor: '#e9c46a',
-            backgroundColor: '#e9c46a33',
-            borderWidth: 2,
-            borderDash: [6, 3],
-            pointRadius: 4,
-            pointHoverRadius: 6,
-            tension: 0.2,
-            spanGaps: true,
-        }, {
-            label: "mistral-small-4-119b (radv)",
-            data: [27.2, null, 26.8, null, null, null, null, null, null, null, null],
-            borderColor: '#f4a261',
-            backgroundColor: '#f4a26133',
-            borderWidth: 2,
-            borderDash: [],
-            pointRadius: 4,
-            pointHoverRadius: 6,
-            tension: 0.2,
-            spanGaps: true,
-        }, {
-            label: "nemotron-3-super-120b (amdvlk)",
-            data: [null, null, null, null, null, null, null, 12.2, null, null, null],
-            borderColor: '#264653',
-            backgroundColor: '#26465333',
-            borderWidth: 2,
-            borderDash: [6, 3],
-            pointRadius: 4,
-            pointHoverRadius: 6,
-            tension: 0.2,
-            spanGaps: true,
-        }, {
-            label: "nemotron-3-super-120b (radv)",
-            data: [12.2, null, null, 12.1, null, null, null, null, null, null, null],
-            borderColor: '#a8dadc',
-            backgroundColor: '#a8dadc33',
-            borderWidth: 2,
-            borderDash: [],
-            pointRadius: 4,
-            pointHoverRadius: 6,
-            tension: 0.2,
-            spanGaps: true,
-        }, {
-            label: "nemotron-nano (radv)",
-            data: [null, null, null, null, null, null, null, null, null, null, 43.1],
-            borderColor: '#6d6875',
-            backgroundColor: '#6d687533',
-            borderWidth: 2,
-            borderDash: [],
-            pointRadius: 4,
-            pointHoverRadius: 6,
-            tension: 0.2,
-            spanGaps: true,
-        }, {
-            label: "qwen3-coder-next (amdvlk)",
-            data: [null, null, null, null, null, null, null, null, 39.6, null, null],
-            borderColor: '#b5838d',
-            backgroundColor: '#b5838d33',
-            borderWidth: 2,
-            borderDash: [6, 3],
-            pointRadius: 4,
-            pointHoverRadius: 6,
-            tension: 0.2,
-            spanGaps: true,
-        }, {
-            label: "qwen3-coder-next (radv)",
-            data: [null, 38.6, null, null, 39.6, null, null, null, null, null, null],
-            borderColor: '#ffb703',
-            backgroundColor: '#ffb70333',
             borderWidth: 2,
             borderDash: [],
             pointRadius: 4,
@@ -225,10 +137,10 @@ new Chart(document.getElementById('lineChart'), {
 new Chart(document.getElementById('barChart'), {
   type: 'bar',
   data: {
-    labels: ["nemotron-nano (radv)", "qwen3-coder-next (radv)", "qwen3-coder-next (amdvlk)", "glm-4.7-flash (radv)", "glm-4.7-flash (amdvlk)", "mistral-small-4-119b (radv)", "mistral-small-4-119b (amdvlk)", "glm-4.5-air (radv)", "nemotron-3-super-120b (amdvlk)", "nemotron-3-super-120b (radv)"],
+    labels: ["nemotron-nano-q8 [UD-Q8_K_XL] (radv)", "mistral-small-4-q4 [UD-Q4_K_M] (radv)"],
     datasets: [{
-      data: [43.1, 39.6, 39.6, 36.5, 36.5, 26.8, 25.8, 23.0, 12.2, 12.1],
-      backgroundColor: ["#e63946", "#457b9d", "#2a9d8f", "#e9c46a", "#f4a261", "#264653", "#a8dadc", "#6d6875", "#b5838d", "#ffb703"],
+      data: [43.8, 22.9],
+      backgroundColor: ["#e63946", "#457b9d"],
       borderRadius: 4,
     }]
   },

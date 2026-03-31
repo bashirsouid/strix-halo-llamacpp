@@ -1,3 +1,3 @@
 #!/usr/bin/env bash
 
-python server.py stop
+python3 server.py stop
