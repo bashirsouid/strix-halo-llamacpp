@@ -10,3 +10,4 @@
 {"timestamp": "2026-03-30 21:42", "backend": "amdvlk", "model": "nemotron-3-super-120b", "avg_tok_s": 12.2}
 {"timestamp": "2026-03-30 21:44", "backend": "amdvlk", "model": "qwen3-coder-next", "avg_tok_s": 39.6}
 {"timestamp": "2026-03-30 21:46", "backend": "amdvlk", "model": "glm-4.7-flash", "avg_tok_s": 36.5}
+{"timestamp": "2026-03-30 22:14", "backend": "radv", "model": "nemotron-nano", "avg_tok_s": 43.1}
