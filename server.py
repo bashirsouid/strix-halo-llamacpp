@@ -227,7 +227,7 @@ def stop_server():
     PID_FILE.unlink(missing_ok=True)
 
 
-def wait_for_server(port: int = 8000, timeout: int = 180) -> bool:
+def wait_for_server(port: int = 8000, timeout: int = 300) -> bool:
     """Poll /v1/models until the server is ready."""
     url = f"http://127.0.0.1:{port}/v1/models"
     deadline = time.time() + timeout
