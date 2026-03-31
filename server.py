@@ -372,9 +372,20 @@ def launch_server(cfg: ModelConfig, port: int = 8000, backend: str = "radv",
 #  BENCH
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def bench(port: int = 8000):
+def bench(port: int = 8000, model_alias: str | None = None, backend: str = "radv") -> float:
     """Quick throughput benchmark against a running server."""
     url = f"http://127.0.0.1:{port}/v1/chat/completions"
+
+    # Try to auto-detect the model alias from the running server
+    if model_alias is None:
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/v1/models", timeout=5) as resp:
+                data = json.loads(resp.read())
+                models = data.get("data", [])
+                if models:
+                    model_alias = models[0].get("id", "unknown")
+        except Exception:
+            model_alias = "unknown"
 
     prompts = [
         ("short",  "Write a haiku about silicon."),
@@ -427,6 +438,21 @@ def bench(port: int = 8000):
 
     print()
     info(f"Average: {avg_tok_s:.1f} tok/s across {len(successful)} runs")
+
+    # Append to results log
+    if avg_tok_s > 0 and model_alias and model_alias != "unknown":
+        report_file = PROJECT_DIR / "bench_results.jsonl"
+        timestamp = time.strftime("%Y-%m-%d %H:%M")
+        record = {
+            "timestamp": timestamp,
+            "backend": backend,
+            "model": model_alias,
+            "avg_tok_s": round(avg_tok_s, 1),
+        }
+        with open(report_file, "a") as f:
+            f.write(json.dumps(record) + "\n")
+        ok(f"Result appended to {report_file}")
+
     return avg_tok_s
 
 
@@ -441,7 +467,7 @@ def bench_single(model_alias: str, port: int = 8000, backend: str = "radv") -> f
     launch_server(cfg, port=port, backend=backend)
 
     try:
-        avg = bench(port=port)
+        avg = bench(port=port, model_alias=cfg.alias, backend=backend)
     except Exception as e:
         fail(f"Benchmark failed for {cfg.name}: {e}")
         avg = 0.0
@@ -485,18 +511,9 @@ def bench_all(port: int = 8000, backend: str = "radv"):
     print(f"  ══════════════════════════════════════════════════════════════")
     print()
 
-    # Save to file for regression tracking
     report_file = PROJECT_DIR / "bench_results.jsonl"
-    with open(report_file, "a") as f:
-        for alias, name, avg in results:
-            record = {
-                "timestamp": timestamp,
-                "backend": backend,
-                "model": alias,
-                "avg_tok_s": round(avg, 1),
-            }
-            f.write(json.dumps(record) + "\n")
-    ok(f"Results appended to {report_file}")
+    if report_file.exists():
+        ok(f"All results logged to {report_file}")
     info("Run again after updating llama.cpp to track regressions.")
 
 
@@ -612,7 +629,7 @@ def main():
         if args.model:
             bench_single(args.model, port=args.port, backend=args.backend)
         else:
-            bench(port=args.port)
+            bench(port=args.port, backend=args.backend)
 
     elif args.command == "bench-all":
         bench_all(port=args.port, backend=args.backend)
