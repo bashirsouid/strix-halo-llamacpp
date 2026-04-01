@@ -199,10 +199,13 @@ MODELS: list[ModelConfig] = [
         download_include="*UD-Q8_K_XL*",
         shard_glob="*UD-Q8_K_XL*.gguf",
         quant="UD-Q8_K_XL",
-        ctx_size=32768,
+        ctx_size=98304, # 32768*3=98304
+        extra_args=[
+            "-np", "3",
+        ],
         spec=SpecConfig(strategy="ngram"),
         notes=(
-            "Best for: reasoning, summarization, general-purpose.  "
+            "Best for: reasoning, summarization, general-purpose. Parallelization enabled (3)"
             "MoE 35B (3B active).  Thinking mode on by default (/no_think to disable).  "
             "~48 GB at Q8_K_XL — high quality.  Multimodal (text + vision)."
         ),
@@ -266,13 +269,13 @@ MODELS: list[ModelConfig] = [
         download_include="*Q4_K_M*.gguf",
         shard_glob="*Q4_K_M*.gguf",
         quant="Q4_K_M",
-        ctx_size=98304, # 32768*3=98304
+        ctx_size=393216, # 65536*6=393216
         extra_args=[
-            "-np", "3",
+            "-np", "6",
         ],
         notes=(
-            "Best for: speed, lightweight tasks, quick iteration.  Parallelization enabled (3)"
-            "MoE 30B (3B active).  Fastest model in the catalog (~60+ tok/s).  "
+            "Best for: speed, lightweight tasks, quick iteration. Parallelization enabled (6)."
+            "MoE 30B (3B active).  Fastest model in the catalog (~60+ tok/s)."
             "Good for drafting, quick Q&A, and low-latency tool calls."
         ),
     ),
@@ -287,10 +290,13 @@ MODELS: list[ModelConfig] = [
         download_include="*UD-Q8_K_XL*.gguf",
         shard_glob="*UD-Q8_K_XL*.gguf",
         quant="UD-Q8_K_XL",
-        ctx_size=32768,
+        ctx_size=196608, # 65536*3=196608
+        extra_args=[
+            "-np", "3",
+        ],
         notes=(
-            "Best for: speed, lightweight tasks, quick iteration.  "
-            "MoE 30B (3B active).  Fastest model in the catalog (~45+ tok/s).  "
+            "Best for: speed, lightweight tasks, quick iteration. Parallelization enabled (3)."
+            "MoE 30B (3B active).  Fastest model in the catalog (~45+ tok/s)."
             "Good for drafting, quick Q&A, and low-latency tool calls."
         ),
     ),
