@@ -42,22 +42,22 @@
 <div class="container">
   <h1>⚡ Strix Halo Bench Results</h1>
   <p class="subtitle">
-    2 records &middot;
-    2 model+backend combos &middot;
-    2 sessions
+    8 records &middot;
+    6 model+backend combos &middot;
+    8 sessions
   </p>
 
   <div class="stats">
     <div class="stat">
-      <div class="stat-value">2</div>
+      <div class="stat-value">8</div>
       <div class="stat-label">Records</div>
     </div>
     <div class="stat">
-      <div class="stat-value">2</div>
+      <div class="stat-value">6</div>
       <div class="stat-label">Models</div>
     </div>
     <div class="stat">
-      <div class="stat-value">2</div>
+      <div class="stat-value">8</div>
       <div class="stat-label">Sessions</div>
     </div>
     <div class="stat">
@@ -84,10 +84,10 @@ Chart.defaults.borderColor = '#21262d';
 new Chart(document.getElementById('lineChart'), {
   type: 'line',
   data: {
-    labels: ["2026-03-31 08:04", "2026-03-31 08:14"],
+    labels: ["2026-03-31 08:04", "2026-03-31 08:14", "2026-03-31 20:17", "2026-03-31 20:19", "2026-03-31 20:21", "2026-03-31 20:24", "2026-03-31 20:25", "2026-03-31 20:27"],
     datasets: [{
-            label: "mistral-small-4-q4 [UD-Q4_K_M] (radv)",
-            data: [null, 22.9],
+            label: "glm-4.7-flash-q8 [Q8_K_XL] (radv)",
+            data: [null, null, null, 36.7, null, null, null, null],
             borderColor: '#e63946',
             backgroundColor: '#e6394633',
             borderWidth: 2,
@@ -97,10 +97,54 @@ new Chart(document.getElementById('lineChart'), {
             tension: 0.2,
             spanGaps: true,
         }, {
-            label: "nemotron-nano-q8 [UD-Q8_K_XL] (radv)",
-            data: [43.8, null],
+            label: "mistral-small-4-q4 [UD-Q4_K_M] (radv)",
+            data: [null, 22.9, null, null, null, 26.4, null, null],
             borderColor: '#457b9d',
             backgroundColor: '#457b9d33',
+            borderWidth: 2,
+            borderDash: [],
+            pointRadius: 4,
+            pointHoverRadius: 6,
+            tension: 0.2,
+            spanGaps: true,
+        }, {
+            label: "nemotron-nano-q4 [Q4_K_M] (radv)",
+            data: [null, null, null, null, null, null, 61.6, null],
+            borderColor: '#2a9d8f',
+            backgroundColor: '#2a9d8f33',
+            borderWidth: 2,
+            borderDash: [],
+            pointRadius: 4,
+            pointHoverRadius: 6,
+            tension: 0.2,
+            spanGaps: true,
+        }, {
+            label: "nemotron-nano-q8 [UD-Q8_K_XL] (radv)",
+            data: [43.8, null, null, null, null, null, null, 43.3],
+            borderColor: '#e9c46a',
+            backgroundColor: '#e9c46a33',
+            borderWidth: 2,
+            borderDash: [],
+            pointRadius: 4,
+            pointHoverRadius: 6,
+            tension: 0.2,
+            spanGaps: true,
+        }, {
+            label: "qwen3-coder-next-q6 [Q6_K] (radv)",
+            data: [null, null, 40.3, null, null, null, null, null],
+            borderColor: '#f4a261',
+            backgroundColor: '#f4a26133',
+            borderWidth: 2,
+            borderDash: [],
+            pointRadius: 4,
+            pointHoverRadius: 6,
+            tension: 0.2,
+            spanGaps: true,
+        }, {
+            label: "qwen3.5-35b-q8 [UD-Q8_K_XL] (radv)",
+            data: [null, null, null, null, 27.7, null, null, null],
+            borderColor: '#264653',
+            backgroundColor: '#26465333',
             borderWidth: 2,
             borderDash: [],
             pointRadius: 4,
@@ -137,10 +181,10 @@ new Chart(document.getElementById('lineChart'), {
 new Chart(document.getElementById('barChart'), {
   type: 'bar',
   data: {
-    labels: ["nemotron-nano-q8 [UD-Q8_K_XL] (radv)", "mistral-small-4-q4 [UD-Q4_K_M] (radv)"],
+    labels: ["nemotron-nano-q4 [Q4_K_M] (radv)", "nemotron-nano-q8 [UD-Q8_K_XL] (radv)", "qwen3-coder-next-q6 [Q6_K] (radv)", "glm-4.7-flash-q8 [Q8_K_XL] (radv)", "qwen3.5-35b-q8 [UD-Q8_K_XL] (radv)", "mistral-small-4-q4 [UD-Q4_K_M] (radv)"],
     datasets: [{
-      data: [43.8, 22.9],
-      backgroundColor: ["#e63946", "#457b9d"],
+      data: [61.6, 43.3, 40.3, 36.7, 27.7, 26.4],
+      backgroundColor: ["#e63946", "#457b9d", "#2a9d8f", "#e9c46a", "#f4a261", "#264653"],
       borderRadius: 4,
     }]
   },

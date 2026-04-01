@@ -1,2 +1,8 @@
 {"timestamp": "2026-03-31 08:04", "backend": "radv", "model": "nemotron-nano-q8", "quant": "UD-Q8_K_XL", "avg_tok_s": 43.8}
 {"timestamp": "2026-03-31 08:14", "backend": "radv", "model": "mistral-small-4-q4", "quant": "UD-Q4_K_M", "avg_tok_s": 22.9}
+{"timestamp": "2026-03-31 20:17", "backend": "radv", "model": "qwen3-coder-next-q6", "quant": "Q6_K", "avg_tok_s": 40.3}
+{"timestamp": "2026-03-31 20:19", "backend": "radv", "model": "glm-4.7-flash-q8", "quant": "Q8_K_XL", "avg_tok_s": 36.7}
+{"timestamp": "2026-03-31 20:21", "backend": "radv", "model": "qwen3.5-35b-q8", "quant": "UD-Q8_K_XL", "avg_tok_s": 27.7}
+{"timestamp": "2026-03-31 20:24", "backend": "radv", "model": "mistral-small-4-q4", "quant": "UD-Q4_K_M", "avg_tok_s": 26.4}
+{"timestamp": "2026-03-31 20:25", "backend": "radv", "model": "nemotron-nano-q4", "quant": "Q4_K_M", "avg_tok_s": 61.6}
+{"timestamp": "2026-03-31 20:27", "backend": "radv", "model": "nemotron-nano-q8", "quant": "UD-Q8_K_XL", "avg_tok_s": 43.3}
