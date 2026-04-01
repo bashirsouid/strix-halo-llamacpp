@@ -257,7 +257,7 @@ MODELS: list[ModelConfig] = [
     ),
 
     # ── Nemotron Nano  ───────────────────────────────────────────────────────
-    # BEST FOR: Speed, lightweight tasks, quick iteration, drafting
+    # BEST FOR: Speed, lightweight tasks, quick iteration. Supports parallelization.
     ModelConfig(
         name="Nemotron Nano (Q4_K_M)",
         alias="nemotron-nano-q4",
@@ -266,16 +266,19 @@ MODELS: list[ModelConfig] = [
         download_include="*Q4_K_M*.gguf",
         shard_glob="*Q4_K_M*.gguf",
         quant="Q4_K_M",
-        ctx_size=32768,
+        ctx_size=98304, # 32768*3=98304
+        extra_args=[
+            "-np", "3",
+        ],
         notes=(
-            "Best for: speed, lightweight tasks, quick iteration.  "
+            "Best for: speed, lightweight tasks, quick iteration.  Parallelization enabled (3)"
             "MoE 30B (3B active).  Fastest model in the catalog (~60+ tok/s).  "
             "Good for drafting, quick Q&A, and low-latency tool calls."
         ),
     ),
 
     # ── Nemotron Nano  ───────────────────────────────────────────────────────
-    # BEST FOR: Speed/qualty balance, lightweight tasks, quick iteration, drafting
+    # BEST FOR: Speed/qualty balance, lightweight tasks, quick iteration. No parallelization.
     ModelConfig(
         name="Nemotron Nano (UD-Q8_K_XL)",
         alias="nemotron-nano-q8",
