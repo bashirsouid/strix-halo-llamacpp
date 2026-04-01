@@ -397,6 +397,7 @@ def launch_server(cfg: ModelConfig, port: int = 8000, backend: str = "radv",
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
+        stdin=subprocess.DEVNULL,
     )
     PID_FILE.write_text(str(proc.pid))
     STATE_FILE.write_text(json.dumps({
