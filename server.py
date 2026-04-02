@@ -527,38 +527,56 @@ def download_model(cfg: ModelConfig):
 
 def stop_server():
     """Stop a running llama-server (native process or ROCm container)."""
-    # Stop native process if we have a PID file
-    if PID_FILE.exists():
-        pid = int(PID_FILE.read_text().strip())
+
+    # Read state to determine what's running
+    is_container = False
+    if STATE_FILE.exists():
         try:
-            os.kill(pid, signal.SIGTERM)
-            ok(f"Sent SIGTERM to PID {pid}")
-            for _ in range(20):
-                time.sleep(0.5)
-                try:
-                    os.kill(pid, 0)
-                except OSError:
-                    break
-            else:
-                warn(f"PID {pid} still alive after 10s, sending SIGKILL")
-                os.kill(pid, signal.SIGKILL)
-        except OSError:
-            info(f"PID {pid} already gone.")
-        PID_FILE.unlink(missing_ok=True)
+            state = json.loads(STATE_FILE.read_text())
+            is_container = "container" in state
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+    # Stop native process (only if NOT container mode)
+    if not is_container and PID_FILE.exists():
+        try:
+            pid = int(PID_FILE.read_text().strip())
+            if pid > 0:
+                os.kill(pid, signal.SIGTERM)
+                ok(f"Sent SIGTERM to PID {pid}")
+                for _ in range(20):
+                    time.sleep(0.5)
+                    try:
+                        os.kill(pid, 0)
+                    except OSError:
+                        break
+                else:
+                    warn(f"PID {pid} still alive after 10s, sending SIGKILL")
+                    os.kill(pid, signal.SIGKILL)
+        except (OSError, ValueError):
+            pass
+
+    PID_FILE.unlink(missing_ok=True)
 
     # Stop ROCm container if running
     rt = _find_container_runtime()
     if rt:
-        result = subprocess.run(
-            [rt, "stop", ROCM_CONTAINER_NAME],
-            capture_output=True, timeout=15,
+        # Check if container exists before trying to stop it
+        check = subprocess.run(
+            [rt, "container", "exists", ROCM_CONTAINER_NAME],
+            capture_output=True,
         )
-        if result.returncode == 0:
+        if check.returncode == 0:
+            subprocess.run(
+                [rt, "stop", "-t", "5", ROCM_CONTAINER_NAME],
+                capture_output=True, timeout=15,
+            )
+            subprocess.run(
+                [rt, "rm", "-f", ROCM_CONTAINER_NAME],
+                capture_output=True, timeout=10,
+            )
             ok(f"Stopped ROCm container ({ROCM_CONTAINER_NAME})")
-        subprocess.run(
-            [rt, "rm", "-f", ROCM_CONTAINER_NAME],
-            capture_output=True, timeout=10,
-        )
+            time.sleep(1)  # let the port fully clear
 
     STATE_FILE.unlink(missing_ok=True)
 
@@ -675,8 +693,9 @@ def launch_server(cfg: ModelConfig, port: int = 8000, backend: str = "radv",
             sys.exit(1)
 
         container_id = result.stdout.strip()[:12]
-        # Write a dummy PID (container mode uses container name for stop)
-        PID_FILE.write_text("0")
+        # Don't write a PID file for container mode — stop_server uses
+        # the STATE_FILE to detect container mode and stops by container name.
+        PID_FILE.unlink(missing_ok=True)
         STATE_FILE.write_text(json.dumps({
             "model": cfg.alias,
             "backend": backend,

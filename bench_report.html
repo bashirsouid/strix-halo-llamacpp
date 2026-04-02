@@ -42,14 +42,14 @@
 <div class="container">
   <h1>⚡ Strix Halo Bench Results</h1>
   <p class="subtitle">
-    8 records &middot;
-    6 model+backend combos &middot;
-    8 sessions
+    21 records &middot;
+    12 model+backend combos &middot;
+    21 sessions
   </p>
 
   <div class="stats">
     <div class="stat">
-      <div class="stat-value">8</div>
+      <div class="stat-value">21</div>
       <div class="stat-label">Records</div>
     </div>
     <div class="stat">
@@ -57,11 +57,11 @@
       <div class="stat-label">Models</div>
     </div>
     <div class="stat">
-      <div class="stat-value">8</div>
+      <div class="stat-value">21</div>
       <div class="stat-label">Sessions</div>
     </div>
     <div class="stat">
-      <div class="stat-value">1</div>
+      <div class="stat-value">2</div>
       <div class="stat-label">Backends</div>
     </div>
   </div>
@@ -84,10 +84,10 @@ Chart.defaults.borderColor = '#21262d';
 new Chart(document.getElementById('lineChart'), {
   type: 'line',
   data: {
-    labels: ["2026-03-31 08:04", "2026-03-31 08:14", "2026-03-31 20:17", "2026-03-31 20:19", "2026-03-31 20:21", "2026-03-31 20:24", "2026-03-31 20:25", "2026-03-31 20:27"],
+    labels: ["2026-03-31 08:04", "2026-03-31 08:14", "2026-03-31 20:17", "2026-03-31 20:19", "2026-03-31 20:21", "2026-03-31 20:24", "2026-03-31 20:25", "2026-03-31 20:27", "2026-04-01 08:38", "2026-04-01 08:42", "2026-04-01 08:44", "2026-04-01 08:47", "2026-04-01 08:48", "2026-04-01 08:50", "2026-04-01 18:07", "2026-04-01 18:22", "2026-04-01 18:23", "2026-04-01 18:26", "2026-04-01 18:29", "2026-04-01 18:30", "2026-04-01 18:32"],
     datasets: [{
             label: "glm-4.7-flash-q8 [Q8_K_XL] (radv)",
-            data: [null, null, null, 36.7, null, null, null, null],
+            data: [null, null, null, 36.7, null, null, null, null, null, 36.7, null, null, null, null, null, null, null, null, null, null, null],
             borderColor: '#e63946',
             backgroundColor: '#e6394633',
             borderWidth: 2,
@@ -97,8 +97,8 @@ new Chart(document.getElementById('lineChart'), {
             tension: 0.2,
             spanGaps: true,
         }, {
-            label: "mistral-small-4-q4 [UD-Q4_K_M] (radv)",
-            data: [null, 22.9, null, null, null, 26.4, null, null],
+            label: "glm-4.7-flash-q8 [Q8_K_XL] (rocm)",
+            data: [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 34.2, null, null, null, null],
             borderColor: '#457b9d',
             backgroundColor: '#457b9d33',
             borderWidth: 2,
@@ -108,8 +108,8 @@ new Chart(document.getElementById('lineChart'), {
             tension: 0.2,
             spanGaps: true,
         }, {
-            label: "nemotron-nano-q4 [Q4_K_M] (radv)",
-            data: [null, null, null, null, null, null, 61.6, null],
+            label: "mistral-small-4-q4 [UD-Q4_K_M] (radv)",
+            data: [null, 22.9, null, null, null, 26.4, null, null, null, null, null, 20.3, null, null, null, null, null, null, null, null, null],
             borderColor: '#2a9d8f',
             backgroundColor: '#2a9d8f33',
             borderWidth: 2,
@@ -119,8 +119,8 @@ new Chart(document.getElementById('lineChart'), {
             tension: 0.2,
             spanGaps: true,
         }, {
-            label: "nemotron-nano-q8 [UD-Q8_K_XL] (radv)",
-            data: [43.8, null, null, null, null, null, null, 43.3],
+            label: "mistral-small-4-q4 [UD-Q4_K_M] (rocm)",
+            data: [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 20.9, null, null],
             borderColor: '#e9c46a',
             backgroundColor: '#e9c46a33',
             borderWidth: 2,
@@ -130,8 +130,8 @@ new Chart(document.getElementById('lineChart'), {
             tension: 0.2,
             spanGaps: true,
         }, {
-            label: "qwen3-coder-next-q6 [Q6_K] (radv)",
-            data: [null, null, 40.3, null, null, null, null, null],
+            label: "nemotron-nano-q4 [Q4_K_M] (radv)",
+            data: [null, null, null, null, null, null, 61.6, null, null, null, null, null, 61.1, null, null, null, null, null, null, null, null],
             borderColor: '#f4a261',
             backgroundColor: '#f4a26133',
             borderWidth: 2,
@@ -141,10 +141,76 @@ new Chart(document.getElementById('lineChart'), {
             tension: 0.2,
             spanGaps: true,
         }, {
-            label: "qwen3.5-35b-q8 [UD-Q8_K_XL] (radv)",
-            data: [null, null, null, null, 27.7, null, null, null],
+            label: "nemotron-nano-q4 [Q4_K_M] (rocm)",
+            data: [null, null, null, null, null, null, null, null, null, null, null, null, null, null, 56.5, null, null, null, null, 58.4, null],
             borderColor: '#264653',
             backgroundColor: '#26465333',
+            borderWidth: 2,
+            borderDash: [],
+            pointRadius: 4,
+            pointHoverRadius: 6,
+            tension: 0.2,
+            spanGaps: true,
+        }, {
+            label: "nemotron-nano-q8 [UD-Q8_K_XL] (radv)",
+            data: [43.8, null, null, null, null, null, null, 43.3, null, null, null, null, null, 43.0, null, null, null, null, null, null, null],
+            borderColor: '#a8dadc',
+            backgroundColor: '#a8dadc33',
+            borderWidth: 2,
+            borderDash: [],
+            pointRadius: 4,
+            pointHoverRadius: 6,
+            tension: 0.2,
+            spanGaps: true,
+        }, {
+            label: "nemotron-nano-q8 [UD-Q8_K_XL] (rocm)",
+            data: [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 40.2],
+            borderColor: '#6d6875',
+            backgroundColor: '#6d687533',
+            borderWidth: 2,
+            borderDash: [],
+            pointRadius: 4,
+            pointHoverRadius: 6,
+            tension: 0.2,
+            spanGaps: true,
+        }, {
+            label: "qwen3-coder-next-q6 [Q6_K] (radv)",
+            data: [null, null, 40.3, null, null, null, null, null, 39.2, null, null, null, null, null, null, null, null, null, null, null, null],
+            borderColor: '#b5838d',
+            backgroundColor: '#b5838d33',
+            borderWidth: 2,
+            borderDash: [],
+            pointRadius: 4,
+            pointHoverRadius: 6,
+            tension: 0.2,
+            spanGaps: true,
+        }, {
+            label: "qwen3-coder-next-q6 [Q6_K] (rocm)",
+            data: [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 34.2, null, null, null, null, null],
+            borderColor: '#ffb703',
+            backgroundColor: '#ffb70333',
+            borderWidth: 2,
+            borderDash: [],
+            pointRadius: 4,
+            pointHoverRadius: 6,
+            tension: 0.2,
+            spanGaps: true,
+        }, {
+            label: "qwen3.5-35b-q8 [UD-Q8_K_XL] (radv)",
+            data: [null, null, null, null, 27.7, null, null, null, null, null, 26.7, null, null, null, null, null, null, null, null, null, null],
+            borderColor: '#023047',
+            backgroundColor: '#02304733',
+            borderWidth: 2,
+            borderDash: [],
+            pointRadius: 4,
+            pointHoverRadius: 6,
+            tension: 0.2,
+            spanGaps: true,
+        }, {
+            label: "qwen3.5-35b-q8 [UD-Q8_K_XL] (rocm)",
+            data: [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 29.9, null, null, null],
+            borderColor: '#8ecae6',
+            backgroundColor: '#8ecae633',
             borderWidth: 2,
             borderDash: [],
             pointRadius: 4,
@@ -181,10 +247,10 @@ new Chart(document.getElementById('lineChart'), {
 new Chart(document.getElementById('barChart'), {
   type: 'bar',
   data: {
-    labels: ["nemotron-nano-q4 [Q4_K_M] (radv)", "nemotron-nano-q8 [UD-Q8_K_XL] (radv)", "qwen3-coder-next-q6 [Q6_K] (radv)", "glm-4.7-flash-q8 [Q8_K_XL] (radv)", "qwen3.5-35b-q8 [UD-Q8_K_XL] (radv)", "mistral-small-4-q4 [UD-Q4_K_M] (radv)"],
+    labels: ["nemotron-nano-q4 [Q4_K_M] (radv)", "nemotron-nano-q4 [Q4_K_M] (rocm)", "nemotron-nano-q8 [UD-Q8_K_XL] (radv)", "nemotron-nano-q8 [UD-Q8_K_XL] (rocm)", "qwen3-coder-next-q6 [Q6_K] (radv)", "glm-4.7-flash-q8 [Q8_K_XL] (radv)", "qwen3-coder-next-q6 [Q6_K] (rocm)", "glm-4.7-flash-q8 [Q8_K_XL] (rocm)", "qwen3.5-35b-q8 [UD-Q8_K_XL] (rocm)", "qwen3.5-35b-q8 [UD-Q8_K_XL] (radv)", "mistral-small-4-q4 [UD-Q4_K_M] (rocm)", "mistral-small-4-q4 [UD-Q4_K_M] (radv)"],
     datasets: [{
-      data: [61.6, 43.3, 40.3, 36.7, 27.7, 26.4],
-      backgroundColor: ["#e63946", "#457b9d", "#2a9d8f", "#e9c46a", "#f4a261", "#264653"],
+      data: [61.1, 58.4, 43.0, 40.2, 39.2, 36.7, 34.2, 34.2, 29.9, 26.7, 20.9, 20.3],
+      backgroundColor: ["#e63946", "#457b9d", "#2a9d8f", "#e9c46a", "#f4a261", "#264653", "#a8dadc", "#6d6875", "#b5838d", "#ffb703", "#023047", "#8ecae6"],
       borderRadius: 4,
     }]
   },
