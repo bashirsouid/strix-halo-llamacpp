@@ -1,323 +1,326 @@
 # strix-halo-llamacpp
 
-Local llama.cpp launcher for **AMD Strix Halo** (Ryzen AI Max / gfx1151),
-optimized for maximum tokens-per-second on the integrated GPU.
+Local LLM launcher and benchmark suite for the **AMD Strix Halo** (Ryzen AI Max / gfx1151) integrated GPU.
+Builds llama.cpp from source, downloads GGUF models from Hugging Face, and serves them as an **OpenAI-compatible REST API** with hardware-tuned defaults.
 
-Builds llama.cpp from source with Vulkan cooperative-matrix shaders,
-downloads models from Hugging Face, and serves them as an OpenAI-compatible
-API with per-model performance tuning.
+Supports **Vulkan (RADV / AMDVLK)** and **ROCm (HIP)** backends side by side — build both and switch at serve time.
+
+---
 
 ## Hardware target
 
-| Item       | Value                                 |
-|------------|---------------------------------------|
-| SoC        | AMD Ryzen AI Max 395 (Strix Halo)     |
-| GPU        | Radeon 8060S (gfx1151)                |
-| UMA pool   | ~90 GB mapped to GPU                  |
-| Bandwidth  | ~215 GB/s shared CPU+GPU              |
-| GPU driver | Mesa RADV (Vulkan) — recommended      |
+| Item | Value |
+|---|---|
+| SoC | AMD Ryzen AI Max 395 (Strix Halo) |
+| GPU | Radeon 8060S (gfx1151, RDNA 3.5) |
+| RAM | 96 GB LPDDR5X (~90 GB mapped to GPU via GTT) |
+| UMA VRAM | 512 MB (display only — all inference runs in GTT) |
+| Backends | Vulkan (RADV/AMDVLK) · ROCm (HIP + rocWMMA) |
+
+---
 
 ## Quick start
 
 ```bash
-# 1. Install build dependencies
-# Fedora:
-sudo dnf install cmake ninja-build gcc-c++ vulkan-headers vulkan-loader-devel glslang shaderc spirv-tools git
-
-# Ubuntu/Debian:
-sudo apt install cmake ninja-build build-essential libvulkan-dev glslang-tools glslc spirv-tools git
-
-# 2. Install Python dependencies
-pip install huggingface_hub hf_transfer
-
-# 3. Build llama.cpp from source (one-time, ~2 min)
-python server.py build
-
-# 4. Serve a model (shows interactive picker, or specify by name)
-python server.py serve                    # interactive picker
-python server.py serve qwen3-coder       # by name (substring match)
-
-# 5. Stop the server
-python server.py stop
+git clone https://github.com/bashirsouid/strix-halo-llamacpp
+cd strix-halo-llamacpp
+./start.sh                              # Vulkan (default), interactive picker
+./start.sh --backend rocm               # ROCm backend
+./start.sh --backend radv nemotron-nano-q4  # specific model + backend
 ```
 
-## Recommended models
-
-All models are MoE — they only activate a fraction of their parameters per
-token, which is ideal for the Strix Halo's 215 GB/s bandwidth wall.  Ordered
-by what they're best at:
-
-| Model | Quant | Size | Best for | tok/s (est.) |
-|-------|-------|------|----------|:------------:|
-| Qwen3 Coder Next | Q6_K | ~62 GB | Coding agents, tool calling | ~40 |
-| GLM 4.7 Flash | Q8_K_XL | ~30 GB | Code + chat, interleaved thinking | ~55 |
-| Qwen3.5 35B | Q8_K_XL | ~48 GB | Reasoning, summarization, vision | ~50 |
-| Mistral Small 4 | Q4_K_M | ~57 GB | All-round chat + code | ~15 |
-| Nemotron 3 Super | Q4_K_M | ~63 GB | Long-context reasoning, multi-agent | ~20 |
-| Nemotron Nano | Q4_K_M | ~17 GB | Speed, quick iteration, drafting | ~60 |
-
-**If you only download one:** Qwen3 Coder Next for coding, GLM 4.7 Flash for
-everything else.  Both are fast (3B active params) and fit comfortably in
-your 90 GB GPU allocation.
-
-## Commands
-
-| Command                    | Description                            |
-|----------------------------|----------------------------------------|
-| `python server.py build`   | Clone + build llama.cpp with Vulkan    |
-| `python server.py list`    | Show all models + download status      |
-| `python server.py serve MODEL` | Download (if needed) + launch      |
-| `python server.py stop`    | Stop the running server                |
-| `python server.py bench`   | Benchmark the currently running server |
-| `python server.py bench MODEL` | Start model, benchmark, stop       |
-| `python server.py bench-all`  | Benchmark all downloaded models     |
-| `python server.py download MODEL` | Download without serving         |
-
-### Serve options
+Or step by step:
 
 ```bash
-python server.py serve qwen3-coder-next-q6 \
-    --port 8000 \
-    --ctx 32768 \
-    --threads 4 \
-    --backend radv \        # or amdvlk
-    --no-spec \             # disable speculation
-    --extra -- --verbose    # extra flags to llama-server
+python server.py build                    # build llama.cpp with Vulkan
+python server.py download nemotron-nano-q4  # download a model
+python server.py serve nemotron-nano-q4   # serve it
 ```
 
-## Performance tuning notes
+---
 
-### Why build from source?
+## Backends — Vulkan vs ROCm
 
-Native Vulkan builds with cooperative-matrix kernels (`VK_KHR_cooperative_matrix`)
-consistently outperform packaged runtimes.  Community benchmarks show ~45–50 tok/s
-on 120B MoE models with a local build vs ~30 tok/s from Docker/packaged binaries.
-The difference comes from shader paths, reduced IPC overhead, and tuned flags.
+Both backends can coexist in separate build directories (`build-vulkan/` and `build-rocm/`).
 
-### Speculation strategies
+| Backend | Flag (build) | Flag (serve) | Best for |
+|---|---|---|---|
+| Vulkan RADV | `--backend vulkan` | `--backend radv` | **Generation speed** — fast GEMV decode, stable |
+| Vulkan AMDVLK | `--backend vulkan` | `--backend amdvlk` | Prompt processing on small models (2 GB buffer limit) |
+| ROCm HIP | `--backend rocm` | `--backend rocm` | **Prefill speed** — uses WMMA matrix units via rocWMMA |
 
-Different models benefit from different speculation approaches on UMA:
+Vulkan's GEMM shaders on RDNA 3.5 cannot access the hardware matrix accelerator units, so prefill (prompt processing) is significantly slower than generation.  ROCm's rocWMMA path can use them, giving much better prefill throughput.
 
-| Model              | Active params | Strategy        | Why                                |
-|--------------------|:------------:|-----------------|------------------------------------|
-| Qwen3 Coder Next   | 3B           | ngram only      | Tiny active params, fast already   |
-| GLM 4.7 Flash      | 3B           | ngram only      | Same — n-gram helps on code output |
-| Qwen3.5 35B        | 3B           | ngram only      | Fast, n-gram helps on reasoning    |
-| Mistral Small 4    | 6.5B         | draft + ngram   | Small enough for draft to help     |
-| Nemotron 3 Super   | 12B          | ngram only      | Has MTP heads (not yet supported)  |
-| Nemotron Nano      | 3B           | none            | Already ~60 tok/s, not worth it    |
+```bash
+# Build both backends
+python server.py build --backend vulkan
+python server.py build --backend rocm
 
-**N-gram self-speculation** (`--spec-type ngram-mod`) drafts from patterns already
-in the context window.  It uses zero extra memory and zero extra bandwidth — ideal
-for UMA systems like Strix Halo.  Particularly effective for code generation and
-any output with repetitive structure.
+# Compare them
+python server.py bench nemotron-nano-q4 --backend radv
+python server.py bench nemotron-nano-q4 --backend rocm
+```
 
-**Draft-model speculation** uses a separate small model.  On UMA, the draft model
-competes for the same memory bandwidth as the target.  Only worthwhile when the
-target's active parameters are very small (e.g., Mistral Small 4's 6.5B active).
+### ROCm build
 
-### Key flags
+AMD's ROCm packages have dependency issues on **Debian Trixie** (they require Ubuntu's libstdc++-11-dev).  The build system handles this automatically by extracting pre-built binaries from a container image:
 
-All models launch with these tuned defaults:
+```bash
+# Option 1: Container extraction (recommended for Debian Trixie)
+# The kyuz0 toolbox images ship with llama.cpp pre-built for gfx1151.
+# Just needs podman or docker — binaries are copied out and run natively.
+sudo apt install podman
+python server.py build --backend rocm    # extracts binary from container
 
-- `--no-mmap` — prevents lazy loading that causes Vulkan slowdowns
-- `--flash-attn` — essential for long-context performance
-- `--cache-type-k q8_0 --cache-type-v q8_0` — saves memory for larger context
-- `-b 4096 -ub 256` — batch/ubatch sizes tuned for Strix Halo
-- `-t 4` — CPU threads (Vulkan does the heavy compute on GPU)
-- `-ngl 999` — offload all layers to GPU
+# Option 2: Native hipcc (Fedora, or Ubuntu with ROCm repo)
+sudo dnf install rocm-dev hipcc          # Fedora
+python server.py build --backend rocm    # builds from source with native hipcc
+```
 
-### Backend choice: RADV vs AMDVLK
+The container approach uses the [kyuz0 Strix Halo toolbox](https://github.com/kyuz0/amd-strix-halo-toolboxes) image (`rocm-7.2`) which is rebuilt on every llama.cpp commit.  The `build` step just pulls the image.  At serve time, `llama-server` runs inside the container with your GPU devices and model directory mounted — the API is still on `localhost:8000` and everything else (benchmarks, TUI, model management) runs natively.  Run `python server.py build --backend rocm --rebuild` to pull the latest image.
 
-Both backends are Vulkan — the difference is the GPU driver. RADV is the
-open-source Mesa driver; AMDVLK is AMD's official one. You switch between
-them with `--backend radv` or `--backend amdvlk`.
+---
 
-**RADV** (the default) is the safer all-round choice. It's good at both
-prompt processing and token generation, and it handles long contexts well.
+## Model catalog
 
-**AMDVLK** generates tokens 5–16% faster once it gets going. The tradeoff
-is twofold:
+Models are defined in `models.py` with per-model defaults tuned for 90 GB GPU memory.
 
-1. **Slower prompt processing.** Before the model starts generating, it has
-   to ingest your entire prompt. AMDVLK is significantly slower at this
-   step (~358 tok/s vs ~500+ tok/s on RADV in one benchmark). So if you
-   paste in a long document or use a big system prompt, you'll wait longer
-   for the first token to appear. Once generation starts, AMDVLK is faster.
+| Model | Params | Active | Quant | Weight ~GB | np | ctx/slot |
+|---|---|---|---|---|---|---|
+| Qwen3 Coder Next | 80B MoE | 3B | Q6_K | ~62 | 1 | 32K |
+| GLM 4.7 Flash | 30B MoE | 3B | Q8_K_XL | ~30 | 1 | 32K |
+| Qwen3.5 35B | 35B MoE | 3B | Q8_K_XL | ~48 | 6 | 32K |
+| Mistral Small 4 | 119B MoE | 6.5B | Q4_K_M | ~55 | 1 | 32K |
+| Nemotron 3 Super | 120B MoE | 12B | Q4_K_M | ~55 | 1 | 16K |
+| Nemotron Nano Q4 | 30B MoE | 3B | Q4_K_M | ~6 | 8 | 64K |
+| Nemotron Nano Q8 | 30B MoE | 3B | Q8_K_XL | ~12 | 8 | 48K |
 
-2. **2 GiB single-buffer limit.** AMDVLK cannot allocate a single
-   contiguous block of GPU memory larger than 2 GB. This is a driver
-   limitation. In practice your sharded MoE models are fine because
-   individual layers are under 2 GB. But a single-file dense 70B model
-   or a very large KV cache allocation could fail to load on AMDVLK
-   while RADV handles it without issue.
+### Parallelization
 
-**Rule of thumb:** For interactive chat with short prompts where you want
-the fastest streaming response, try AMDVLK. For anything with long prompts
-(RAG, document analysis, large system prompts), stick with RADV.
+Parallelization (`--parallel` / `-np`) is a first-class setting per model.  Each model has:
 
-### Thread count
+- **`parallel_slots`** — number of concurrent request slots (used by default)
+- **`ctx_per_slot`** — context window per slot (total context = ctx_per_slot × parallel_slots)
+- **`max_parallel`** — upper bound for the `bench-parallel` sweep
 
-`-t 4` is the default. Token generation is GPU-bound so thread count barely matters
-for tg.  Prompt processing can benefit from more threads on the CPU side.  If you
-see CPU usage during generation (check `htop`), something else is wrong — likely
-mmap is on or not all layers are offloaded.  The `-t 1` approach works too; the
-difference is small when all layers are on GPU.
+The `ctx_per_slot` approach keeps each request's usable context constant regardless of how many slots are active.  The model's training context limit applies to each slot independently — total context going above the model's max is fine.
 
-### Nemotron 3 Super and MTP
+### Speculative decoding
 
-Nemotron 3 Super has built-in Multi-Token Prediction (MTP) heads that enable
-self-speculative decoding without a draft model.  However, llama.cpp does not yet
-support MTP inference — those layers are currently skipped when loading the model.
-There are active PRs (e.g., #20700 for Qwen3.5 MTP) but nothing merged for
-Nemotron yet.  Until MTP lands, n-gram speculation is the best we can do.  Once
-MTP is supported, Nemotron Super should see significant speedups for free.
+N-gram speculation is enabled by default on most models.  Mistral Small 4 additionally uses a draft model for draft+ngram speculation.
+
+---
+
+## CLI reference
+
+```
+python server.py build    [--backend vulkan|rocm] [--rebuild]
+python server.py list
+python server.py serve    [MODEL] [--backend radv|amdvlk|rocm] [--np N] [--ctx-per-slot N] ...
+python server.py stop
+python server.py bench    [MODEL] [--backend radv|amdvlk|rocm]
+python server.py bench-all          [--backend radv|amdvlk|rocm]
+python server.py bench-parallel [MODEL] [--backend radv|amdvlk|rocm] [--max-np N]
+python server.py download [MODEL]
+```
+
+### `serve` options
+
+| Flag | Description |
+|---|---|
+| `--backend radv\|amdvlk\|rocm` | Backend to use (default: radv) |
+| `--np N` | Override parallel slots |
+| `--ctx N` | Override total context size |
+| `--ctx-per-slot N` | Override context per slot (total = this × np) |
+| `--threads N` / `-t N` | Override CPU thread count |
+| `--no-spec` | Disable speculative decoding |
+| `--verbose` / `-v` | Show full llama-server output |
+| `--extra ...` | Extra args passed to llama-server |
+
+---
 
 ## Benchmarking
 
-Three ways to benchmark:
+### Single model benchmark
+
+Tests both **generation** (short prompt → long output) and **prefill** (long prompt → short output) in a single run, reporting both speeds plus a combined score.
 
 ```bash
-# 1. Test whatever server is currently running
-python server.py bench
-
-# 2. Start a specific model, benchmark it, stop it
-python server.py bench qwen3-coder-next
-
-# 3. Benchmark ALL downloaded models — generates a comparison report
-python server.py bench-all
-python server.py bench-all --backend amdvlk   # compare backends
+python server.py bench nemotron-nano-q4 --backend radv
 ```
 
-`bench-all` starts each downloaded model one by one, runs three prompts
-(short/medium/long), records average tok/s, stops the server, and moves to
-the next. At the end it prints a ranked summary and appends the results to
-`bench_results.jsonl` so you can track regressions across llama.cpp updates.
-
-## Project layout
-
+Output:
 ```
-strix-halo-llamacpp/
-├── server.py      # CLI entry point — build, serve, stop, bench, list
-├── models.py      # Model catalog — add new models here
-├── README.md
-└── llama.cpp/     # (created by `build`) cloned source + build artifacts
+  ── Generation (short prompt → 512 tok output) ──────────────
+  [gen-1]   512 tok in    8.5s  →   60.2 tok/s  (prompt: 12 tok)
+  [gen-2]   512 tok in    8.6s  →   59.5 tok/s  (prompt: 18 tok)
+  [gen-3]   512 tok in    8.9s  →   57.5 tok/s  (prompt: 42 tok)
+
+  ── Prefill (long prompt → 16 tok output) ───────────────────
+  [pp-1 ]    526 prompt tok in   52.6s  →   10.0 pp tok/s  (output: 16 tok)
+  [pp-2 ]   1007 prompt tok in  100.7s  →   10.0 pp tok/s  (output: 16 tok)
+
+  ═══════════════════════════════════════════════
+  Generation:    59.1 tok/s  (decode throughput)
+  Prefill:       10.0 tok/s  (prompt processing)
+  Combined:      34.5 tok/s  (average of both)
+  ═══════════════════════════════════════════════
 ```
 
-## Adding a new model
+### Benchmark all models
 
-Edit `models.py` and append a `ModelConfig` to the `MODELS` list:
+Runs the full generation + prefill benchmark for every downloaded model:
 
-```python
-ModelConfig(
-    name="My New Model",
-    alias="my-model",
-    hf_repo="user/repo-GGUF",
-    dest_dir=MODELS_DIR / "user/repo-GGUF/Q4_K_M",
-    download_include="Q4_K_M/*.gguf",
-    shard_glob="*-00001-of-*.gguf",   # or "*.gguf" for single file
-    ctx_size=32768,
-    spec=SpecConfig(strategy="ngram"),  # or None for small models
-),
+```bash
+./benchmark-run-all.sh --backend radv
+./benchmark-run-all.sh --backend rocm    # compare backends
 ```
+
+### Parallel sweep
+
+Sweeps `--parallel` from 1 to `max_parallel`, measuring both single-request and concurrent throughput at each level.  Finds the optimal slot count for your hardware.
+
+```bash
+./benchmark-parallel.sh nemotron-nano-q4 --backend radv
+./benchmark-parallel.sh nemotron-nano-q4 --backend rocm --max-np 10
+```
+
+### Visualizers
+
+Open interactive HTML charts in your browser:
+
+```bash
+./benchmark-view.sh              # bench_results.jsonl → bench_report.html
+./benchmark-parallel-view.sh     # bench_parallel_results.jsonl → parallel_report.html
+```
+
+---
+
+## Shell scripts
+
+| Script | Purpose |
+|---|---|
+| `start.sh` | One-command bootstrap: install deps, build, serve |
+| `stop.sh` | Stop the running server |
+| `load_nemotron_nano_q4.sh` | Shortcut to serve Nemotron Nano Q4 |
+| `load_nemotron_nano_q8.sh` | Shortcut to serve Nemotron Nano Q8 |
+| `load_glm4.7_flash_q8.sh` | Shortcut to serve GLM 4.7 Flash Q8 |
+| `load_qwen3.5_35b_q8.sh` | Shortcut to serve Qwen3.5 35B Q8 |
+| `benchmark-run.sh` | Run bench on running/specified model |
+| `benchmark-run-all.sh` | Benchmark all downloaded models |
+| `benchmark-parallel.sh` | Parallel sweep |
+| `benchmark-view.sh` | Open bench results chart |
+| `benchmark-parallel-view.sh` | Open parallel sweep chart |
+
+All shell scripts pass through arguments, so `./benchmark-run-all.sh --backend rocm` works.
+
+---
+
+## Memory configuration (Strix Halo)
+
+This setup is optimized for **GTT-only operation** with minimal VRAM aperture:
+
+| Setting | Value | Why |
+|---|---|---|
+| BIOS UMA Frame Buffer | 512 MB | Just enough for display output |
+| GTT mapped to GPU | ~90 GB | All model weights + KV cache live here |
+| Kernel boot params | `iommu=pt amdgpu.gttsize=92160 ttm.pages_limit=23592960` | Maps 90 GB of system RAM to GPU GTT |
+| `--no-mmap` | Always set | Critical — mmap causes severe slowdowns on UMA |
+| `--flash-attn on` | Always set | Reduces KV cache memory, stable at large context |
+| `--cache-type-k q8_0` | Default | 50% less KV memory vs f16 with minimal quality loss |
+
+### Important: do NOT use `RADV_PERFTEST=nogttspill`
+
+Since all inference runs in GTT (not VRAM), preventing GTT spilling would be counterproductive.  The standard RADV memory management handles GTT-only operation correctly.
+
+---
+
+## Environment variables
+
+Set automatically per backend by `server.py`:
+
+### Vulkan (RADV)
+```
+AMD_VULKAN_ICD=RADV
+HSA_ENABLE_SDMA=0
+GGML_VK_PREFER_HOST_MEMORY=0
+```
+
+### Vulkan (AMDVLK)
+```
+AMD_VULKAN_ICD=AMDVLK
+HSA_ENABLE_SDMA=0
+GGML_VK_PREFER_HOST_MEMORY=0
+```
+
+### ROCm (HIP)
+```
+HSA_ENABLE_SDMA=0
+ROCBLAS_USE_HIPBLASLT=1
+HIP_VISIBLE_DEVICES=0
+```
+
+---
 
 ## API access
 
-The server is OpenAI-compatible on port 8000:
+Once the server is ready, the endpoint is OpenAI-compatible at port 8000:
 
 ```bash
+# List loaded models
 curl http://localhost:8000/v1/models
 
+# Chat completion
 curl http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "qwen3-coder-next-q6",
-    "messages": [{"role": "user", "content": "Hello!"}],
+    "model": "nemotron-nano-q4",
+    "messages": [{"role": "user", "content": "Hello"}],
     "max_tokens": 256
   }'
 ```
 
-Works with Open WebUI, Continue, Cursor, or any OpenAI-compatible client.
+Works as a drop-in replacement for the OpenAI API in any compatible client (Open WebUI, Continue, Cursor, Claude Code, etc.).
 
-## Migrating from the old bash scripts
+---
 
-The old `load_*.sh` scripts, `config.env`, `lib.sh`, and `docker-compose*.yml`
-files are no longer needed.  The Python rewrite:
+## Adding new models
 
-- Eliminates ~500 lines of duplicated bash across 10+ loader scripts
-- Builds llama.cpp natively (faster than Docker containers)
-- Defines all model config as data (not imperative scripts)
-- Replaces draft-model speculation with n-gram for models where it doesn't help
-- Tunes batch sizes and threads based on community benchmarks
-- Curated model list focused on best-in-class for each use case
+Add a new `ModelConfig` to the `MODELS` list in `models.py`:
 
-## Updating llama.cpp
-
-```bash
-python server.py build             # pulls latest + rebuilds
-python server.py build --rebuild   # clean rebuild from scratch
+```python
+ModelConfig(
+    name="My Model (Q4_K_M)",
+    alias="my-model-q4",
+    hf_repo="owner/repo-GGUF",
+    dest_dir=MODELS_DIR / "owner/repo",
+    download_include="*Q4_K_M*.gguf",
+    shard_glob="*Q4_K_M*.gguf",
+    quant="Q4_K_M",
+    parallel_slots=4,        # start conservative, tune with bench-parallel
+    max_parallel=8,
+    ctx_per_slot=32768,
+    spec=SpecConfig(strategy="ngram"),
+)
 ```
 
-## Future work
+Then tune: `python server.py bench-parallel my-model-q4`
 
-Things to revisit as llama.cpp and the ecosystem evolve:
-
-**Multi-Token Prediction (MTP) for Nemotron 3 Super and GLM 4.7.**
-Nemotron 3 Super and GLM 4.7 ship with built-in MTP
-heads that enable self-speculative decoding without a separate draft model.
-llama.cpp currently skips these layers when loading the model.  There is
-active development (PR #20700 adds MTP for Qwen3.5, PR #18886 defines an
-MTP API) but nothing merged for Nemotron or GLM architectures yet.  Once
-MTP support lands, these models should see significant speedups — MTP uses
-less than 1% additional memory compared to the bandwidth cost of a
-separate draft model.  When this ships, update the spec config for these
-models from `strategy="ngram"` to whatever the MTP flag ends up being, and
-re-run `bench-all` to measure the improvement.
-
-**Qwen3-Coder-Next Vulkan ubatch regression (issue #18725).**
-On Strix Halo with Vulkan/RADV, Qwen3-Coder-Next (and Qwen3-Next models
-generally) suffer a prompt-processing performance regression when ubatch
-size exceeds 512 — performance roughly halves.  This appears to be
-specific to this model architecture on this GPU.  We currently work around
-it with `-ub 512` in the model config.  Monitor the upstream issue; when
-it's fixed, the model can be switched back to the standard `-ub 256` that
-other models use (or higher), which should improve PP throughput.
-
-**NPU (XDNA 2) for prompt processing.**
-The Strix Halo's 50 TOPS NPU is detected by Linux (kernel 6.14+) and
-ROCm is adding support, but llama.cpp has no XDNA backend.  The only
-current NPU path is Lemonade Server SDK on Windows, which is limited to
-~8B models with 2K-3K context — not useful for our workloads.  If a
-llama.cpp XDNA backend or a hybrid NPU+iGPU inference path emerges for
-Linux, it could meaningfully reduce time-to-first-token on long prompts
-by offloading prompt processing to the NPU while the iGPU handles
-generation.
-
-**AMDVLK discontinuation.**
-As of September 2025, AMD has discontinued AMDVLK in favor of focusing on
-Mesa RADV.  The driver still works and can still be faster for token
-generation, but expect no further updates.  RADV is improving rapidly and
-the gap is narrowing.  Eventually the `--backend amdvlk` option may
-become irrelevant.
-
-**Eagle-3 speculative decoding.**
-Eagle-3 is the current state-of-the-art speculative decoding algorithm
-(2-2.5x speedup in other frameworks).  llama.cpp does not support it yet
-but there is active discussion (#15902) and a PR in progress (#18039).
-Eagle-3 checkpoints are available on Hugging Face for several model
-families.  When support lands, this could be a significant speedup for
-larger dense models and MoE models with higher active param counts.
+---
 
 ## Troubleshooting
 
-**Build fails with missing Vulkan headers** — Install the Vulkan development
-packages listed in Quick Start above.
+**Server fails to start with ROCm:**
+Ensure `/dev/kfd` and `/dev/dri` are accessible and your user is in the `video` and `render` groups.
 
-**`vulkaninfo` shows no devices** — Make sure your user is in the `video` and
-`render` groups: `sudo usermod -aG video,render $USER` then log out/in.
+**Very slow first run:**
+llama.cpp performs a warm-up pass on startup.  Normal for large models — takes 30–90s.
 
-**Server starts but inference is slow** — Check that `--no-mmap` is set (it is by
-default).  Memory mapping causes severe slowdowns with Vulkan on large models.
+**Out of memory:**
+Close other RAM-heavy applications.  Try a lower quant or reduce `ctx_per_slot`.
 
-**Out of memory** — The UMA pool is shared between CPU and GPU.  Close other
-applications or try a smaller quant / lower context size.
+**Prefill much slower than generation (Vulkan):**
+This is expected — Vulkan's GEMM shaders can't use RDNA 3.5 matrix units.  Build and test with `--backend rocm` for better prefill.  See the benchmarking section.
+
+**GLM 4.7 Flash hangs with `--parallel > 1`:**
+Known issue — concurrent generation collapses to ~3 tok/s.  Keep this model at `parallel_slots=1`.

@@ -1,4 +1,4 @@
 #!/usr/bin/env bash
 SCRIPT_DIR="$(realpath "$(dirname "$0")")"
-python3 server.py bench
-popd > /dev/null
+cd "$SCRIPT_DIR"
+python3 server.py bench "$@"
