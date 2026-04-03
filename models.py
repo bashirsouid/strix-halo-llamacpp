@@ -1,25 +1,24 @@
-"""
-Model catalog for Strix Halo llama.cpp launcher.
+"""Model catalog for Strix Halo llama.cpp launcher.
 
-Each model is a ModelConfig dataclass.  Add new models by appending to MODELS.
+Each model is a ModelConfig dataclass.
+Add new models by appending to MODELS.
 The server reads this list at startup — nothing else to change.
 
 Parallelization and context strategy
-─────────────────────────────────────
-  parallel_slots  — number of concurrent request slots (--parallel / -np).
-                    Higher values increase *aggregate* throughput when multiple
-                    requests arrive simultaneously, at the cost of per-request
-                    latency and memory.  For single-user interactive use, 1 is
-                    usually fastest.  For API / multi-agent workloads, 2-6 on
-                    small MoE models can significantly boost total tok/s.
+  parallel_slots   number of concurrent request slots (--parallel / -np).
+                   Higher values increase *aggregate* throughput when multiple
+                   requests arrive simultaneously, at the cost of per-request
+                   latency and memory.  For single-user interactive use, 1 is
+                   usually fastest.  For API / multi-agent workloads, 2-6 on
+                   small MoE models can significantly boost total tok/s.
 
-  ctx_per_slot    — context window *per slot* (in tokens).  The total context
-                    passed to llama-server is ctx_per_slot × parallel_slots.
-                    This keeps each request's usable context constant regardless
-                    of how many slots are active.
+  ctx_per_slot     context window *per slot* (in tokens).  The total context
+                   passed to llama-server is ctx_per_slot × parallel_slots.
+                   This keeps each request's usable context constant regardless
+                   of how many slots are active.
 
-  max_parallel    — upper bound for the bench-parallel sweep.  The sweep will
-                    test --np 1 … max_parallel and find the throughput peak.
+  max_parallel     upper bound for the bench-parallel sweep.  The sweep will
+                   test --np 1…max_parallel and find the throughput peak.
 
 Use `python server.py bench-parallel [MODEL]` to find the optimal slot count
 for your exact hardware config, then update parallel_slots to match.
@@ -32,7 +31,7 @@ from pathlib import Path
 MODELS_DIR = Path("/mnt/data/models")
 
 
-# ── dataclasses ──────────────────────────────────────────────────────────────
+# ── dataclasses ──
 
 @dataclass
 class DraftModel:
@@ -51,10 +50,10 @@ class SpecConfig:
     """Speculation strategy for a model.
 
     strategy:
-        "draft"        – use a separate small draft model
-        "ngram"        – draftless n-gram self-speculation  (best for MoE on UMA)
-        "draft+ngram"  – combine both (ngram has priority when it matches)
-        None           – no speculation
+        "draft"         use a separate small draft model
+        "ngram"         draftless n-gram self-speculation  (best for MoE on UMA)
+        "draft+ngram"   combine both (ngram has priority when it matches)
+        None            no speculation
     """
     strategy: str | None = None
 
@@ -106,22 +105,22 @@ class ModelConfig:
     shard_glob: str             # glob to find shard-1 (the file passed to -m)
     quant: str = ""             # quantization level (e.g. "Q4_K_M", "Q6_K")
 
-    # ── Parallelization ──────────────────────────────────────────────────────
+    #  Parallelization  
     parallel_slots: int = 1     # --parallel / -np (concurrent request slots)
     max_parallel: int = 8       # upper bound for bench-parallel sweep
     ctx_per_slot: int = 32768   # context window per slot (total = this × slots)
 
-    # ── Inference tuning ─────────────────────────────────────────────────────
+    #  Inference tuning  
     batch_size: int = 4096      # -b   (logical max batch)
     ubatch_size: int = 256      # -ub  (physical max ubatch)
     threads: int = 4            # -t   (CPU threads)
     cache_type_k: str = "q8_0"  # --cache-type-k  (q8_0 saves ~50% vs f16)
     cache_type_v: str = "q8_0"  # --cache-type-v
 
-    # ── Speculation ──────────────────────────────────────────────────────────
+    #  Speculation  
     spec: SpecConfig = field(default_factory=SpecConfig)
 
-    # ── Extras ───────────────────────────────────────────────────────────────
+    #  Extras  
     chat_template_file: str | None = None
     extra_args: list[str] = field(default_factory=list)
     notes: str = ""
@@ -186,10 +185,10 @@ class ModelConfig:
         return args
 
 
-# ── Model catalog ────────────────────────────────────────────────────────────
+# ── Model catalog ──
 #
 # Defaults tuned for:
-#   AMD Ryzen AI Max 395  ·  96 GB system RAM  ·  90 GB mapped to GPU
+#   AMD Ryzen AI Max 395 ·  96 GB system RAM ·  90 GB mapped to GPU
 #   Vulkan (RADV) backend
 #
 # Run `python server.py bench-parallel MODEL` to find the optimal
@@ -200,9 +199,10 @@ class ModelConfig:
 #   q8_0 KV cache ≈ 1 byte per element.  Per-token KV size varies by arch
 #   but for MoE models with small active params, KV is very manageable.
 
+
 MODELS: list[ModelConfig] = [
 
-    # ── Qwen3 Coder Next  ────────────────────────────────────────────────────
+    # ── Qwen3 Coder Next ──
     # ~62 GB model weight at Q6_K → ~26 GB left for KV + overhead
     ModelConfig(
         name="Qwen3 Coder Next (Q6_K)",
@@ -219,16 +219,16 @@ MODELS: list[ModelConfig] = [
         spec=SpecConfig(strategy="ngram"),
         extra_args=["--temp", "1.0", "--top-p", "0.95", "--top-k", "40", "--min-p", "0.01"],
         notes=(
-            "Best for: coding agents, tool calling, agentic workflows.  "
-            "MoE 80B (3B active).  #1 on SWE-rebench.  ~62 GB at Q6_K.  "
-            "Non-thinking — fast direct responses, no <think> blocks.  "
-            "Bug: -ub must be 512 on Strix Halo Vulkan (issue #18725).  "
+            "Best for: coding agents, tool calling, agentic workflows. "
+            "MoE 80B (3B active). #1 on SWE-rebench. ~62 GB at Q6_K. "
+            "Non-thinking — fast direct responses, no <think> blocks. "
+            "Bug: -ub must be 512 on Strix Halo Vulkan (issue #18725). "
             "Bug: Do NOT use Q6_K_XL — broken architecture detection."
         ),
     ),
 
-    # ── GLM 4.7 Flash  ───────────────────────────────────────────────────────
-    # ~30 GB at Q8 → ~58 GB for KV + overhead → plenty of room
+    # ── GLM 4.7 Flash ──
+    # ~30 GB at Q8 → ~58 GB for KV + overhead — plenty of room
     ModelConfig(
         name="GLM 4.7 Flash (Q8_K_XL)",
         alias="glm-4.7-flash-q8",
@@ -245,13 +245,13 @@ MODELS: list[ModelConfig] = [
         notes=(
             "Best for: code + chat at high speed, interleaved thinking."
             "Parallelism is only effective on ROCM; latest testing is slower than sequential on RADV."
-            "MoE 30B (3B active).  Best 30B model on SWE-Bench + GPQA."
-            "~30 GB at Q8 — near-lossless, fits easily.  200K context."
+            "MoE 30B (3B active). Best 30B model on SWE-Bench + GPQA."
+            "~30 GB at Q8 — near-lossless, fits easily. 200K context."
             "Bug: needs --repeat-penalty 1.0 and --min-p 0.01."
         ),
     ),
 
-    # ── Qwen3.5 35B  ─────────────────────────────────────────────────────────
+    # ── Qwen3.5 35B ──
     # ~48 GB at Q8_K_XL → ~40 GB for KV + overhead
     ModelConfig(
         name="Qwen3.5 35B (Q8_K_XL)",
@@ -267,13 +267,70 @@ MODELS: list[ModelConfig] = [
         spec=SpecConfig(strategy="ngram"),
         extra_args=["--temp", "0.6", "--top-p", "0.95", "--top-k", "20", "--repeat-penalty", "1.0"],
         notes=(
-            "Best for: reasoning, summarization, general-purpose.  "
-            "MoE 35B (3B active).  Thinking mode on by default.  "
-            "~48 GB at Q8_K_XL — high quality.  Multimodal."
+            "Best for: reasoning, summarization, general-purpose. "
+            "MoE 35B (3B active). Thinking mode on by default. "
+            "~48 GB at Q8_K_XL — high quality. Multimodal."
         ),
     ),
 
-    # ── Mistral Small 4  ─────────────────────────────────────────────────────
+    # ── Gemma 4 26B A4B MoE ──
+    # ~27 GB at Q8_0 → ~63 GB for KV + overhead — fast MoE, excellent room
+    ModelConfig(
+        name="Gemma 4 26B A4B (Q8_0)",
+        alias="gemma4-26b-a4b-q8",
+        hf_repo="unsloth/gemma-4-26B-A4B-it-GGUF",
+        dest_dir=MODELS_DIR / "unsloth/gemma-4-26B-A4B-it-GGUF",
+        download_include="*Q8_0*",
+        shard_glob="*Q8_0*.gguf",
+        quant="Q8_0",
+        parallel_slots=1,
+        max_parallel=6,
+        ctx_per_slot=262144,
+        ubatch_size=256,
+        spec=SpecConfig(strategy="ngram"),
+        extra_args=["--temp", "1.0", "--top-p", "0.95", "--top-k", "64"],
+        notes=(
+            "Best for: code, tool calling, reasoning, vision (with mmproj). "
+            "MoE 25.2B (3.8B active). 128 experts, 8 active + 1 shared. "
+            "~27 GB at Q8_0 — near-lossless, fast MoE inference (~50-70 tok/s). "
+            "256K native context. Native function calling baked into training. "
+            "Thinking mode: add <|think|> at start of system prompt to enable. "
+            "Google-recommended sampling: temp=1.0, top_p=0.95, top_k=64. "
+            "Vision: download mmproj-BF16.gguf separately, use --mmproj flag. "
+            "Apache 2.0. Day-1 note: tool-call templates still maturing in llama.cpp."
+        ),
+    ),
+
+    # ── Gemma 4 31B Dense ──
+    # ~32.6 GB at Q8_0 → ~57 GB for KV + overhead
+    ModelConfig(
+        name="Gemma 4 31B Dense (Q8_0)",
+        alias="gemma4-31b-q8",
+        hf_repo="unsloth/gemma-4-31B-it-GGUF",
+        dest_dir=MODELS_DIR / "unsloth/gemma-4-31B-it-GGUF",
+        download_include="*Q8_0*",
+        shard_glob="*Q8_0*.gguf",
+        quant="Q8_0",
+        parallel_slots=1,
+        max_parallel=2,
+        ctx_per_slot=32768,
+        ubatch_size=256,
+        extra_args=["--temp", "1.0", "--top-p", "0.95", "--top-k", "64"],
+        notes=(
+            "Best for: maximum code quality, hard reasoning, vision. "
+            "Dense 30.7B — all params active every token. SLOW (~6-8 tok/s). "
+            "~32.6 GB at Q8_0. Highest benchmarks: LCB 80.0%, CF ELO 2150, "
+            "GPQA 84.3%, AIME 89.2%. Use for hard single-shot problems where "
+            "you can wait — too slow for interactive agentic loops. "
+            "Thinking mode: add <|think|> at start of system prompt to enable. "
+            "Google-recommended sampling: temp=1.0, top_p=0.95, top_k=64. "
+            "Vision: download mmproj-BF16.gguf separately, use --mmproj flag. "
+            "Apache 2.0. No speculation — dense models don't benefit much from "
+            "ngram on UMA, and draft models add memory pressure."
+        ),
+    ),
+
+    # ── Mistral Small 4 ──
     # ~50–60 GB at Q4 → ~28–38 GB for KV + overhead
     ModelConfig(
         name="Mistral Small 4 (Q4_K_M)",
@@ -298,13 +355,13 @@ MODELS: list[ModelConfig] = [
             draft_min=2,
         ),
         notes=(
-            "Best for: all-round chat + code, tool calling.  "
-            "MoE 119B (6.5B active).  Largest model that fits well at Q4.  "
+            "Best for: all-round chat + code, tool calling. "
+            "MoE 119B (6.5B active). Largest model that fits well at Q4. "
             "Only model where draft-model speculation helps on UMA."
         ),
     ),
 
-    # ── Nemotron 3 Super  ────────────────────────────────────────────────────
+    # ── Nemotron 3 Super ──
     # ~50–60 GB at Q4 → ~28–38 GB for KV + overhead
     ModelConfig(
         name="Nemotron 3 Super (Q4_K_M)",
@@ -320,14 +377,14 @@ MODELS: list[ModelConfig] = [
         spec=SpecConfig(strategy="ngram"),
         extra_args=["--temp", "0.6", "--top-p", "0.95"],
         notes=(
-            "Best for: long-context reasoning, multi-agent workflows.  "
-            "Hybrid Mamba2-Transformer MoE 120B (12B active).  "
+            "Best for: long-context reasoning, multi-agent workflows. "
+            "Hybrid Mamba2-Transformer MoE 120B (12B active). "
             "Natively supports 1M context (limited here by memory)."
         ),
     ),
 
-    # ── Nemotron Nano Q4  ────────────────────────────────────────────────────
-    # ~6 GB at Q4 → ~82 GB for KV + overhead → max parallelism
+    # ── Nemotron Nano Q4 ──
+    # ~6 GB at Q4 → ~82 GB for KV + overhead — max parallelism
     ModelConfig(
         name="Nemotron Nano (Q4_K_M)",
         alias="nemotron-nano-q4",
@@ -342,13 +399,13 @@ MODELS: list[ModelConfig] = [
         spec=SpecConfig(strategy="ngram"),
         extra_args=["--temp", "0.6", "--top-p", "0.95"],
         notes=(
-            "Best for: speed, lightweight tasks, quick iteration.  "
-            "MoE 30B (3B active).  Fastest model in catalog (~60+ tok/s).  "
+            "Best for: speed, lightweight tasks, quick iteration. "
+            "MoE 30B (3B active). Fastest model in catalog (~60+ tok/s). "
             "Good for drafting, quick Q&A, low-latency tool calls."
         ),
     ),
 
-    # ── Nemotron Nano Q8  ────────────────────────────────────────────────────
+    # ── Nemotron Nano Q8 ──
     # ~12 GB at Q8 → ~76 GB for KV + overhead
     ModelConfig(
         name="Nemotron Nano (UD-Q8_K_XL)",
@@ -364,15 +421,15 @@ MODELS: list[ModelConfig] = [
         spec=SpecConfig(strategy="ngram"),
         extra_args=["--temp", "0.6", "--top-p", "0.95"],
         notes=(
-            "Best for: speed/quality balance, lightweight tasks.  "
-            "MoE 30B (3B active).  ~45+ tok/s at Q8.  "
+            "Best for: speed/quality balance, lightweight tasks. "
+            "MoE 30B (3B active). ~45+ tok/s at Q8. "
             "Good for drafting, quick Q&A, low-latency tool calls."
         ),
     ),
 ]
 
 
-# ── helpers ──────────────────────────────────────────────────────────────────
+# ── helpers ──
 
 def get_model(name_or_alias: str) -> ModelConfig:
     """Look up a model by name, alias, or unambiguous substring."""
@@ -388,6 +445,6 @@ def get_model(name_or_alias: str) -> ModelConfig:
         names = ", ".join(m.alias for m in matches)
         raise ValueError(f"Ambiguous model name '{name_or_alias}' — matches: {names}")
     raise ValueError(
-        f"Unknown model '{name_or_alias}'.  Available: "
+        f"Unknown model '{name_or_alias}'. Available: "
         + ", ".join(m.alias for m in MODELS)
     )

@@ -32,6 +32,7 @@ import sys
 import textwrap
 import time
 import urllib.request
+import re
 from pathlib import Path
 
 from models import MODELS, get_model, ModelConfig
@@ -1406,6 +1407,20 @@ def run_evalplus(port: int, suite: str, model_alias: str,
     info(f"EvalPlus finished in {elapsed:.1f}s — status: {ok_str}")
     info(f"Raw output saved to {raw_path}")
 
+    # Parse pass@1 from log output
+    pass_at_1_base = None
+    pass_at_1_plus = None
+    try:
+        matches = re.findall(r"pass@1:\s+([\d.]+)", proc.stdout)
+        if len(matches) >= 1:
+            pass_at_1_base = float(matches[0])
+        if len(matches) >= 2:
+            pass_at_1_plus = float(matches[1])
+        if pass_at_1_base is not None:
+            ok(f"Base pass@1: {pass_at_1_base:.1%}  Plus pass@1: {pass_at_1_plus:.1%}")
+    except Exception as e:
+        warn(f"Could not parse EvalPlus scores: {e}")
+
     # Attach quant if we know this model
     quant = ""
     try:
@@ -1423,9 +1438,8 @@ def run_evalplus(port: int, suite: str, model_alias: str,
         "ok": (proc.returncode == 0),
         "wall_time_sec": round(elapsed, 1),
         "raw_log": str(raw_path.relative_to(PROJECT_DIR)),
-        # Room to add parsed metrics later, e.g.:
-        # "pass_at_1": ...,
-        # "pass_at_10": ...,
+        "pass_at_1_base": pass_at_1_base,
+        "pass_at_1_plus": pass_at_1_plus,
     }
 
     with open(EVAL_RESULTS_FILE, "a") as f:
