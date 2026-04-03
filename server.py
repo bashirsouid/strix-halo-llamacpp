@@ -55,6 +55,8 @@ LLAMA_BUILD_LEGACY = LLAMA_SRC / "build"
 VALID_BACKENDS = ("radv", "amdvlk", "rocm")
 VULKAN_BACKENDS = ("radv", "amdvlk")
 
+EVAL_RESULTS_FILE = PROJECT_DIR / "eval_results.jsonl"
+EVAL_RAW_DIR      = PROJECT_DIR / "eval_raw"
 
 def _build_dir(backend: str) -> Path:
     """Return the build directory for a given backend."""
@@ -1243,6 +1245,74 @@ def bench_single(model_alias: str, port: int = 8000, backend: str = "radv") -> d
 
     return result
 
+def eval_single(model_alias: str | None,
+                suite: str = "humaneval",
+                port: int = 8000,
+                backend: str = "radv") -> dict:
+    """Start a model, run EvalPlus on it, stop it, return summary dict."""
+    if model_alias is None:
+        cfg = resolve_model(None, prompt_text="Pick a model to evaluate")
+    else:
+        cfg = get_model(model_alias)
+
+    if not cfg.is_downloaded:
+        fail(f"Skipping {cfg.name} — not downloaded.")
+        return {"ok": False}
+
+    info(f"═══ Evaluating: {cfg.name} ({cfg.alias})  np={cfg.parallel_slots}  "
+         f"{backend}  suite={suite} ═══")
+
+    # Launch server with the model's preferred np (like bench_single)
+    launch_server(cfg, port=port, backend=backend)
+
+    try:
+        result = run_evalplus(port=port, suite=suite,
+                              model_alias=cfg.alias, backend=backend)
+    finally:
+        stop_server()
+        time.sleep(2)
+
+    return result
+
+def eval_all(suite: str = "humaneval",
+             port: int = 8000,
+             backend: str = "radv"):
+    """Run EvalPlus for every downloaded model and print a summary."""
+    downloaded = [m for m in MODELS if m.is_downloaded]
+    if not downloaded:
+        fail("No models downloaded.  Run 'python server.py download MODEL' first.")
+        sys.exit(1)
+
+    info(f"Found {len(downloaded)} downloaded models.  "
+         f"Running EvalPlus ({suite}, {backend}) ...")
+    print()
+
+    summary: list[tuple[str, str, dict]] = []
+    for cfg in downloaded:
+        res = eval_single(cfg.alias, suite=suite, port=port, backend=backend)
+        summary.append((cfg.alias, cfg.name, res))
+        print()
+
+    timestamp = time.strftime("%Y-%m-%d %H:%M")
+    print()
+    print(f"  ══════════════════════════════════════════════════════════════════════════")
+    print(f"  Eval Report — {timestamp}")
+    print(f"  Backend: {backend.upper()}   Suite: {suite}")
+    print(f"  ──────────────────────────────────────────────────────────────────────────")
+    print(f"  {'Model':<32s}  {'OK':>2s}  {'Wall (s)':>9s}")
+    print(f"  {'─'*32}  {'─'*2}  {'─'*9}")
+
+    for alias, name, res in summary:
+        ok_flag = "✓" if res.get("ok") else "✗"
+        wall = res.get("wall_time_sec", 0.0)
+        print(f"  {name:<32s}  {ok_flag:>2s}  {wall:>9.1f}")
+
+    print(f"  ══════════════════════════════════════════════════════════════════════════")
+    print()
+
+    if EVAL_RESULTS_FILE.exists():
+        ok(f"All eval results logged to {EVAL_RESULTS_FILE}")
+    info("Raw EvalPlus output logs are under ./eval_raw/")
 
 def bench_all(port: int = 8000, backend: str = "radv"):
     """Benchmark every downloaded model at all payload tiers."""
@@ -1293,6 +1363,77 @@ def bench_all(port: int = 8000, backend: str = "radv"):
         ok(f"All results logged to {report_file}")
     info("Run with --backend rocm to compare.")
 
+
+def run_evalplus(port: int, suite: str, model_alias: str,
+                 backend: str = "radv") -> dict:
+    """Run EvalPlus (HumanEval/MBPP) against the running server and log output.
+
+    Returns a dict with status + wall time. We don't try to parse pass@k yet;
+    instead we store raw stdout in a file and reference it from JSONL.
+    """
+    EVAL_RAW_DIR.mkdir(parents=True, exist_ok=True)
+
+    timestamp = time.strftime("%Y-%m-%d_%H-%M-%S")
+    raw_fname = f"{timestamp}--{model_alias}--{suite}.log"
+    raw_path = EVAL_RAW_DIR / raw_fname
+
+    # EvalPlus CLI; assumes evalplus.evaluate is on PATH.
+    # Uses llama.cpp's OpenAI-compatible API on localhost.
+    cmd = [
+        "evalplus.evaluate",
+        "--model", f"strix-{model_alias}",
+        "--dataset", suite,              # "humaneval" or "mbpp"
+        "--backend", "openai",
+        "--base-url", f"http://127.0.0.1:{port}/v1",
+        "--greedy",
+    ]
+
+    info(f"Running EvalPlus for {model_alias} on {suite} "
+         f"(backend={backend}, port={port})")
+    info("Command: " + " ".join(cmd))
+
+    t0 = time.perf_counter()
+    proc = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    elapsed = time.perf_counter() - t0
+
+    raw_path.write_text(proc.stdout)
+    ok_str = "OK" if proc.returncode == 0 else f"FAIL ({proc.returncode})"
+    info(f"EvalPlus finished in {elapsed:.1f}s — status: {ok_str}")
+    info(f"Raw output saved to {raw_path}")
+
+    # Attach quant if we know this model
+    quant = ""
+    try:
+        quant = get_model(model_alias).quant
+    except ValueError:
+        pass
+
+    record = {
+        "timestamp": time.strftime("%Y-%m-%d %H:%M"),
+        "backend": backend,
+        "model": model_alias,
+        "quant": quant,
+        "suite": suite,                  # humaneval / mbpp / etc.
+        "eval_tool": "evalplus",
+        "ok": (proc.returncode == 0),
+        "wall_time_sec": round(elapsed, 1),
+        "raw_log": str(raw_path.relative_to(PROJECT_DIR)),
+        # Room to add parsed metrics later, e.g.:
+        # "pass_at_1": ...,
+        # "pass_at_10": ...,
+    }
+
+    with open(EVAL_RESULTS_FILE, "a") as f:
+        f.write(json.dumps(record) + "\n")
+
+    ok(f"Eval result appended to {EVAL_RESULTS_FILE}")
+
+    return record
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  LIST
@@ -1400,6 +1541,27 @@ def main():
     p_dl.add_argument("model", nargs="?", default=None,
                       help="Model alias or name (interactive picker if omitted)")
 
+    # eval
+    p_eval = sub.add_parser("eval",
+        help="Run EvalPlus coding benchmark for a single model")
+    p_eval.add_argument("model", nargs="?", default=None,
+                        help="Model to evaluate (omit for interactive picker)")
+    p_eval.add_argument("--suite", choices=["humaneval", "mbpp"],
+                        default="humaneval",
+                        help="EvalPlus suite (default: humaneval)")
+    p_eval.add_argument("--port", type=int, default=8000)
+    p_eval.add_argument("--backend", choices=["radv", "amdvlk", "rocm"],
+                        default="radv")
+
+    # eval-all
+    p_eval_all = sub.add_parser("eval-all",
+        help="Run EvalPlus for all downloaded models")
+    p_eval_all.add_argument("--suite", choices=["humaneval", "mbpp"],
+                            default="humaneval")
+    p_eval_all.add_argument("--port", type=int, default=8000)
+    p_eval_all.add_argument("--backend", choices=["radv", "amdvlk", "rocm"],
+                            default="radv")
+
     args = parser.parse_args()
 
     if args.command is None:
@@ -1467,6 +1629,12 @@ def main():
         cfg = resolve_model(args.model, "Pick a model to download")
         download_model(cfg)
 
+    elif args.command == "eval":
+        eval_single(args.model, suite=args.suite,
+                    port=args.port, backend=args.backend)
+    elif args.command == "eval-all":
+        eval_all(suite=args.suite,
+                 port=args.port, backend=args.backend)
 
 if __name__ == "__main__":
     main()
