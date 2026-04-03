@@ -1,0 +1,1 @@
+{"timestamp": "2026-04-03 09:07", "backend": "rocm", "model": "nemotron-nano-q4", "quant": "Q4_K_M", "suite": "humaneval", "eval_tool": "evalplus", "ok": true, "wall_time_sec": 2135.4, "raw_log": "eval_raw/2026-04-03_08-31-24--nemotron-nano-q4--humaneval.log"}
