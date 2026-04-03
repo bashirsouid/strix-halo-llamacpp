@@ -53,23 +53,23 @@
 <div class="container">
   <h1>🧪 Strix Halo Eval Results</h1>
   <p class="subtitle">
-    3 runs &middot;
-    3 models &middot;
+    4 runs &middot;
+    4 models &middot;
     1 backends &middot;
-    3 sessions
+    4 sessions
   </p>
 
   <div class="stats">
     <div class="stat">
-      <div class="stat-value">3</div>
+      <div class="stat-value">4</div>
       <div class="stat-label">Total Runs</div>
     </div>
     <div class="stat">
-      <div class="stat-value">3</div>
+      <div class="stat-value">4</div>
       <div class="stat-label">Models</div>
     </div>
     <div class="stat">
-      <div class="stat-value">3</div>
+      <div class="stat-value">4</div>
       <div class="stat-label">With Scores</div>
     </div>
     <div class="stat" style="flex: 2 1 200px;">
@@ -149,6 +149,17 @@
           <td class="mono">2135s (35.6m)</td>
           <td class="status ok">✓</td>
           <td class="mono dim">2026-04-03 09:07</td>
+        </tr>
+        <tr>
+          <td>qwen3.5-35b-q8</td>
+          <td class="mono">UD-Q8_K_XL</td>
+          <td class="mono">rocm</td>
+          <td class="mono">humaneval</td>
+          <td class="score low">48.8%</td>
+          <td class="score low">47.6%</td>
+          <td class="mono">3966s (66.1m)</td>
+          <td class="status ok">✓</td>
+          <td class="mono dim">2026-04-03 13:17</td>
         </tr></tbody>
     </table>
   </div>
@@ -162,21 +173,21 @@ Chart.defaults.borderColor = '#21262d';
 new Chart(document.getElementById('passChart'), {
   type: 'bar',
   data: {
-    labels: ["qwen3-coder-next-q6 (rocm, humaneval) [Q6_K]", "nemotron-nano-q8 (rocm, humaneval) [UD-Q8_K_XL]", "nemotron-nano-q4 (rocm, humaneval) [Q4_K_M]"],
+    labels: ["qwen3-coder-next-q6 (rocm, humaneval) [Q6_K]", "nemotron-nano-q8 (rocm, humaneval) [UD-Q8_K_XL]", "nemotron-nano-q4 (rocm, humaneval) [Q4_K_M]", "qwen3.5-35b-q8 (rocm, humaneval) [UD-Q8_K_XL]"],
     datasets: [
       {
         label: 'Base pass@1 (%)',
-        data: [92.1, 70.7, 68.3],
-        backgroundColor: ["#e63946", "#457b9d", "#2a9d8f"].map(c => c + 'aa'),
-        borderColor: ["#e63946", "#457b9d", "#2a9d8f"],
+        data: [92.1, 70.7, 68.3, 48.8],
+        backgroundColor: ["#e63946", "#457b9d", "#2a9d8f", "#e9c46a"].map(c => c + 'aa'),
+        borderColor: ["#e63946", "#457b9d", "#2a9d8f", "#e9c46a"],
         borderWidth: 1,
         borderRadius: 3,
       },
       {
         label: 'Plus pass@1 (%)',
-        data: [88.4, 68.9, 67.1],
-        backgroundColor: ["#e63946", "#457b9d", "#2a9d8f"],
-        borderColor: ["#e63946", "#457b9d", "#2a9d8f"],
+        data: [88.4, 68.9, 67.1, 47.6],
+        backgroundColor: ["#e63946", "#457b9d", "#2a9d8f", "#e9c46a"],
+        borderColor: ["#e63946", "#457b9d", "#2a9d8f", "#e9c46a"],
         borderWidth: 1,
         borderRadius: 3,
       },
@@ -208,7 +219,7 @@ new Chart(document.getElementById('passChart'), {
 new Chart(document.getElementById('scatterChart'), {
   type: 'scatter',
   data: {
-    datasets: [{"x": 2135.4, "y": 67.1, "label": "nemotron-nano-q4 (rocm, humaneval) [Q4_K_M]", "color": "#e63946"}, {"x": 3023.4, "y": 68.9, "label": "nemotron-nano-q8 (rocm, humaneval) [UD-Q8_K_XL]", "color": "#457b9d"}, {"x": 1359.4, "y": 88.4, "label": "qwen3-coder-next-q6 (rocm, humaneval) [Q6_K]", "color": "#2a9d8f"}].map((pt, i) => ({
+    datasets: [{"x": 2135.4, "y": 67.1, "label": "nemotron-nano-q4 (rocm, humaneval) [Q4_K_M]", "color": "#e63946"}, {"x": 3023.4, "y": 68.9, "label": "nemotron-nano-q8 (rocm, humaneval) [UD-Q8_K_XL]", "color": "#457b9d"}, {"x": 1359.4, "y": 88.4, "label": "qwen3-coder-next-q6 (rocm, humaneval) [Q6_K]", "color": "#2a9d8f"}, {"x": 3965.5, "y": 47.6, "label": "qwen3.5-35b-q8 (rocm, humaneval) [UD-Q8_K_XL]", "color": "#e9c46a"}].map((pt, i) => ({
       label: pt.label,
       data: [{ x: pt.x, y: pt.y }],
       backgroundColor: pt.color,
@@ -246,10 +257,10 @@ new Chart(document.getElementById('scatterChart'), {
 new Chart(document.getElementById('wallChart'), {
   type: 'bar',
   data: {
-    labels: ["qwen3-coder-next-q6 (rocm, humaneval) [Q6_K]", "nemotron-nano-q4 (rocm, humaneval) [Q4_K_M]", "nemotron-nano-q8 (rocm, humaneval) [UD-Q8_K_XL]"],
+    labels: ["qwen3-coder-next-q6 (rocm, humaneval) [Q6_K]", "nemotron-nano-q4 (rocm, humaneval) [Q4_K_M]", "nemotron-nano-q8 (rocm, humaneval) [UD-Q8_K_XL]", "qwen3.5-35b-q8 (rocm, humaneval) [UD-Q8_K_XL]"],
     datasets: [{
-      data: [1359.4, 2135.4, 3023.4],
-      backgroundColor: ["#e63946", "#457b9d", "#2a9d8f"],
+      data: [1359.4, 2135.4, 3023.4, 3965.5],
+      backgroundColor: ["#e63946", "#457b9d", "#2a9d8f", "#e9c46a"],
       borderRadius: 4,
     }]
   },
@@ -279,26 +290,33 @@ new Chart(document.getElementById('wallChart'), {
 new Chart(document.getElementById('wallHistoryChart'), {
   type: 'line',
   data: {
-    labels: ["2026-04-03 09:07", "2026-04-03 11:25", "2026-04-03 12:00"],
+    labels: ["2026-04-03 09:07", "2026-04-03 11:25", "2026-04-03 12:00", "2026-04-03 13:17"],
     datasets: [{
             label: "nemotron-nano-q4 (rocm, humaneval) [Q4_K_M]",
-            data: [2135.4, null, null],
+            data: [2135.4, null, null, null],
             borderColor: '#e63946',
             backgroundColor: '#e6394633',
             borderWidth: 2, pointRadius: 4, pointHoverRadius: 6,
             tension: 0.2, spanGaps: true,
         }, {
             label: "nemotron-nano-q8 (rocm, humaneval) [UD-Q8_K_XL]",
-            data: [null, 3023.4, null],
+            data: [null, 3023.4, null, null],
             borderColor: '#457b9d',
             backgroundColor: '#457b9d33',
             borderWidth: 2, pointRadius: 4, pointHoverRadius: 6,
             tension: 0.2, spanGaps: true,
         }, {
             label: "qwen3-coder-next-q6 (rocm, humaneval) [Q6_K]",
-            data: [null, null, 1359.4],
+            data: [null, null, 1359.4, null],
             borderColor: '#2a9d8f',
             backgroundColor: '#2a9d8f33',
+            borderWidth: 2, pointRadius: 4, pointHoverRadius: 6,
+            tension: 0.2, spanGaps: true,
+        }, {
+            label: "qwen3.5-35b-q8 (rocm, humaneval) [UD-Q8_K_XL]",
+            data: [null, null, null, 3965.5],
+            borderColor: '#e9c46a',
+            backgroundColor: '#e9c46a33',
             borderWidth: 2, pointRadius: 4, pointHoverRadius: 6,
             tension: 0.2, spanGaps: true,
         }]
