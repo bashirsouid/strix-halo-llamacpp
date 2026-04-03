@@ -3,7 +3,9 @@
 Parallel benchmark viewer — reads bench_parallel_results.jsonl and opens
 interactive charts in your browser.  No dependencies beyond Python stdlib.
 
-For each model, shows the most recent measurement at each --parallel value.
+Shows performance at small, medium, and large payloads so you can find the
+right parallelization level for your workload.  Backward-compatible with
+older records that don't have a payload field (treated as "small").
 
 Usage:
     python parallel_viewer.py                              # default file
@@ -17,6 +19,13 @@ from pathlib import Path
 
 DEFAULT_FILE = Path(__file__).resolve().parent / "bench_parallel_results.jsonl"
 
+PAYLOAD_ORDER = ["small", "medium", "large"]
+PAYLOAD_DESC = {
+    "small":  "~50 input / 256 output (generation-dominant)",
+    "medium": "~1K input / 512 output (balanced)",
+    "large":  "~8K input / 2K output (prefill-heavy)",
+}
+
 
 def load_records(path: Path) -> list[dict]:
     records = []
@@ -25,56 +34,71 @@ def load_records(path: Path) -> list[dict]:
         if not line or not line.startswith("{"):
             continue
         try:
-            records.append(json.loads(line))
+            r = json.loads(line)
+            # Backward compat: old records have no "payload" field
+            if "payload" not in r:
+                r["payload"] = "small"
+            records.append(r)
         except json.JSONDecodeError:
             pass
     return records
 
 
 def _model_key(r: dict) -> str:
-    """Display label for a model series."""
     return f"{r['model']} ({r['backend']})"
 
 
-def _dedupe_latest(records: list[dict]) -> dict[str, dict[int, dict]]:
-    """For each model, keep only the most recent record per np value.
+def _dedupe_latest(records: list[dict]) -> dict[str, dict[str, dict[int, dict]]]:
+    """For each model+backend, payload, np → keep latest record.
 
-    Returns: { model_key: { np: record, ... }, ... }
+    Returns: { model_key: { payload: { np: record } } }
     """
-    grouped: dict[str, dict[int, dict]] = {}
+    grouped: dict[str, dict[str, dict[int, dict]]] = {}
     for r in records:
         key = _model_key(r)
-        np = r["np"]
-        existing = grouped.setdefault(key, {}).get(np)
+        payload = r["payload"]
+        np_val = r["np"]
+        bucket = grouped.setdefault(key, {}).setdefault(payload, {})
+        existing = bucket.get(np_val)
         if existing is None or r["timestamp"] > existing["timestamp"]:
-            grouped[key][np] = r
+            bucket[np_val] = r
     return grouped
 
 
 def generate_html(records: list[dict]) -> str:
     grouped = _dedupe_latest(records)
 
-    # Palette — enough for many models
+    # Colors per model series
     palette = [
         "#2a9d8f", "#7f77dd", "#457b9d", "#e63946", "#e9c46a",
         "#f4a261", "#264653", "#b5838d", "#ffb703", "#8ecae6",
         "#6d6875", "#023047",
     ]
 
+    # Determine all np values and payloads present
     all_np = sorted(set(r["np"] for r in records))
     max_np = max(all_np) if all_np else 12
     np_labels = list(range(1, max_np + 1))
     np_labels_js = json.dumps(np_labels)
 
-    # ── Build Chart.js datasets for each chart type ──────────────────────
-    def _make_datasets(field: str) -> str:
+    payloads_present = sorted(
+        set(r["payload"] for r in records),
+        key=lambda p: PAYLOAD_ORDER.index(p) if p in PAYLOAD_ORDER else 99
+    )
+
+    model_keys = sorted(grouped.keys())
+
+    # ── Per-payload aggregate tok/s line charts ──────────────────────────
+    payload_charts_js = {}
+    for payload in payloads_present:
         datasets = []
-        for i, (key, np_map) in enumerate(sorted(grouped.items())):
+        for i, mk in enumerate(model_keys):
             color = palette[i % len(palette)]
-            data = [np_map[n][field] if n in np_map else "null"
+            np_map = grouped[mk].get(payload, {})
+            data = [np_map[n]["concurrent_agg_tok_s"] if n in np_map else "null"
                     for n in np_labels]
             datasets.append(f"""{{
-                label: {json.dumps(key)},
+                label: {json.dumps(mk)},
                 data: [{', '.join(str(d) for d in data)}],
                 borderColor: '{color}',
                 backgroundColor: '{color}33',
@@ -85,62 +109,134 @@ def generate_html(records: list[dict]) -> str:
                 tension: 0.25,
                 spanGaps: false,
             }}""")
-        return ', '.join(datasets)
+        payload_charts_js[payload] = ', '.join(datasets)
 
-    agg_datasets = _make_datasets("concurrent_agg_tok_s")
-    single_datasets = _make_datasets("single_tok_s")
-    perreq_datasets = _make_datasets("concurrent_per_req_tok_s")
+    # ── Per-payload single-request line charts ───────────────────────────
+    single_charts_js = {}
+    for payload in payloads_present:
+        datasets = []
+        for i, mk in enumerate(model_keys):
+            color = palette[i % len(palette)]
+            np_map = grouped[mk].get(payload, {})
+            data = [np_map[n]["single_tok_s"] if n in np_map else "null"
+                    for n in np_labels]
+            datasets.append(f"""{{
+                label: {json.dumps(mk)},
+                data: [{', '.join(str(d) for d in data)}],
+                borderColor: '{color}',
+                borderWidth: 2,
+                pointRadius: 3,
+                pointBackgroundColor: '{color}',
+                tension: 0.25,
+                spanGaps: false,
+            }}""")
+        single_charts_js[payload] = ', '.join(datasets)
 
-    # ── Summary stats ────────────────────────────────────────────────────
-    n_records = len(records)
-    n_models = len(grouped)
+    # ── Recommendation per model per payload ─────────────────────────────
+    reco: dict[str, dict[str, dict]] = {}  # model_key → payload → best record
+    for mk in model_keys:
+        reco[mk] = {}
+        for payload in payloads_present:
+            np_map = grouped[mk].get(payload, {})
+            if np_map:
+                best = max(np_map.values(), key=lambda r: r["concurrent_agg_tok_s"])
+                reco[mk][payload] = best
 
-    # Best aggregate per model
-    best_per_model = []
-    for key, np_map in sorted(grouped.items()):
-        best_rec = max(np_map.values(), key=lambda r: r["concurrent_agg_tok_s"])
-        best_per_model.append((key, best_rec))
-
-    overall_best = max(best_per_model, key=lambda x: x[1]["concurrent_agg_tok_s"])
+    # ── Summary: best np per model per payload (grouped bar) ─────────────
+    summary_datasets_js = []
+    payload_colors = {"small": "#2a9d8f", "medium": "#457b9d", "large": "#e63946"}
+    for payload in payloads_present:
+        color = payload_colors.get(payload, "#6e7681")
+        data = []
+        for mk in model_keys:
+            best = reco[mk].get(payload)
+            data.append(best["concurrent_agg_tok_s"] if best else 0)
+        summary_datasets_js.append(f"""{{
+            label: '{payload}',
+            data: {json.dumps(data)},
+            backgroundColor: '{color}',
+            borderColor: '{color}',
+            borderWidth: 1,
+            borderRadius: 4,
+        }}""")
 
     # ── Recommendation cards HTML ────────────────────────────────────────
     reco_cards = []
-    for key, rec in best_per_model:
-        np_val = rec["np"]
-        agg = rec["concurrent_agg_tok_s"]
-        single = rec["single_tok_s"]
-        is_best = (key == overall_best[0])
-        border = "border: 1px solid #58a6ff;" if is_best else "border: 1px solid #21262d;"
-        star = " ⭐" if is_best else ""
-        reco_cards.append(f"""
-        <div class="reco-card" style="{border}">
-          <div class="reco-model">{key}{star}</div>
-          <div class="reco-row">
-            <span class="reco-label">Best --parallel</span>
-            <span class="reco-value">{np_val}</span>
-          </div>
-          <div class="reco-row">
-            <span class="reco-label">Aggregate tok/s</span>
-            <span class="reco-value">{agg}</span>
-          </div>
-          <div class="reco-row">
-            <span class="reco-label">Single tok/s</span>
-            <span class="reco-value">{single}</span>
-          </div>
-        </div>""")
+    for mk in model_keys:
+        rows = []
+        for payload in payloads_present:
+            best = reco[mk].get(payload)
+            if best:
+                color = payload_colors.get(payload, "#6e7681")
+                rows.append(
+                    f'<div class="reco-row">'
+                    f'<span class="reco-label" style="color:{color}">{payload}</span>'
+                    f'<span class="reco-value">np={best["np"]}</span>'
+                    f'<span class="reco-sub">{best["concurrent_agg_tok_s"]} agg tok/s</span>'
+                    f'</div>'
+                )
+        reco_cards.append(
+            f'<div class="reco-card">'
+            f'<div class="reco-model">{mk}</div>'
+            + "".join(rows) +
+            f'</div>'
+        )
+    reco_html = "\n    ".join(reco_cards)
 
-    reco_html = "\n".join(reco_cards)
+    # ── Stats ────────────────────────────────────────────────────────────
+    n_records = len(records)
+    n_models = len(model_keys)
 
-    # ── Ranked bar chart data (best aggregate per model) ─────────────────
-    bar_items = sorted(best_per_model, key=lambda x: -x[1]["concurrent_agg_tok_s"])
-    bar_labels_js = json.dumps([f"{k}  np={r['np']}" for k, r in bar_items])
-    bar_agg_js = json.dumps([r["concurrent_agg_tok_s"] for _, r in bar_items])
-    bar_single_js = json.dumps([r["single_tok_s"] for _, r in bar_items])
-    bar_colors_js = json.dumps([palette[i % len(palette)]
-                                for i in range(len(bar_items))])
+    # Overall best
+    all_latest = [r for mk_payloads in grouped.values()
+                  for np_map in mk_payloads.values()
+                  for r in np_map.values()]
+    overall_best = max(all_latest, key=lambda r: r["concurrent_agg_tok_s"]) if all_latest else None
 
-    # ── Wall time dataset ────────────────────────────────────────────────
-    wall_datasets = _make_datasets("wall_time")
+    # ── Generate payload chart sections ──────────────────────────────────
+    payload_sections = []
+    for idx, payload in enumerate(payloads_present):
+        desc = PAYLOAD_DESC.get(payload, payload)
+        agg_id = f"aggChart_{payload}"
+        single_id = f"singleChart_{payload}"
+        color = payload_colors.get(payload, "#6e7681")
+
+        bar_height = max(250, n_models * 50)
+
+        payload_sections.append(f"""
+  <div class="section-label" style="border-color:{color};">{payload.upper()} payload — {desc}</div>
+
+  <div class="chart-box">
+    <h2>Aggregate throughput vs --parallel ({payload})</h2>
+    <div class="desc">Total tok/s when all slots generate concurrently.  Find the peak — that's your optimal np for this payload.</div>
+    <div style="position:relative;height:320px;">
+      <canvas id="{agg_id}"></canvas>
+    </div>
+  </div>
+
+  <div class="chart-box">
+    <h2>Single-request latency vs --parallel ({payload})</h2>
+    <div class="desc">Should stay flat.  If it drops, the slot count is hurting interactive use at this payload size.</div>
+    <div style="position:relative;height:280px;">
+      <canvas id="{single_id}"></canvas>
+    </div>
+  </div>
+""")
+
+    payload_sections_html = "\n".join(payload_sections)
+
+    # ── Chart.js init for all payload charts ─────────────────────────────
+    chart_inits = []
+    for payload in payloads_present:
+        agg_id = f"aggChart_{payload}"
+        single_id = f"singleChart_{payload}"
+        chart_inits.append(f"""
+makeLineChart('{agg_id}', [{payload_charts_js[payload]}], 'Aggregate tok/s');
+makeLineChart('{single_id}', [{single_charts_js[payload]}], 'Single-request tok/s');
+""")
+    chart_inits_js = "\n".join(chart_inits)
+
+    summary_bar_height = max(250, n_models * 50 * len(payloads_present))
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -159,51 +255,44 @@ def generate_html(records: list[dict]) -> str:
   .container {{ max-width: 1020px; margin: 0 auto; }}
   h1 {{ font-size: 22px; color: #58a6ff; margin-bottom: 4px; }}
   .subtitle {{ font-size: 13px; color: #6e7681; margin-bottom: 24px; }}
-  .stats {{
-    display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap;
-  }}
+  .stats {{ display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap; }}
   .stat {{
     background: #161b22; border: 1px solid #21262d;
-    border-radius: 6px; padding: 10px 16px; flex: 1 1 100px;
+    border-radius: 6px; padding: 10px 16px; flex: 1 1 140px;
   }}
   .stat-value {{ font-size: 20px; font-weight: 700; color: #f0f6fc; }}
-  .stat-label {{
-    font-size: 11px; color: #6e7681;
-    text-transform: uppercase; letter-spacing: 1px;
-  }}
+  .stat-sub {{ font-size: 11px; color: #6e7681; }}
+  .stat-label {{ font-size: 11px; color: #6e7681; text-transform: uppercase; letter-spacing: 1px; }}
   .chart-box {{
     background: #0d1117; border: 1px solid #21262d;
     border-radius: 8px; padding: 20px; margin-bottom: 24px;
   }}
-  .chart-box h2 {{
-    font-size: 14px; font-weight: 600; color: #f0f6fc;
-    margin-bottom: 4px;
+  .chart-box h2 {{ font-size: 14px; font-weight: 600; color: #f0f6fc; margin-bottom: 4px; }}
+  .chart-box .desc {{ font-size: 11px; color: #6e7681; margin-bottom: 12px; }}
+  .section-label {{
+    font-size: 16px; font-weight: 700; color: #f0f6fc;
+    margin: 28px 0 14px; padding-top: 12px;
+    border-top: 3px solid #21262d;
   }}
-  .chart-box .chart-desc {{
-    font-size: 11px; color: #6e7681; margin-bottom: 12px;
-  }}
-  canvas {{ max-height: 340px; }}
   .reco-grid {{
-    display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
     gap: 12px; margin-bottom: 24px;
   }}
   .reco-card {{
-    background: #161b22; border-radius: 8px; padding: 14px 16px;
+    background: #161b22; border: 1px solid #21262d;
+    border-radius: 8px; padding: 14px 16px;
   }}
-  .reco-model {{
-    font-size: 13px; font-weight: 600; color: #f0f6fc;
-    margin-bottom: 10px; line-height: 1.3;
-  }}
+  .reco-model {{ font-size: 13px; font-weight: 600; color: #f0f6fc; margin-bottom: 10px; }}
   .reco-row {{
     display: flex; justify-content: space-between; align-items: baseline;
     font-size: 12px; padding: 3px 0;
   }}
-  .reco-label {{ color: #6e7681; }}
-  .reco-value {{ color: #c9d1d9; font-weight: 600; }}
-  .section-label {{
-    font-size: 16px; font-weight: 700; color: #f0f6fc;
-    margin: 28px 0 14px; padding-top: 12px;
-    border-top: 1px solid #21262d;
+  .reco-label {{ width: 60px; font-weight: 600; }}
+  .reco-value {{ color: #f0f6fc; font-weight: 600; width: 50px; }}
+  .reco-sub {{ color: #6e7681; font-size: 11px; }}
+  .legend {{
+    font-size: 11px; color: #8b949e; margin-bottom: 16px;
+    display: flex; flex-wrap: wrap; gap: 4px 16px;
   }}
 </style>
 </head>
@@ -213,63 +302,47 @@ def generate_html(records: list[dict]) -> str:
   <p class="subtitle">
     {n_records} measurements &middot;
     {n_models} model(s) &middot;
+    {len(payloads_present)} payload tier(s) &middot;
     --parallel 1&ndash;{max_np}
   </p>
 
   <div class="stats">
+    {"" if not overall_best else f'''
     <div class="stat">
-      <div class="stat-value">{overall_best[1]["concurrent_agg_tok_s"]}</div>
+      <div class="stat-value">{overall_best["concurrent_agg_tok_s"]}</div>
+      <div class="stat-sub">{_model_key(overall_best)} · np={overall_best["np"]} · {overall_best["payload"]}</div>
       <div class="stat-label">Best aggregate tok/s</div>
     </div>
-    <div class="stat">
-      <div class="stat-value">np={overall_best[1]["np"]}</div>
-      <div class="stat-label">Best --parallel</div>
-    </div>
-    <div class="stat">
-      <div class="stat-value">{overall_best[0].split(" (")[0]}</div>
-      <div class="stat-label">Fastest model</div>
-    </div>
+    '''}
     <div class="stat">
       <div class="stat-value">{n_models}</div>
       <div class="stat-label">Models tested</div>
     </div>
+    <div class="stat">
+      <div class="stat-value">{len(payloads_present)}</div>
+      <div class="stat-label">Payload tiers</div>
+    </div>
   </div>
 
   <div class="section-label">Recommendations per model</div>
+  <div class="legend">
+    {"".join(f'<span style="display:inline-flex;align-items:center;gap:4px;"><span style="width:10px;height:10px;border-radius:2px;background:{payload_colors.get(p, "#6e7681")};"></span>{p}: {PAYLOAD_DESC.get(p, p)}</span>' for p in payloads_present)}
+  </div>
   <div class="reco-grid">
     {reco_html}
   </div>
 
-  <div class="section-label">Charts</div>
-
+  <div class="section-label">Best aggregate throughput by payload size</div>
   <div class="chart-box">
-    <h2>Aggregate throughput vs --parallel</h2>
-    <p class="chart-desc">Total tok/s when all slots are generating concurrently.  Higher is better for multi-request workloads.</p>
-    <canvas id="aggChart"></canvas>
+    <h2>Best aggregate tok/s per model (at optimal np for each payload)</h2>
+    <div class="desc">Shows how each model's peak throughput changes with payload size.  Large payloads stress prefill + context.</div>
+    <div style="position:relative;height:{summary_bar_height}px;">
+      <canvas id="summaryChart"></canvas>
+    </div>
   </div>
 
-  <div class="chart-box">
-    <h2>Single-request latency vs --parallel</h2>
-    <p class="chart-desc">tok/s for a single request at each --parallel setting.  Should stay flat — if it drops, the slot count is hurting interactive use.</p>
-    <canvas id="singleChart"></canvas>
-  </div>
+  {payload_sections_html}
 
-  <div class="chart-box">
-    <h2>Per-request throughput under full load</h2>
-    <p class="chart-desc">tok/s each individual request gets when all slots are busy.  Drops as slots increase — that's expected.</p>
-    <canvas id="perreqChart"></canvas>
-  </div>
-
-  <div class="chart-box">
-    <h2>Wall time for full concurrent batch</h2>
-    <p class="chart-desc">Seconds to complete all N concurrent requests.  Lower is better.</p>
-    <canvas id="wallChart"></canvas>
-  </div>
-
-  <div class="chart-box">
-    <h2>Best aggregate by model (ranked)</h2>
-    <canvas id="barChart"></canvas>
-  </div>
 </div>
 
 <script>
@@ -278,89 +351,63 @@ Chart.defaults.borderColor = '#21262d';
 
 const npLabels = {np_labels_js};
 
-const commonOpts = {{
-  responsive: true,
-  interaction: {{ mode: 'index', intersect: false }},
-  plugins: {{
-    legend: {{ labels: {{ font: {{ size: 11 }}, usePointStyle: true, pointStyle: 'circle' }} }},
-    tooltip: {{
-      backgroundColor: '#161b22',
-      borderColor: '#30363d',
-      borderWidth: 1,
-      titleFont: {{ size: 12 }},
-      bodyFont: {{ size: 12 }},
-    }}
-  }},
-  scales: {{
-    x: {{
-      title: {{ display: true, text: '--parallel (np)', font: {{ size: 11 }} }},
-      ticks: {{ font: {{ size: 11 }} }},
-    }},
-    y: {{
-      beginAtZero: true,
-      ticks: {{ font: {{ size: 11 }} }},
-    }}
-  }}
-}};
-
-function makeLineChart(id, datasets, yLabel, unit, yMax) {{
-  const opts = JSON.parse(JSON.stringify(commonOpts));
-  opts.scales.y.title = {{ display: true, text: yLabel, font: {{ size: 11 }} }};
-  if (yMax) opts.scales.y.max = yMax;
-  opts.plugins.tooltip.callbacks = {{ label: ctx => ctx.dataset.label + ': ' + ctx.parsed.y + ' ' + unit }};
+function makeLineChart(id, datasets, yLabel) {{
   new Chart(document.getElementById(id), {{
     type: 'line',
     data: {{ labels: npLabels, datasets: datasets }},
-    options: opts,
+    options: {{
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: {{ mode: 'index', intersect: false }},
+      plugins: {{
+        legend: {{ labels: {{ font: {{ size: 10 }}, usePointStyle: true, pointStyle: 'circle' }} }},
+        tooltip: {{
+          backgroundColor: '#161b22', borderColor: '#30363d', borderWidth: 1,
+          bodyFont: {{ size: 11 }},
+          callbacks: {{ label: ctx => ctx.dataset.label + ': ' + ctx.parsed.y + ' tok/s' }}
+        }}
+      }},
+      scales: {{
+        x: {{
+          title: {{ display: true, text: '--parallel (np)', font: {{ size: 11 }} }},
+          ticks: {{ font: {{ size: 11 }} }},
+        }},
+        y: {{
+          beginAtZero: true,
+          title: {{ display: true, text: yLabel, font: {{ size: 11 }} }},
+          ticks: {{ font: {{ size: 11 }} }},
+        }}
+      }}
+    }}
   }});
 }}
 
-makeLineChart('aggChart', [{agg_datasets}], 'Aggregate tok/s', 'tok/s', null);
-makeLineChart('singleChart', [{single_datasets}], 'Single-request tok/s', 'tok/s', null);
-makeLineChart('perreqChart', [{perreq_datasets}], 'Per-request tok/s', 'tok/s', null);
-makeLineChart('wallChart', [{wall_datasets}], 'Wall time (s)', 's', null);
-
-new Chart(document.getElementById('barChart'), {{
+new Chart(document.getElementById('summaryChart'), {{
   type: 'bar',
   data: {{
-    labels: {bar_labels_js},
-    datasets: [
-      {{
-        label: 'Aggregate tok/s',
-        data: {bar_agg_js},
-        backgroundColor: {bar_colors_js},
-        borderRadius: 4,
-      }},
-      {{
-        label: 'Single tok/s',
-        data: {bar_single_js},
-        backgroundColor: {bar_colors_js}.map(c => c + '66'),
-        borderRadius: 4,
-      }}
-    ]
+    labels: {json.dumps(model_keys)},
+    datasets: [{', '.join(summary_datasets_js)}]
   }},
   options: {{
     indexAxis: 'y',
     responsive: true,
+    maintainAspectRatio: false,
     plugins: {{
       legend: {{ labels: {{ font: {{ size: 11 }}, usePointStyle: true, pointStyle: 'rect' }} }},
       tooltip: {{
-        backgroundColor: '#161b22',
-        borderColor: '#30363d',
-        borderWidth: 1,
+        backgroundColor: '#161b22', borderColor: '#30363d', borderWidth: 1,
+        bodyFont: {{ size: 11 }},
         callbacks: {{ label: ctx => ctx.dataset.label + ': ' + ctx.parsed.x + ' tok/s' }}
       }}
     }},
     scales: {{
-      x: {{
-        beginAtZero: true,
-        title: {{ display: true, text: 'tok/s', font: {{ size: 11 }} }},
-        ticks: {{ font: {{ size: 11 }} }}
-      }},
-      y: {{ ticks: {{ font: {{ size: 11 }} }} }}
+      x: {{ beginAtZero: true, title: {{ display: true, text: 'Aggregate tok/s', font: {{ size: 11 }} }}, ticks: {{ font: {{ size: 11 }} }} }},
+      y: {{ ticks: {{ font: {{ size: 11 }}, autoSkip: false }} }}
     }}
   }}
 }});
+
+{chart_inits_js}
 </script>
 </body>
 </html>"""

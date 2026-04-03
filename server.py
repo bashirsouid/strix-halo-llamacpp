@@ -871,9 +871,13 @@ def _bench_one(port: int, prompt: str, max_tokens: int, label: str,
 
 def bench(port: int = 8000, model_alias: str | None = None,
           backend: str = "radv") -> dict:
-    """Benchmark with generation-dominant and prefill-dominant tests.
+    """Benchmark at small, medium, and large payload tiers.
 
-    Returns dict with keys: gen_tok_s, pp_tok_s, combined_tok_s
+    Each tier measures generation throughput (output tok/s) and effective
+    prefill throughput (prompt tok/s).  Logs one JSONL record per tier.
+
+    Returns dict with per-tier results:
+      { "small": {gen_tok_s, pp_tok_s, combined_tok_s}, "medium": {...}, "large": {...} }
     """
     if model_alias is None:
         try:
@@ -889,91 +893,112 @@ def bench(port: int = 8000, model_alias: str | None = None,
 
     info(f"Benchmarking server on port {port} ({backend}) ...")
 
-    # ── Generation-dominant tests (short prompt, long output) ────────────
-    gen_prompts = [
-        ("gen-1", "Write a haiku about silicon.", 512),
-        ("gen-2", "Explain how a CPU cache hierarchy works in 200 words.", 512),
-        ("gen-3", "Write a detailed guide to setting up a home lab for running "
-                  "local LLMs. Cover hardware, OS, model selection, and tuning.", 512),
+    # Use the same payload tiers as bench-parallel for consistency
+    tiers = [
+        {
+            "name": "small",
+            "desc": "~50 input / 256 output (generation-dominant)",
+            "prompts": [
+                ("s-1", "Write a haiku about silicon.", 256),
+                ("s-2", "Explain how a CPU cache works in 100 words.", 256),
+            ],
+        },
+        {
+            "name": "medium",
+            "desc": "~1K input / 512 output (balanced)",
+            "prompts": [
+                ("m-1", _make_prefill_prompt(target_tokens=800), 512),
+                ("m-2", _make_prefill_prompt(target_tokens=1200), 512),
+            ],
+        },
+        {
+            "name": "large",
+            "desc": "~8K input / 2K output (prefill-heavy)",
+            "prompts": [
+                ("l-1", _make_prefill_prompt(target_tokens=6000), 2048),
+                ("l-2", _make_prefill_prompt(target_tokens=8000), 2048),
+            ],
+        },
     ]
 
-    print()
-    print(f"  ── Generation (short prompt → 512 tok output) ──────────────")
-    gen_results = []
-    for label, prompt, max_tok in gen_prompts:
-        r = _bench_one(port, prompt, max_tok, label)
-        if r["ok"]:
-            print(f"  [{r['label']:5s}]  {r['comp_tok']:4d} tok in {r['elapsed']:6.1f}s  →  "
-                  f"{r['tok_s']:5.1f} tok/s  (prompt: {r['prompt_tok']} tok)")
-            gen_results.append(r)
-        else:
-            fail(f"  [{label}]  {r.get('error', 'unknown error')}")
-
-    gen_tok_s = (sum(r["tok_s"] for r in gen_results) / len(gen_results)
-                 if gen_results else 0)
-
-    # ── Prefill-dominant tests (long prompt, short output) ───────────────
-    # Use 16 output tokens so generation overhead is negligible.
-    pp_prompts = [
-        ("pp-1", _make_prefill_prompt(target_tokens=500), 16),
-        ("pp-2", _make_prefill_prompt(target_tokens=1000), 16),
-    ]
-
-    print()
-    print(f"  ── Prefill (long prompt → 16 tok output) ───────────────────")
-    pp_results = []
-    for label, prompt, max_tok in pp_prompts:
-        r = _bench_one(port, prompt, max_tok, label, timeout=600)
-        if r["ok"]:
-            # Effective prefill throughput: prompt tokens / total time.
-            # Slightly pessimistic (includes ~0.3s of generation) but
-            # accurate enough for backend comparison.
-            eff_pp = r["prompt_tok"] / r["elapsed"] if r["elapsed"] > 0 else 0
-            print(f"  [{r['label']:5s}]  {r['prompt_tok']:5d} prompt tok in {r['elapsed']:6.1f}s  →  "
-                  f"{eff_pp:5.1f} pp tok/s  (output: {r['comp_tok']} tok)")
-            pp_results.append({**r, "eff_pp_tok_s": eff_pp})
-        else:
-            fail(f"  [{label}]  {r.get('error', 'unknown error')}")
-
-    pp_tok_s = (sum(r["eff_pp_tok_s"] for r in pp_results) / len(pp_results)
-                if pp_results else 0)
-
-    # ── Summary ──────────────────────────────────────────────────────────
-    combined = (gen_tok_s + pp_tok_s) / 2 if gen_tok_s > 0 and pp_tok_s > 0 else gen_tok_s
-
-    print()
-    print(f"  ═══════════════════════════════════════════════")
-    print(f"  Generation:   {gen_tok_s:6.1f} tok/s  (decode throughput)")
-    print(f"  Prefill:      {pp_tok_s:6.1f} tok/s  (prompt processing)")
-    print(f"  Combined:     {combined:6.1f} tok/s  (average of both)")
-    print(f"  ═══════════════════════════════════════════════")
-
-    # ── Log to JSONL ─────────────────────────────────────────────────────
-    if (gen_tok_s > 0 or pp_tok_s > 0) and model_alias and model_alias != "unknown":
-        report_file = PROJECT_DIR / "bench_results.jsonl"
-        timestamp = time.strftime("%Y-%m-%d %H:%M")
-
-        quant = ""
+    quant = ""
+    if model_alias and model_alias != "unknown":
         try:
             quant = get_model(model_alias).quant
         except ValueError:
             pass
 
-        record = {
-            "timestamp": timestamp,
-            "backend": backend,
-            "model": model_alias,
-            "quant": quant,
-            "gen_tok_s": round(gen_tok_s, 1),
-            "pp_tok_s": round(pp_tok_s, 1),
-            "combined_tok_s": round(combined, 1),
-            "avg_tok_s": round(gen_tok_s, 1),   # backward compat with old viewer
-        }
-        with open(report_file, "a") as f:
-            f.write(json.dumps(record) + "\n")
-        ok(f"Result appended to {report_file}")
+    report_file = PROJECT_DIR / "bench_results.jsonl"
+    timestamp = time.strftime("%Y-%m-%d %H:%M")
+    all_tier_results = {}
 
-    return {"gen_tok_s": gen_tok_s, "pp_tok_s": pp_tok_s, "combined_tok_s": combined}
+    for tier in tiers:
+        tname = tier["name"]
+        print()
+        print(f"  ── {tname.upper()} — {tier['desc']} ─────────────────────────")
+
+        gen_speeds = []
+        pp_speeds = []
+
+        for label, prompt, max_tok in tier["prompts"]:
+            r = _bench_one(port, prompt, max_tok, label, timeout=600)
+            if not r["ok"]:
+                fail(f"  [{label}]  {r.get('error', 'unknown error')}")
+                continue
+
+            gen_s = r["tok_s"]
+            pp_s = r["prompt_tok"] / r["elapsed"] if r["elapsed"] > 0 else 0
+
+            gen_speeds.append(gen_s)
+            pp_speeds.append(pp_s)
+
+            print(f"  [{label:4s}]  "
+                  f"prompt={r['prompt_tok']:5d}  "
+                  f"output={r['comp_tok']:4d}  "
+                  f"in {r['elapsed']:6.1f}s  →  "
+                  f"gen={gen_s:5.1f}  pp={pp_s:5.1f} tok/s")
+
+        gen_avg = sum(gen_speeds) / len(gen_speeds) if gen_speeds else 0
+        pp_avg = sum(pp_speeds) / len(pp_speeds) if pp_speeds else 0
+        combined = (gen_avg + pp_avg) / 2 if gen_avg > 0 and pp_avg > 0 else gen_avg
+
+        all_tier_results[tname] = {
+            "gen_tok_s": round(gen_avg, 1),
+            "pp_tok_s": round(pp_avg, 1),
+            "combined_tok_s": round(combined, 1),
+        }
+
+        # Log one record per tier
+        if (gen_avg > 0 or pp_avg > 0) and model_alias and model_alias != "unknown":
+            record = {
+                "timestamp": timestamp,
+                "backend": backend,
+                "model": model_alias,
+                "quant": quant,
+                "payload": tname,
+                "gen_tok_s": round(gen_avg, 1),
+                "pp_tok_s": round(pp_avg, 1),
+                "combined_tok_s": round(combined, 1),
+                "avg_tok_s": round(gen_avg, 1),  # backward compat
+            }
+            with open(report_file, "a") as f:
+                f.write(json.dumps(record) + "\n")
+
+    # ── Summary ──────────────────────────────────────────────────────────
+    print()
+    print(f"  ═══════════════════════════════════════════════════════════")
+    print(f"  {'Tier':<8s}  {'Gen tok/s':>10s}  {'PP tok/s':>10s}  {'Combined':>10s}")
+    print(f"  {'─'*8}  {'─'*10}  {'─'*10}  {'─'*10}")
+    for tname in ("small", "medium", "large"):
+        tr = all_tier_results.get(tname)
+        if tr:
+            print(f"  {tname:<8s}  {tr['gen_tok_s']:>10.1f}  {tr['pp_tok_s']:>10.1f}  {tr['combined_tok_s']:>10.1f}")
+    print(f"  ═══════════════════════════════════════════════════════════")
+
+    if model_alias and model_alias != "unknown":
+        ok(f"Results appended to {report_file}")
+
+    return all_tier_results
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1196,11 +1221,13 @@ def bench_parallel(cfg: ModelConfig, port: int = 8000, backend: str = "radv",
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def bench_single(model_alias: str, port: int = 8000, backend: str = "radv") -> dict:
-    """Start a model, benchmark it, stop it, return results dict."""
+    """Start a model, benchmark it at all tiers, stop it, return results."""
     cfg = get_model(model_alias)
+    empty = {t: {"gen_tok_s": 0, "pp_tok_s": 0, "combined_tok_s": 0}
+             for t in ("small", "medium", "large")}
     if not cfg.is_downloaded:
         warn(f"Skipping {cfg.name} — not downloaded.")
-        return {"gen_tok_s": 0, "pp_tok_s": 0, "combined_tok_s": 0}
+        return empty
 
     info(f"═══ Benchmarking: {cfg.name} ({cfg.alias})  np={cfg.parallel_slots}  {backend} ═══")
     launch_server(cfg, port=port, backend=backend)
@@ -1209,7 +1236,7 @@ def bench_single(model_alias: str, port: int = 8000, backend: str = "radv") -> d
         result = bench(port=port, model_alias=cfg.alias, backend=backend)
     except Exception as e:
         fail(f"Benchmark failed for {cfg.name}: {e}")
-        result = {"gen_tok_s": 0, "pp_tok_s": 0, "combined_tok_s": 0}
+        result = empty
     finally:
         stop_server()
         time.sleep(2)
@@ -1218,7 +1245,7 @@ def bench_single(model_alias: str, port: int = 8000, backend: str = "radv") -> d
 
 
 def bench_all(port: int = 8000, backend: str = "radv"):
-    """Benchmark every downloaded model, then print a summary report."""
+    """Benchmark every downloaded model at all payload tiers."""
     downloaded = [m for m in MODELS if m.is_downloaded]
     if not downloaded:
         fail("No models downloaded.  Run 'python server.py download MODEL' first.")
@@ -1233,29 +1260,38 @@ def bench_all(port: int = 8000, backend: str = "radv"):
         results.append((cfg.alias, cfg.name, result, cfg.parallel_slots))
         print()
 
+    # ── Summary table ────────────────────────────────────────────────────
     timestamp = time.strftime("%Y-%m-%d %H:%M")
     print()
-    print(f"  ══════════════════════════════════════════════════════════════════════════")
-    print(f"  Benchmark Report — {timestamp}")
-    print(f"  Backend: {backend.upper()}")
-    print(f"  ──────────────────────────────────────────────────────────────────────────")
-    print(f"  {'Model':<32s}  {'np':>3s}  {'Gen tok/s':>10s}  {'PP tok/s':>10s}  {'Combined':>10s}")
-    print(f"  {'─'*32}  {'─'*3}  {'─'*10}  {'─'*10}  {'─'*10}")
+    print(f"  ══════════════════════════════════════════════════════════════════════════════════════")
+    print(f"  Benchmark Report — {timestamp}  ·  Backend: {backend.upper()}")
+    print(f"  ──────────────────────────────────────────────────────────────────────────────────────")
+    print(f"  {'Model':<28s} {'np':>3s}  "
+          f"{'S-gen':>6s} {'S-pp':>6s}  "
+          f"{'M-gen':>6s} {'M-pp':>6s}  "
+          f"{'L-gen':>6s} {'L-pp':>6s}")
+    print(f"  {'─'*28} {'─'*3}  {'─'*6} {'─'*6}  {'─'*6} {'─'*6}  {'─'*6} {'─'*6}")
 
-    for alias, name, res, np_val in sorted(results, key=lambda x: -x[2]["combined_tok_s"]):
-        gen = res["gen_tok_s"]
-        pp = res["pp_tok_s"]
-        comb = res["combined_tok_s"]
-        bar = "█" * int(comb / 3)
-        print(f"  {name:<32s}  {np_val:>3d}  {gen:>8.1f}  {pp:>8.1f}  {comb:>8.1f}  {bar}")
+    def _sort_key(x):
+        r = x[2]
+        return -(r.get("small", {}).get("combined_tok_s", 0))
 
-    print(f"  ══════════════════════════════════════════════════════════════════════════")
+    for alias, name, res, np_val in sorted(results, key=_sort_key):
+        s = res.get("small", {})
+        m = res.get("medium", {})
+        l = res.get("large", {})
+        print(f"  {name:<28s} {np_val:>3d}  "
+              f"{s.get('gen_tok_s', 0):>6.1f} {s.get('pp_tok_s', 0):>5.0f}  "
+              f"{m.get('gen_tok_s', 0):>6.1f} {m.get('pp_tok_s', 0):>5.0f}  "
+              f"{l.get('gen_tok_s', 0):>6.1f} {l.get('pp_tok_s', 0):>5.0f}")
+
+    print(f"  ══════════════════════════════════════════════════════════════════════════════════════")
     print()
 
     report_file = PROJECT_DIR / "bench_results.jsonl"
     if report_file.exists():
         ok(f"All results logged to {report_file}")
-    info("Run with --backend rocm to compare ROCm prefill performance.")
+    info("Run with --backend rocm to compare.")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

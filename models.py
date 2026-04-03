@@ -214,7 +214,7 @@ MODELS: list[ModelConfig] = [
         quant="Q6_K",
         parallel_slots=1,
         max_parallel=3,
-        ctx_per_slot=32768,
+        ctx_per_slot=262144,
         ubatch_size=512,
         spec=SpecConfig(strategy="ngram"),
         extra_args=["--temp", "1.0", "--top-p", "0.95", "--top-k", "40", "--min-p", "0.01"],
@@ -238,14 +238,15 @@ MODELS: list[ModelConfig] = [
         shard_glob="*Q8_K_XL*.gguf",
         quant="Q8_K_XL",
         parallel_slots=1,
-        max_parallel=4,
+        max_parallel=8,
         ctx_per_slot=32768,
         spec=SpecConfig(strategy="ngram"),
         extra_args=["--repeat-penalty", "1.0", "--min-p", "0.01"],
         notes=(
-            "Best for: code + chat at high speed, interleaved thinking.  "
-            "MoE 30B (3B active).  Best 30B model on SWE-Bench + GPQA.  "
-            "~30 GB at Q8 — near-lossless, fits easily.  200K context.  "
+            "Best for: code + chat at high speed, interleaved thinking."
+            "Parallelism is only effective on ROCM; latest testing is slower than sequential on RADV."
+            "MoE 30B (3B active).  Best 30B model on SWE-Bench + GPQA."
+            "~30 GB at Q8 — near-lossless, fits easily.  200K context."
             "Bug: needs --repeat-penalty 1.0 and --min-p 0.01."
         ),
     ),
@@ -260,8 +261,8 @@ MODELS: list[ModelConfig] = [
         download_include="*UD-Q8_K_XL*",
         shard_glob="*UD-Q8_K_XL*.gguf",
         quant="UD-Q8_K_XL",
-        parallel_slots=6,
-        max_parallel=10,
+        parallel_slots=3,
+        max_parallel=6,
         ctx_per_slot=32768,
         spec=SpecConfig(strategy="ngram"),
         notes=(
@@ -334,7 +335,7 @@ MODELS: list[ModelConfig] = [
         quant="Q4_K_M",
         parallel_slots=8, # 116 tok/s combined
         max_parallel=12,
-        ctx_per_slot=65536,
+        ctx_per_slot=1048576,
         spec=SpecConfig(strategy="ngram"),
         notes=(
             "Best for: speed, lightweight tasks, quick iteration.  "
@@ -355,7 +356,7 @@ MODELS: list[ModelConfig] = [
         quant="UD-Q8_K_XL",
         parallel_slots=8, # 83 tok/s combined
         max_parallel=10,
-        ctx_per_slot=49152,
+        ctx_per_slot=1048576,
         spec=SpecConfig(strategy="ngram"),
         notes=(
             "Best for: speed/quality balance, lightweight tasks.  "

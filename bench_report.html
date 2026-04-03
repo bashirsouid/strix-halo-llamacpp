@@ -12,68 +12,148 @@
     font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', monospace;
     padding: 24px;
   }
-  .container { max-width: 960px; margin: 0 auto; }
+  .container { max-width: 1060px; margin: 0 auto; }
   h1 { font-size: 22px; color: #58a6ff; margin-bottom: 4px; }
   .subtitle { font-size: 13px; color: #6e7681; margin-bottom: 24px; }
-  .stats {
-    display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap;
-  }
+  .stats { display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap; }
   .stat {
     background: #161b22; border: 1px solid #21262d;
-    border-radius: 6px; padding: 10px 16px; flex: 1 1 100px;
+    border-radius: 6px; padding: 10px 16px; flex: 1 1 160px;
   }
   .stat-value { font-size: 20px; font-weight: 700; color: #f0f6fc; }
-  .stat-label {
-    font-size: 11px; color: #6e7681;
-    text-transform: uppercase; letter-spacing: 1px;
-  }
+  .stat-sub { font-size: 11px; color: #6e7681; }
+  .stat-label { font-size: 11px; color: #6e7681; text-transform: uppercase; letter-spacing: 1px; }
   .chart-box {
     background: #0d1117; border: 1px solid #21262d;
     border-radius: 8px; padding: 20px; margin-bottom: 24px;
   }
-  .chart-box h2 {
-    font-size: 14px; font-weight: 600; color: #f0f6fc;
-    margin-bottom: 12px;
+  .chart-box h2 { font-size: 14px; font-weight: 600; color: #f0f6fc; margin-bottom: 4px; }
+  .chart-box .desc { font-size: 11px; color: #6e7681; margin-bottom: 12px; }
+  .section-label {
+    font-size: 16px; font-weight: 700; color: #f0f6fc;
+    margin: 28px 0 14px; padding-top: 12px; border-top: 1px solid #21262d;
   }
-  canvas { max-height: 350px; }
+  .legend { font-size: 11px; color: #8b949e; margin-bottom: 16px; display: flex; flex-wrap: wrap; gap: 4px 0; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
+  th, td { padding: 6px 8px; border-bottom: 1px solid #21262d; }
+  th { color: #8b949e; font-weight: 500; }
 </style>
 </head>
 <body>
 <div class="container">
-  <h1>⚡ Strix Halo Bench Results</h1>
+  <h1>⚡ Strix Halo — benchmark results</h1>
   <p class="subtitle">
-    21 records &middot;
-    12 model+backend combos &middot;
-    21 sessions
+    32 latest records &middot;
+    6 models &middot;
+    2 backend(s) &middot;
+    3 payload tier(s) &middot;
+    47 total records
   </p>
 
   <div class="stats">
     <div class="stat">
-      <div class="stat-value">21</div>
-      <div class="stat-label">Records</div>
+      <div class="stat-value">64</div>
+      <div class="stat-sub">nemotron-nano-q4 (radv)</div>
+      <div class="stat-label">Best gen tok/s (small)</div>
     </div>
     <div class="stat">
-      <div class="stat-value">6</div>
-      <div class="stat-label">Models</div>
+      <div class="stat-value">26</div>
+      <div class="stat-sub">qwen3.5-35b-q8 (rocm)</div>
+      <div class="stat-label">Best gen tok/s (large)</div>
     </div>
     <div class="stat">
-      <div class="stat-value">21</div>
-      <div class="stat-label">Sessions</div>
+      <div class="stat-value">93%</div>
+      <div class="stat-sub">qwen3.5-35b-q8 (radv)</div>
+      <div class="stat-label">Most resilient (gen retained)</div>
     </div>
-    <div class="stat">
-      <div class="stat-value">2</div>
-      <div class="stat-label">Backends</div>
+  </div>
+
+  <div class="legend"><span style="display:inline-flex;align-items:center;gap:4px;margin-right:14px;"><span style="width:10px;height:10px;border-radius:2px;background:#2a9d8f;"></span>small: ~50 in / 256 out</span> <span style="display:inline-flex;align-items:center;gap:4px;margin-right:14px;"><span style="width:10px;height:10px;border-radius:2px;background:#457b9d;"></span>medium: ~1K in / 512 out</span> <span style="display:inline-flex;align-items:center;gap:4px;margin-right:14px;"><span style="width:10px;height:10px;border-radius:2px;background:#e63946;"></span>large: ~8K in / 2K out</span></div>
+
+  <div class="section-label">Generation throughput by context size</div>
+  
+  <div class="chart-box">
+    <h2>Generation tok/s by payload — RADV</h2>
+    <div class="desc">How decode speed changes with context size.  Shorter bars at larger payloads = context degradation.</div>
+    <div style="position:relative;height:900px;">
+      <canvas id="genChart_radv"></canvas>
     </div>
   </div>
 
   <div class="chart-box">
-    <h2>tok/s over time</h2>
-    <canvas id="lineChart"></canvas>
+    <h2>Generation tok/s by payload — ROCM</h2>
+    <div class="desc">How decode speed changes with context size.  Shorter bars at larger payloads = context degradation.</div>
+    <div style="position:relative;height:900px;">
+      <canvas id="genChart_rocm"></canvas>
+    </div>
+  </div>
+
+  
+  <div class="section-label">Prefill throughput by context size</div>
+  
+  <div class="chart-box">
+    <h2>Prefill tok/s by payload — RADV</h2>
+    <div class="desc">Prompt processing speed at each context size.</div>
+    <div style="position:relative;height:900px;">
+      <canvas id="ppChart_radv"></canvas>
+    </div>
   </div>
 
   <div class="chart-box">
-    <h2>Latest results (ranked)</h2>
-    <canvas id="barChart"></canvas>
+    <h2>Prefill tok/s by payload — ROCM</h2>
+    <div class="desc">Prompt processing speed at each context size.</div>
+    <div style="position:relative;height:900px;">
+      <canvas id="ppChart_rocm"></canvas>
+    </div>
+  </div>
+  
+
+  
+  <div class="section-label">Context degradation</div>
+  <div class="chart-box">
+    <h2>Generation retained: small → large payload (%)</h2>
+    <div class="desc">100% = no degradation.  Lower = model slows down more at long context.  Models that hold up best here are ideal for long documents and RAG.</div>
+    <div style="position:relative;height:600px;">
+      <canvas id="degradeChart"></canvas>
+    </div>
+  </div>
+  
+
+  
+  <div class="section-label">Backend comparison — all tiers stacked</div>
+  <div class="chart-box">
+    <h2>Gen + prefill stacked by backend and payload</h2>
+    <div class="desc">Side-by-side comparison across backends and payload sizes.  Each stack = gen (solid) + pp (light).</div>
+    <div style="position:relative;height:1800px;">
+      <canvas id="backendChart"></canvas>
+    </div>
+  </div>
+  
+
+  <div class="section-label">Detailed results</div>
+  <div class="chart-box">
+    <div style="overflow-x:auto;">
+    <table>
+      <thead>
+        <tr><th>Model</th><th>Backend</th><th colspan="3" style="text-align:center;border-bottom:2px solid #2a9d8f;">small</th><th colspan="3" style="text-align:center;border-bottom:2px solid #457b9d;">medium</th><th colspan="3" style="text-align:center;border-bottom:2px solid #e63946;">large</th></tr>
+        <tr><th></th><th></th><th style="text-align:right;font-size:10px;">Gen</th><th style="text-align:right;font-size:10px;">PP</th><th style="text-align:right;font-size:10px;">Comb</th><th style="text-align:right;font-size:10px;">Gen</th><th style="text-align:right;font-size:10px;">PP</th><th style="text-align:right;font-size:10px;">Comb</th><th style="text-align:right;font-size:10px;">Gen</th><th style="text-align:right;font-size:10px;">PP</th><th style="text-align:right;font-size:10px;">Comb</th></tr>
+      </thead>
+      <tbody>
+        <tr><td style="font-weight:600;white-space:nowrap;">glm-4.7-flash-q8 [Q8_K_XL]</td><td>radv</td><td style="text-align:right;">37.7</td><td style="text-align:right;color:#6e7681;">2</td><td style="text-align:right;font-weight:600;">19.9</td><td style="text-align:right;">31.2</td><td style="text-align:right;color:#6e7681;">40</td><td style="text-align:right;font-weight:600;">35.8</td><td style="text-align:right;">16.9</td><td style="text-align:right;color:#6e7681;">96</td><td style="text-align:right;font-weight:600;">56.6</td></tr>
+        <tr><td style="font-weight:600;white-space:nowrap;">glm-4.7-flash-q8 [Q8_K_XL]</td><td>rocm</td><td style="text-align:right;">34.0</td><td style="text-align:right;color:#6e7681;">2</td><td style="text-align:right;font-weight:600;">18.0</td><td style="text-align:right;">30.4</td><td style="text-align:right;color:#6e7681;">40</td><td style="text-align:right;font-weight:600;">35.0</td><td style="text-align:right;">22.9</td><td style="text-align:right;color:#6e7681;">136</td><td style="text-align:right;font-weight:600;">79.3</td></tr>
+        <tr><td style="font-weight:600;white-space:nowrap;">mistral-small-4-q4 [UD-Q4_K_M]</td><td>radv</td><td style="text-align:right;">27.3</td><td style="text-align:right;color:#6e7681;">14</td><td style="text-align:right;font-weight:600;">20.4</td><td style="text-align:right;">9.2</td><td style="text-align:right;color:#6e7681;">148</td><td style="text-align:right;font-weight:600;">78.7</td><td style="text-align:right;">2.5</td><td style="text-align:right;color:#6e7681;">310</td><td style="text-align:right;font-weight:600;">156.2</td></tr>
+        <tr><td style="font-weight:600;white-space:nowrap;">mistral-small-4-q4 [UD-Q4_K_M]</td><td>rocm</td><td style="text-align:right;">19.4</td><td style="text-align:right;color:#6e7681;">9</td><td style="text-align:right;font-weight:600;">14.0</td><td style="text-align:right;">5.1</td><td style="text-align:right;color:#6e7681;">73</td><td style="text-align:right;font-weight:600;">39.2</td><td style="text-align:right;">0.3</td><td style="text-align:right;color:#6e7681;">36</td><td style="text-align:right;font-weight:600;">18.2</td></tr>
+        <tr><td style="font-weight:600;white-space:nowrap;">nemotron-nano-q4 [Q4_K_M]</td><td>radv</td><td style="text-align:right;">64.4</td><td style="text-align:right;color:#6e7681;">6</td><td style="text-align:right;font-weight:600;">35.2</td><td colspan="3" style="text-align:center;color:#6e7681;">—</td><td colspan="3" style="text-align:center;color:#6e7681;">—</td></tr>
+        <tr><td style="font-weight:600;white-space:nowrap;">nemotron-nano-q4 [Q4_K_M]</td><td>rocm</td><td style="text-align:right;">56.1</td><td style="text-align:right;color:#6e7681;">6</td><td style="text-align:right;font-weight:600;">31.1</td><td style="text-align:right;">31.4</td><td style="text-align:right;color:#6e7681;">240</td><td style="text-align:right;font-weight:600;">135.6</td><td style="text-align:right;">18.5</td><td style="text-align:right;color:#6e7681;">746</td><td style="text-align:right;font-weight:600;">382.4</td></tr>
+        <tr><td style="font-weight:600;white-space:nowrap;">nemotron-nano-q8 [UD-Q8_K_XL]</td><td>radv</td><td style="text-align:right;">44.9</td><td style="text-align:right;color:#6e7681;">4</td><td style="text-align:right;font-weight:600;">24.6</td><td colspan="3" style="text-align:center;color:#6e7681;">—</td><td colspan="3" style="text-align:center;color:#6e7681;">—</td></tr>
+        <tr><td style="font-weight:600;white-space:nowrap;">nemotron-nano-q8 [UD-Q8_K_XL]</td><td>rocm</td><td style="text-align:right;">38.7</td><td style="text-align:right;color:#6e7681;">4</td><td style="text-align:right;font-weight:600;">21.4</td><td style="text-align:right;">28.1</td><td style="text-align:right;color:#6e7681;">168</td><td style="text-align:right;font-weight:600;">98.0</td><td style="text-align:right;">13.7</td><td style="text-align:right;color:#6e7681;">723</td><td style="text-align:right;font-weight:600;">368.6</td></tr>
+        <tr><td style="font-weight:600;white-space:nowrap;">qwen3-coder-next-q6 [Q6_K]</td><td>radv</td><td style="text-align:right;">34.9</td><td style="text-align:right;color:#6e7681;">12</td><td style="text-align:right;font-weight:600;">23.7</td><td style="text-align:right;">13.8</td><td style="text-align:right;color:#6e7681;">200</td><td style="text-align:right;font-weight:600;">106.8</td><td style="text-align:right;">5.4</td><td style="text-align:right;color:#6e7681;">660</td><td style="text-align:right;font-weight:600;">332.8</td></tr>
+        <tr><td style="font-weight:600;white-space:nowrap;">qwen3-coder-next-q6 [Q6_K]</td><td>rocm</td><td style="text-align:right;">31.6</td><td style="text-align:right;color:#6e7681;">13</td><td style="text-align:right;font-weight:600;">22.4</td><td style="text-align:right;">13.8</td><td style="text-align:right;color:#6e7681;">213</td><td style="text-align:right;font-weight:600;">113.6</td><td style="text-align:right;">5.0</td><td style="text-align:right;color:#6e7681;">630</td><td style="text-align:right;font-weight:600;">317.4</td></tr>
+        <tr><td style="font-weight:600;white-space:nowrap;">qwen3.5-35b-q8 [UD-Q8_K_XL]</td><td>radv</td><td style="text-align:right;">26.9</td><td style="text-align:right;color:#6e7681;">2</td><td style="text-align:right;font-weight:600;">14.5</td><td style="text-align:right;">24.9</td><td style="text-align:right;color:#6e7681;">33</td><td style="text-align:right;font-weight:600;">28.8</td><td style="text-align:right;">25.1</td><td style="text-align:right;color:#6e7681;">69</td><td style="text-align:right;font-weight:600;">47.0</td></tr>
+        <tr><td style="font-weight:600;white-space:nowrap;">qwen3.5-35b-q8 [UD-Q8_K_XL]</td><td>rocm</td><td style="text-align:right;">29.4</td><td style="text-align:right;color:#6e7681;">2</td><td style="text-align:right;font-weight:600;">15.9</td><td style="text-align:right;">26.9</td><td style="text-align:right;color:#6e7681;">36</td><td style="text-align:right;font-weight:600;">31.2</td><td style="text-align:right;">25.8</td><td style="text-align:right;color:#6e7681;">59</td><td style="text-align:right;font-weight:600;">42.4</td></tr>
+      </tbody>
+    </table>
+    </div>
   </div>
 </div>
 
@@ -81,201 +161,266 @@
 Chart.defaults.color = '#6e7681';
 Chart.defaults.borderColor = '#21262d';
 
-new Chart(document.getElementById('lineChart'), {
-  type: 'line',
-  data: {
-    labels: ["2026-03-31 08:04", "2026-03-31 08:14", "2026-03-31 20:17", "2026-03-31 20:19", "2026-03-31 20:21", "2026-03-31 20:24", "2026-03-31 20:25", "2026-03-31 20:27", "2026-04-01 08:38", "2026-04-01 08:42", "2026-04-01 08:44", "2026-04-01 08:47", "2026-04-01 08:48", "2026-04-01 08:50", "2026-04-01 18:07", "2026-04-01 18:22", "2026-04-01 18:23", "2026-04-01 18:26", "2026-04-01 18:29", "2026-04-01 18:30", "2026-04-01 18:32"],
-    datasets: [{
-            label: "glm-4.7-flash-q8 [Q8_K_XL] (radv)",
-            data: [null, null, null, 36.7, null, null, null, null, null, 36.7, null, null, null, null, null, null, null, null, null, null, null],
-            borderColor: '#e63946',
-            backgroundColor: '#e6394633',
-            borderWidth: 2,
-            borderDash: [],
-            pointRadius: 4,
-            pointHoverRadius: 6,
-            tension: 0.2,
-            spanGaps: true,
-        }, {
-            label: "glm-4.7-flash-q8 [Q8_K_XL] (rocm)",
-            data: [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 34.2, null, null, null, null],
+const modelLabels = ["glm-4.7-flash-q8 [Q8_K_XL]", "mistral-small-4-q4 [UD-Q4_K_M]", "nemotron-nano-q4 [Q4_K_M]", "nemotron-nano-q8 [UD-Q8_K_XL]", "qwen3-coder-next-q6 [Q6_K]", "qwen3.5-35b-q8 [UD-Q8_K_XL]"];
+
+function makeBar(id, datasets, xLabel) {
+  new Chart(document.getElementById(id), {
+    type: 'bar',
+    data: { labels: modelLabels, datasets: datasets },
+    options: {
+      indexAxis: 'y',
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { labels: { font: { size: 10 }, usePointStyle: true, pointStyle: 'rect' } },
+        tooltip: {
+          backgroundColor: '#161b22', borderColor: '#30363d', borderWidth: 1,
+          bodyFont: { size: 11 },
+          callbacks: { label: ctx => ctx.dataset.label + ': ' + ctx.parsed.x + ' tok/s' }
+        }
+      },
+      scales: {
+        x: { beginAtZero: true, title: { display: true, text: xLabel, font: { size: 11 } }, ticks: { font: { size: 11 } } },
+        y: { ticks: { font: { size: 11 }, autoSkip: false } }
+      }
+    }
+  });
+}
+
+makeBar('genChart_radv', [{
+                label: 'small (~50 in / 256 out)',
+                data: [37.7, 27.3, 64.4, 44.9, 34.9, 26.9],
+                backgroundColor: '#2a9d8f',
+                borderColor: '#2a9d8f',
+                borderWidth: 1,
+                borderRadius: 4,
+            }, {
+                label: 'medium (~1K in / 512 out)',
+                data: [31.2, 9.2, 0, 0, 13.8, 24.9],
+                backgroundColor: '#457b9d',
+                borderColor: '#457b9d',
+                borderWidth: 1,
+                borderRadius: 4,
+            }, {
+                label: 'large (~8K in / 2K out)',
+                data: [16.9, 2.5, 0, 0, 5.4, 25.1],
+                backgroundColor: '#e63946',
+                borderColor: '#e63946',
+                borderWidth: 1,
+                borderRadius: 4,
+            }], 'Generation tok/s');
+makeBar('genChart_rocm', [{
+                label: 'small (~50 in / 256 out)',
+                data: [34.0, 19.4, 56.1, 38.7, 31.6, 29.4],
+                backgroundColor: '#2a9d8f',
+                borderColor: '#2a9d8f',
+                borderWidth: 1,
+                borderRadius: 4,
+            }, {
+                label: 'medium (~1K in / 512 out)',
+                data: [30.4, 5.1, 31.4, 28.1, 13.8, 26.9],
+                backgroundColor: '#457b9d',
+                borderColor: '#457b9d',
+                borderWidth: 1,
+                borderRadius: 4,
+            }, {
+                label: 'large (~8K in / 2K out)',
+                data: [22.9, 0.3, 18.5, 13.7, 5.0, 25.8],
+                backgroundColor: '#e63946',
+                borderColor: '#e63946',
+                borderWidth: 1,
+                borderRadius: 4,
+            }], 'Generation tok/s');
+makeBar('ppChart_radv', [{
+                    label: 'small',
+                    data: [2.1, 13.5, 6.0, 4.2, 12.4, 2.1],
+                    backgroundColor: '#2a9d8f88',
+                    borderColor: '#2a9d8f',
+                    borderWidth: 1,
+                    borderRadius: 4,
+                }, {
+                    label: 'medium',
+                    data: [40.3, 148.2, 0, 0, 199.8, 32.8],
+                    backgroundColor: '#457b9d88',
+                    borderColor: '#457b9d',
+                    borderWidth: 1,
+                    borderRadius: 4,
+                }, {
+                    label: 'large',
+                    data: [96.2, 309.9, 0, 0, 660.2, 68.8],
+                    backgroundColor: '#e6394688',
+                    borderColor: '#e63946',
+                    borderWidth: 1,
+                    borderRadius: 4,
+                }], 'Prefill tok/s');
+makeBar('ppChart_rocm', [{
+                    label: 'small',
+                    data: [1.9, 8.6, 6.0, 4.2, 13.2, 2.4],
+                    backgroundColor: '#2a9d8f88',
+                    borderColor: '#2a9d8f',
+                    borderWidth: 1,
+                    borderRadius: 4,
+                }, {
+                    label: 'medium',
+                    data: [39.6, 73.4, 239.7, 167.8, 213.4, 35.5],
+                    backgroundColor: '#457b9d88',
+                    borderColor: '#457b9d',
+                    borderWidth: 1,
+                    borderRadius: 4,
+                }, {
+                    label: 'large',
+                    data: [135.7, 36.1, 746.3, 723.4, 629.8, 58.9],
+                    backgroundColor: '#e6394688',
+                    borderColor: '#e63946',
+                    borderWidth: 1,
+                    borderRadius: 4,
+                }], 'Prefill tok/s');
+
+
+new Chart(document.getElementById('degradeChart'), {
+  type: 'bar',
+  data: { labels: modelLabels, datasets: [{
+            label: 'RADV',
+            data: [44.8, 9.2, 0, 0, 15.5, 93.3],
+            backgroundColor: '#457b9d',
             borderColor: '#457b9d',
-            backgroundColor: '#457b9d33',
-            borderWidth: 2,
-            borderDash: [],
-            pointRadius: 4,
-            pointHoverRadius: 6,
-            tension: 0.2,
-            spanGaps: true,
+            borderWidth: 1,
+            borderRadius: 4,
         }, {
-            label: "mistral-small-4-q4 [UD-Q4_K_M] (radv)",
-            data: [null, 22.9, null, null, null, 26.4, null, null, null, null, null, 20.3, null, null, null, null, null, null, null, null, null],
-            borderColor: '#2a9d8f',
-            backgroundColor: '#2a9d8f33',
-            borderWidth: 2,
-            borderDash: [],
-            pointRadius: 4,
-            pointHoverRadius: 6,
-            tension: 0.2,
-            spanGaps: true,
-        }, {
-            label: "mistral-small-4-q4 [UD-Q4_K_M] (rocm)",
-            data: [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 20.9, null, null],
-            borderColor: '#e9c46a',
-            backgroundColor: '#e9c46a33',
-            borderWidth: 2,
-            borderDash: [],
-            pointRadius: 4,
-            pointHoverRadius: 6,
-            tension: 0.2,
-            spanGaps: true,
-        }, {
-            label: "nemotron-nano-q4 [Q4_K_M] (radv)",
-            data: [null, null, null, null, null, null, 61.6, null, null, null, null, null, 61.1, null, null, null, null, null, null, null, null],
-            borderColor: '#f4a261',
-            backgroundColor: '#f4a26133',
-            borderWidth: 2,
-            borderDash: [],
-            pointRadius: 4,
-            pointHoverRadius: 6,
-            tension: 0.2,
-            spanGaps: true,
-        }, {
-            label: "nemotron-nano-q4 [Q4_K_M] (rocm)",
-            data: [null, null, null, null, null, null, null, null, null, null, null, null, null, null, 56.5, null, null, null, null, 58.4, null],
-            borderColor: '#264653',
-            backgroundColor: '#26465333',
-            borderWidth: 2,
-            borderDash: [],
-            pointRadius: 4,
-            pointHoverRadius: 6,
-            tension: 0.2,
-            spanGaps: true,
-        }, {
-            label: "nemotron-nano-q8 [UD-Q8_K_XL] (radv)",
-            data: [43.8, null, null, null, null, null, null, 43.3, null, null, null, null, null, 43.0, null, null, null, null, null, null, null],
-            borderColor: '#a8dadc',
-            backgroundColor: '#a8dadc33',
-            borderWidth: 2,
-            borderDash: [],
-            pointRadius: 4,
-            pointHoverRadius: 6,
-            tension: 0.2,
-            spanGaps: true,
-        }, {
-            label: "nemotron-nano-q8 [UD-Q8_K_XL] (rocm)",
-            data: [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 40.2],
-            borderColor: '#6d6875',
-            backgroundColor: '#6d687533',
-            borderWidth: 2,
-            borderDash: [],
-            pointRadius: 4,
-            pointHoverRadius: 6,
-            tension: 0.2,
-            spanGaps: true,
-        }, {
-            label: "qwen3-coder-next-q6 [Q6_K] (radv)",
-            data: [null, null, 40.3, null, null, null, null, null, 39.2, null, null, null, null, null, null, null, null, null, null, null, null],
-            borderColor: '#b5838d',
-            backgroundColor: '#b5838d33',
-            borderWidth: 2,
-            borderDash: [],
-            pointRadius: 4,
-            pointHoverRadius: 6,
-            tension: 0.2,
-            spanGaps: true,
-        }, {
-            label: "qwen3-coder-next-q6 [Q6_K] (rocm)",
-            data: [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 34.2, null, null, null, null, null],
-            borderColor: '#ffb703',
-            backgroundColor: '#ffb70333',
-            borderWidth: 2,
-            borderDash: [],
-            pointRadius: 4,
-            pointHoverRadius: 6,
-            tension: 0.2,
-            spanGaps: true,
-        }, {
-            label: "qwen3.5-35b-q8 [UD-Q8_K_XL] (radv)",
-            data: [null, null, null, null, 27.7, null, null, null, null, null, 26.7, null, null, null, null, null, null, null, null, null, null],
-            borderColor: '#023047',
-            backgroundColor: '#02304733',
-            borderWidth: 2,
-            borderDash: [],
-            pointRadius: 4,
-            pointHoverRadius: 6,
-            tension: 0.2,
-            spanGaps: true,
-        }, {
-            label: "qwen3.5-35b-q8 [UD-Q8_K_XL] (rocm)",
-            data: [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 29.9, null, null, null],
-            borderColor: '#8ecae6',
-            backgroundColor: '#8ecae633',
-            borderWidth: 2,
-            borderDash: [],
-            pointRadius: 4,
-            pointHoverRadius: 6,
-            tension: 0.2,
-            spanGaps: true,
-        }]
-  },
+            label: 'ROCM',
+            data: [67.4, 1.5, 33.0, 35.4, 15.8, 87.8],
+            backgroundColor: '#e63946',
+            borderColor: '#e63946',
+            borderWidth: 1,
+            borderRadius: 4,
+        }] },
   options: {
+    indexAxis: 'y',
     responsive: true,
-    interaction: { mode: 'index', intersect: false },
+    maintainAspectRatio: false,
     plugins: {
-      legend: { labels: { font: { size: 11 }, usePointStyle: true, pointStyle: 'circle' } },
+      legend: { labels: { font: { size: 10 }, usePointStyle: true, pointStyle: 'rect' } },
       tooltip: {
-        backgroundColor: '#161b22',
-        borderColor: '#30363d',
-        borderWidth: 1,
-        titleFont: { size: 12 },
-        bodyFont: { size: 12 },
-        callbacks: { label: ctx => ctx.dataset.label + ': ' + ctx.parsed.y + ' tok/s' }
+        backgroundColor: '#161b22', borderColor: '#30363d', borderWidth: 1,
+        bodyFont: { size: 11 },
+        callbacks: { label: ctx => ctx.dataset.label + ': ' + ctx.parsed.x + '% retained' }
       }
     },
     scales: {
-      x: { ticks: { font: { size: 10 }, maxRotation: 45 } },
-      y: {
-        beginAtZero: true,
-        title: { display: true, text: 'tok/s', font: { size: 11 } },
-        ticks: { font: { size: 11 } }
-      }
+      x: { beginAtZero: true, max: 110, title: { display: true, text: '% of small-payload gen speed retained', font: { size: 11 } }, ticks: { font: { size: 11 }, callback: v => v + '%' } },
+      y: { ticks: { font: { size: 11 }, autoSkip: false } }
     }
   }
 });
 
-new Chart(document.getElementById('barChart'), {
+
+
+new Chart(document.getElementById('backendChart'), {
   type: 'bar',
-  data: {
-    labels: ["nemotron-nano-q4 [Q4_K_M] (radv)", "nemotron-nano-q4 [Q4_K_M] (rocm)", "nemotron-nano-q8 [UD-Q8_K_XL] (radv)", "nemotron-nano-q8 [UD-Q8_K_XL] (rocm)", "qwen3-coder-next-q6 [Q6_K] (radv)", "glm-4.7-flash-q8 [Q8_K_XL] (radv)", "qwen3-coder-next-q6 [Q6_K] (rocm)", "glm-4.7-flash-q8 [Q8_K_XL] (rocm)", "qwen3.5-35b-q8 [UD-Q8_K_XL] (rocm)", "qwen3.5-35b-q8 [UD-Q8_K_XL] (radv)", "mistral-small-4-q4 [UD-Q4_K_M] (rocm)", "mistral-small-4-q4 [UD-Q4_K_M] (radv)"],
-    datasets: [{
-      data: [61.1, 58.4, 43.0, 40.2, 39.2, 36.7, 34.2, 34.2, 29.9, 26.7, 20.9, 20.3],
-      backgroundColor: ["#e63946", "#457b9d", "#2a9d8f", "#e9c46a", "#f4a261", "#264653", "#a8dadc", "#6d6875", "#b5838d", "#ffb703", "#023047", "#8ecae6"],
-      borderRadius: 4,
-    }]
-  },
+  data: { labels: modelLabels, datasets: [{
+                label: 'RADV small gen',
+                data: [37.7, 27.3, 64.4, 44.9, 34.9, 26.9],
+                backgroundColor: '#457b9d',
+                borderWidth: 0,
+                stack: 'radv_small',
+                borderRadius: { bottomLeft: 4, bottomRight: 4, topLeft: 0, topRight: 0 },
+            }, {
+                    label: 'RADV small pp',
+                    data: [2.1, 13.5, 6.0, 4.2, 12.4, 2.1],
+                    backgroundColor: '#a8dadc',
+                    borderWidth: 0,
+                    stack: 'radv_small',
+                    borderRadius: { topLeft: 4, topRight: 4, bottomLeft: 0, bottomRight: 0 },
+                }, {
+                label: 'RADV medium gen',
+                data: [31.2, 9.2, 0, 0, 13.8, 24.9],
+                backgroundColor: '#457b9d',
+                borderWidth: 0,
+                stack: 'radv_medium',
+                borderRadius: { bottomLeft: 4, bottomRight: 4, topLeft: 0, topRight: 0 },
+            }, {
+                    label: 'RADV medium pp',
+                    data: [40.3, 148.2, 0, 0, 199.8, 32.8],
+                    backgroundColor: '#a8dadc',
+                    borderWidth: 0,
+                    stack: 'radv_medium',
+                    borderRadius: { topLeft: 4, topRight: 4, bottomLeft: 0, bottomRight: 0 },
+                }, {
+                label: 'RADV large gen',
+                data: [16.9, 2.5, 0, 0, 5.4, 25.1],
+                backgroundColor: '#457b9d',
+                borderWidth: 0,
+                stack: 'radv_large',
+                borderRadius: { bottomLeft: 4, bottomRight: 4, topLeft: 0, topRight: 0 },
+            }, {
+                    label: 'RADV large pp',
+                    data: [96.2, 309.9, 0, 0, 660.2, 68.8],
+                    backgroundColor: '#a8dadc',
+                    borderWidth: 0,
+                    stack: 'radv_large',
+                    borderRadius: { topLeft: 4, topRight: 4, bottomLeft: 0, bottomRight: 0 },
+                }, {
+                label: 'ROCM small gen',
+                data: [34.0, 19.4, 56.1, 38.7, 31.6, 29.4],
+                backgroundColor: '#e63946',
+                borderWidth: 0,
+                stack: 'rocm_small',
+                borderRadius: { bottomLeft: 4, bottomRight: 4, topLeft: 0, topRight: 0 },
+            }, {
+                    label: 'ROCM small pp',
+                    data: [1.9, 8.6, 6.0, 4.2, 13.2, 2.4],
+                    backgroundColor: '#f4a261',
+                    borderWidth: 0,
+                    stack: 'rocm_small',
+                    borderRadius: { topLeft: 4, topRight: 4, bottomLeft: 0, bottomRight: 0 },
+                }, {
+                label: 'ROCM medium gen',
+                data: [30.4, 5.1, 31.4, 28.1, 13.8, 26.9],
+                backgroundColor: '#e63946',
+                borderWidth: 0,
+                stack: 'rocm_medium',
+                borderRadius: { bottomLeft: 4, bottomRight: 4, topLeft: 0, topRight: 0 },
+            }, {
+                    label: 'ROCM medium pp',
+                    data: [39.6, 73.4, 239.7, 167.8, 213.4, 35.5],
+                    backgroundColor: '#f4a261',
+                    borderWidth: 0,
+                    stack: 'rocm_medium',
+                    borderRadius: { topLeft: 4, topRight: 4, bottomLeft: 0, bottomRight: 0 },
+                }, {
+                label: 'ROCM large gen',
+                data: [22.9, 0.3, 18.5, 13.7, 5.0, 25.8],
+                backgroundColor: '#e63946',
+                borderWidth: 0,
+                stack: 'rocm_large',
+                borderRadius: { bottomLeft: 4, bottomRight: 4, topLeft: 0, topRight: 0 },
+            }, {
+                    label: 'ROCM large pp',
+                    data: [135.7, 36.1, 746.3, 723.4, 629.8, 58.9],
+                    backgroundColor: '#f4a261',
+                    borderWidth: 0,
+                    stack: 'rocm_large',
+                    borderRadius: { topLeft: 4, topRight: 4, bottomLeft: 0, bottomRight: 0 },
+                }] },
   options: {
     indexAxis: 'y',
     responsive: true,
+    maintainAspectRatio: false,
     plugins: {
       legend: { display: false },
       tooltip: {
-        backgroundColor: '#161b22',
-        borderColor: '#30363d',
-        borderWidth: 1,
-        callbacks: { label: ctx => ctx.parsed.x + ' tok/s' }
+        backgroundColor: '#161b22', borderColor: '#30363d', borderWidth: 1,
+        bodyFont: { size: 11 },
+        callbacks: { label: ctx => ctx.dataset.label + ': ' + ctx.parsed.x + ' tok/s' }
       }
     },
     scales: {
-      x: {
-        beginAtZero: true,
-        title: { display: true, text: 'tok/s', font: { size: 11 } },
-        ticks: { font: { size: 11 } }
-      },
-      y: { ticks: { font: { size: 11 } } }
+      x: { stacked: true, beginAtZero: true, title: { display: true, text: 'tok/s (gen + pp stacked)', font: { size: 11 } }, ticks: { font: { size: 11 } } },
+      y: { stacked: true, ticks: { font: { size: 11 }, autoSkip: false } }
     }
   }
 });
+
 </script>
 </body>
 </html>
