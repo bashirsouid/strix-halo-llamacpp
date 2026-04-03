@@ -241,7 +241,7 @@ MODELS: list[ModelConfig] = [
         max_parallel=8,
         ctx_per_slot=32768,
         spec=SpecConfig(strategy="ngram"),
-        extra_args=["--repeat-penalty", "1.0", "--min-p", "0.01"],
+        extra_args=["--temp", "0.7", "--top-p", "1.0", "--repeat-penalty", "1.0", "--min-p", "0.01"],
         notes=(
             "Best for: code + chat at high speed, interleaved thinking."
             "Parallelism is only effective on ROCM; latest testing is slower than sequential on RADV."
@@ -265,6 +265,7 @@ MODELS: list[ModelConfig] = [
         max_parallel=6,
         ctx_per_slot=32768,
         spec=SpecConfig(strategy="ngram"),
+        extra_args=["--temp", "0.6", "--top-p", "0.95", "--top-k", "20", "--repeat-penalty", "1.0"],
         notes=(
             "Best for: reasoning, summarization, general-purpose.  "
             "MoE 35B (3B active).  Thinking mode on by default.  "
@@ -285,6 +286,7 @@ MODELS: list[ModelConfig] = [
         parallel_slots=1,
         max_parallel=4,
         ctx_per_slot=32768,
+        extra_args=["--temp", "0.1"],
         spec=SpecConfig(
             strategy="draft+ngram",
             draft=DraftModel(
@@ -316,6 +318,7 @@ MODELS: list[ModelConfig] = [
         max_parallel=3,
         ctx_per_slot=16384,
         spec=SpecConfig(strategy="ngram"),
+        extra_args=["--temp", "0.6", "--top-p", "0.95"],
         notes=(
             "Best for: long-context reasoning, multi-agent workflows.  "
             "Hybrid Mamba2-Transformer MoE 120B (12B active).  "
@@ -337,6 +340,7 @@ MODELS: list[ModelConfig] = [
         max_parallel=12,
         ctx_per_slot=1048576,
         spec=SpecConfig(strategy="ngram"),
+        extra_args=["--temp", "0.6", "--top-p", "0.95"],
         notes=(
             "Best for: speed, lightweight tasks, quick iteration.  "
             "MoE 30B (3B active).  Fastest model in catalog (~60+ tok/s).  "
@@ -358,6 +362,7 @@ MODELS: list[ModelConfig] = [
         max_parallel=10,
         ctx_per_slot=1048576,
         spec=SpecConfig(strategy="ngram"),
+        extra_args=["--temp", "0.6", "--top-p", "0.95"],
         notes=(
             "Best for: speed/quality balance, lightweight tasks.  "
             "MoE 30B (3B active).  ~45+ tok/s at Q8.  "
