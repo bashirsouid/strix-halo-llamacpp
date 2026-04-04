@@ -255,6 +255,7 @@ Open interactive HTML charts in your browser:
 | Script | Purpose |
 |---|---|
 | `start.sh` | One-command bootstrap: install deps, build, serve |
+| `watch.sh` | Watch and auto-restart the server with picker for backend/model |
 | `stop.sh` | Stop the running server |
 | `load_nemotron_nano_q4.sh` | Shortcut to serve Nemotron Nano Q4 |
 | `load_nemotron_nano_q8.sh` | Shortcut to serve Nemotron Nano Q8 |

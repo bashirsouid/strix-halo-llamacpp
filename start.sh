@@ -148,8 +148,7 @@ pick_backend() {
                 ;;
         esac
         
-        local desc_var="desc_${backend//-/_}"
-        printf "  %s %d) %-12s " "$check_mark" "$num" "$backend"
+        printf "  %s %d) %-16s " "$check_mark" "$num" "$backend"
         
         case "$backend" in
             radv) printf "(%s)\n" "$desc_radv" ;;
