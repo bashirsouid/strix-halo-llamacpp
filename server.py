@@ -180,8 +180,10 @@ def resolve_model(model_arg: str | None, prompt_text: str = "Pick a model") -> M
 # ── Backend picker TUI ───────────────────────────────────────────────────────
 
 def pick_backend(prompt_text: str = "Pick a backend") -> str:
-    """Show a numbered list of backends and let the user pick one."""
+    """Show a numbered list of backends with download status and let the user pick one."""
     backends = VALID_BACKENDS
+    rt = _find_container_runtime()
+
     print()
     print(f"  {prompt_text}:")
     print()
@@ -190,7 +192,23 @@ def pick_backend(prompt_text: str = "Pick a backend") -> str:
             backend_type = "Vulkan"
         else:
             backend_type = "ROCm"
-        print(f"  {i:>2d}) {b:<12s}  {_c(90, f'({backend_type})')}")
+
+        # Check if the container image is already pulled locally
+        image = _container_image(b)
+        downloaded = False
+        if rt:
+            check = subprocess.run(
+                [rt, "image", "inspect", image],
+                capture_output=True,
+            )
+            downloaded = check.returncode == 0
+
+        if downloaded:
+            mark = _c(32, "✓")  # green checkmark
+        else:
+            mark = _c(90, "·")  # grey dot
+
+        print(f"  {mark} {i:>2d}) {b:<16s}  {_c(90, f'({backend_type})')}")
     print()
 
     while True:
@@ -236,7 +254,7 @@ ROCM_CONTAINER_NAME  = "strix-llama-rocm"
 
 def _find_container_runtime() -> str | None:
     """Find podman or docker."""
-    for rt in ("podman", "docker"):
+    for rt in ("docker", "podman"):
         if shutil.which(rt):
             return rt
     return None
@@ -295,20 +313,34 @@ def check_build_deps(backend: str = "vulkan"):
 
 
 def _pull_container(image: str):
-    """Pull a container image and verify llama-server is present."""
+    """Pull a container image with streaming progress and verify llama-server is present."""
     rt = _find_container_runtime()
     if not rt:
-        fail("No container runtime found (need podman or docker)")
+        fail("No container runtime found (need docker or podman)")
         sys.exit(1)
 
     info(f"Pulling container image ({rt}) ...")
     info(f"  Image: {image}")
+    print()
 
-    result = subprocess.run([rt, "pull", image])
-    if result.returncode != 0:
+    # Stream pull output line-by-line so the user sees layer progress
+    proc = subprocess.Popen(
+        [rt, "pull", image],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    if proc.stdout:
+        for line in proc.stdout:
+            text = line.decode("utf-8", errors="replace").rstrip()
+            if text:
+                print(f"    {text}", flush=True)
+    returncode = proc.wait()
+
+    if returncode != 0:
         fail(f"Failed to pull {image}")
         sys.exit(1)
 
+    print()
     info("Verifying llama-server is present in image ...")
     verify = subprocess.run(
         [rt, "run", "--rm", image, "llama-server", "--version"],
@@ -437,7 +469,10 @@ def download_model(cfg: ModelConfig):
     if cfg.is_downloaded:
         ok(f"Model already on disk: {cfg.name}")
     else:
-        info(f"Downloading {cfg.name} from {cfg.hf_repo} ...")
+        info(f"Downloading {cfg.name} ...")
+        info(f"  Repository: {cfg.hf_repo}")
+        info(f"  Pattern:    {cfg.download_include}")
+        info(f"  Dest:       {cfg.dest_dir}")
         cfg.dest_dir.mkdir(parents=True, exist_ok=True)
 
         local_dir = str(cfg.dest_dir)
@@ -660,20 +695,35 @@ def launch_server(cfg: ModelConfig, port: int = 8000, backend: str = "vulkan",
         "container": container_name,
     }))
 
-    if verbose:
-        import threading
-        def _tail_container():
-            try:
-                log_proc = subprocess.Popen(
-                    [rt, "logs", "-f", container_name],
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                )
-                if log_proc.stdout:
-                    for line in log_proc.stdout:
-                        print(f"  │ {line.decode('utf-8', errors='replace').rstrip()}")
-            except Exception:
-                pass
-        threading.Thread(target=_tail_container, daemon=True).start()
+# Tail container logs for progress — always, not just in verbose mode
+    import threading
+
+    _PROGRESS_PATTERNS = (
+        "llm_load", "model size", "model type", "warming up",
+        "loaded meta", "loading model", "server listening",
+        "KV self size", "output buffer size",
+    )
+
+    def _tail_container():
+        try:
+            log_proc = subprocess.Popen(
+                [rt, "logs", "-f", container_name],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            )
+            if log_proc.stdout:
+                for line in log_proc.stdout:
+                    text = line.decode("utf-8", errors="replace").rstrip()
+                    if verbose:
+                        print(f"   {text}")
+                    else:
+                        # Show key progress lines even in non-verbose mode
+                        lower = text.lower()
+                        if any(pat in lower for pat in _PROGRESS_PATTERNS):
+                            print(f"\r\033[K  ⏳ {text}", flush=True)
+        except Exception:
+            pass
+
+    threading.Thread(target=_tail_container, daemon=True).start()
 
     if not verbose:
         print("  Loading ", end="", flush=True)
