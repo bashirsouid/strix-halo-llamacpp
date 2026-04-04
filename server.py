@@ -33,6 +33,7 @@ import textwrap
 import time
 import urllib.request
 import re
+import os
 from pathlib import Path
 
 from models import MODELS, get_model, ModelConfig
@@ -58,6 +59,17 @@ VULKAN_BACKENDS = ("radv", "amdvlk")
 
 EVAL_RESULTS_FILE = PROJECT_DIR / "eval_results.jsonl"
 EVAL_RAW_DIR      = PROJECT_DIR / "eval_raw"
+
+def load_env_file():
+    """Load .env file if it exists."""
+    env_path = PROJECT_DIR / ".env"
+    if env_path.exists():
+        import os
+        for line in env_path.read_text().splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, value = line.split("=", 1)
+                os.environ.setdefault(key, value.strip())
 
 def _build_dir(backend: str) -> Path:
     """Return the build directory for a given backend."""
@@ -235,22 +247,45 @@ def check_build_deps(backend: str = "vulkan"):
 
 
 def _clone_or_update_source(rebuild: bool = False, build_dir: Path | None = None):
-    """Clone llama.cpp if missing, or pull latest.  Optionally clean build dir."""
+    """Clone llama.cpp if missing, or pull latest.  Optionally clean build dir."""    
+    ref = os.environ.get("LLAMACPP_REF", "HEAD")
+    repo = os.environ.get("LLAMACPP_REPO", "ggml-org/llama.cpp")
+    
     if LLAMA_SRC.exists() and not rebuild:
         info("Updating llama.cpp ...")
-        subprocess.run(["git", "pull", "--ff-only"], cwd=LLAMA_SRC, check=True)
+        if ref != "HEAD":
+            info(f"  Using pinned ref: {ref}")
+            subprocess.run(["git", "fetch", "--tags"], cwd=LLAMA_SRC, check=True)
+            subprocess.run(["git", "checkout", ref], cwd=LLAMA_SRC, check=True)
+            subprocess.run(["git", "pull", "--ff-only"], cwd=LLAMA_SRC, check=True)
+        else:
+            subprocess.run(["git", "pull", "--ff-only"], cwd=LLAMA_SRC, check=True)
     elif LLAMA_SRC.exists() and rebuild:
         info("Rebuilding — cleaning build directory ...")
         if build_dir and build_dir.exists():
             shutil.rmtree(build_dir)
-        subprocess.run(["git", "pull", "--ff-only"], cwd=LLAMA_SRC, check=True)
+        if ref != "HEAD":
+            info(f"  Using pinned ref: {ref}")
+            subprocess.run(["git", "fetch", "--tags"], cwd=LLAMA_SRC, check=True)
+            subprocess.run(["git", "checkout", ref], cwd=LLAMA_SRC, check=True)
+            subprocess.run(["git", "pull", "--ff-only"], cwd=LLAMA_SRC, check=True)
+        else:
+            subprocess.run(["git", "pull", "--ff-only"], cwd=LLAMA_SRC, check=True)
     else:
         info("Cloning llama.cpp ...")
-        subprocess.run(
-            ["git", "clone", "--depth=1", "https://github.com/ggml-org/llama.cpp.git",
-             str(LLAMA_SRC)],
-            check=True,
-        )
+        if ref != "HEAD":
+            info(f"  Cloning ref: {ref}")
+            subprocess.run(
+                ["git", "clone", "--depth=1", "--branch", ref, f"https://github.com/{repo}.git",
+                 str(LLAMA_SRC)],
+                check=True,
+            )
+        else:
+            subprocess.run(
+                ["git", "clone", "--depth=1", "https://github.com/ggml-org/llama.cpp.git",
+                 str(LLAMA_SRC)],
+                check=True,
+            )
 
 
 def _build_rocm_in_container(build_dir: Path):
@@ -427,14 +462,16 @@ def _find_hf_cli() -> str | None:
     return None
 
 
-def _hf_download_cli(cli: str, repo: str, pattern: str, local_dir: str):
+def _hf_download_cli(cli: str, repo: str, pattern: str, local_dir: str, revision: str | None = None):
     """Download via the `hf` or `huggingface-cli` binary."""
     is_glob = any(c in pattern for c in "*?[")
-
+    cmd = [cli, "download", repo, "--local-dir", local_dir, "--resume"]
+    if revision:
+        cmd += ["--revision", revision]
     if is_glob:
-        cmd = [cli, "download", repo, "--include", pattern, "--local-dir", local_dir]
+        cmd += ["--include", pattern]
     else:
-        cmd = [cli, "download", repo, pattern, "--local-dir", local_dir]
+        cmd += [pattern]
 
     info(f"Running: {' '.join(cmd)}")
     subprocess.run(
@@ -444,7 +481,7 @@ def _hf_download_cli(cli: str, repo: str, pattern: str, local_dir: str):
     )
 
 
-def _hf_download_python(repo: str, pattern: str, local_dir: str):
+def _hf_download_python(repo: str, pattern: str, local_dir: str, revision: str | None = None):
     """Download via the huggingface_hub Python API (fallback)."""
     info(f"Using Python API fallback to download from {repo} ...")
     code = textwrap.dedent(f"""\
@@ -455,30 +492,32 @@ def _hf_download_python(repo: str, pattern: str, local_dir: str):
         repo = {repo!r}
         pattern = {pattern!r}
         local_dir = {local_dir!r}
+        revision = {revision!r}
 
         is_glob = any(c in pattern for c in "*?[")
+        resume = os.environ.get("HF_HUB_RESUME_DOWNLOAD", "1") in ("1", "true", "yes")
 
         if is_glob:
-            snapshot_download(repo, allow_patterns=[pattern], local_dir=local_dir)
+            snapshot_download(repo, allow_patterns=[pattern], local_dir=local_dir, revision=revision, resume_download=resume)
         else:
-            hf_hub_download(repo, filename=pattern, local_dir=local_dir)
+            hf_hub_download(repo, filename=pattern, local_dir=local_dir, revision=revision, resume_download=resume)
     """)
     subprocess.run([sys.executable, "-c", code], check=True)
 
 
-def _hf_download(repo: str, pattern: str, local_dir: str):
+def _hf_download(repo: str, pattern: str, local_dir: str, revision: str | None = None):
     """Download files from HuggingFace, trying CLI first then Python API."""
     cli = _find_hf_cli()
 
     if cli:
         try:
-            _hf_download_cli(cli, repo, pattern, local_dir)
+            _hf_download_cli(cli, repo, pattern, local_dir, revision=revision)
             return
         except subprocess.CalledProcessError:
             warn(f"CLI download failed with '{cli}', trying Python API fallback ...")
 
     try:
-        _hf_download_python(repo, pattern, local_dir)
+        _hf_download_python(repo, pattern, local_dir, revision=revision)
     except subprocess.CalledProcessError:
         fail("Download failed with both CLI and Python API.")
         fail(f"  Repo:    {repo}")
@@ -500,7 +539,12 @@ def download_model(cfg: ModelConfig):
         if "/" in cfg.download_include:
             local_dir = str(cfg.dest_dir.parent)
 
-        _hf_download(cfg.hf_repo, cfg.download_include, local_dir)
+        # Support HF revision pinning from environment
+        revision = os.environ.get("HF_REVISION")
+        if revision:
+            info(f"Using HF revision: {revision}")
+
+        _hf_download(cfg.hf_repo, cfg.download_include, local_dir, revision=revision)
 
         if cfg.is_downloaded:
             ok(f"Download complete: {cfg.model_path}")
@@ -585,7 +629,8 @@ def stop_server():
 
 
 def wait_for_server(port: int = 8000, timeout: int = 360, verbose: bool = False) -> bool:
-    """Poll /v1/models until the server is ready."""
+    """Poll /health until the server is ready."""
+    #url = f"http://127.0.0.1:{port}/health" # TODO: This URL is not working
     url = f"http://127.0.0.1:{port}/v1/models"
     deadline = time.time() + timeout
     if verbose:
@@ -691,7 +736,8 @@ def launch_server(cfg: ModelConfig, port: int = 8000, backend: str = "radv",
         if result.returncode != 0:
             fail(f"Failed to start ROCm container")
             if result.stderr:
-                for line in result.stderr.strip().splitlines()[-3:]:
+                stderr_text = result.stderr.strip() if result.stderr else ""
+                for line in stderr_text.splitlines()[-3:]:
                     fail(f"  {line}")
             sys.exit(1)
 
@@ -716,8 +762,9 @@ def launch_server(cfg: ModelConfig, port: int = 8000, backend: str = "radv",
                         [rt, "logs", "-f", ROCM_CONTAINER_NAME],
                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                     )
-                    for line in log_proc.stdout:
-                        print(f"  │ {line.decode('utf-8', errors='replace').rstrip()}")
+                    if log_proc.stdout:
+                        for line in log_proc.stdout:
+                            print(f"  │ {line.decode('utf-8', errors='replace').rstrip()}")
                 except Exception:
                     pass
             threading.Thread(target=_tail_container, daemon=True).start()
@@ -1576,6 +1623,8 @@ def main():
     p_eval_all.add_argument("--backend", choices=["radv", "amdvlk", "rocm"],
                             default="radv")
 
+    load_env_file()
+    
     args = parser.parse_args()
 
     if args.command is None:

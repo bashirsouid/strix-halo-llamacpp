@@ -3,3 +3,4 @@ __pycache__/
 .server.pid
 llama.cpp/
 .server.json
+.env

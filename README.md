@@ -37,6 +37,23 @@ python server.py download nemotron-nano-q4  # download a model
 python server.py serve nemotron-nano-q4   # serve it
 ```
 
+### Configuration
+
+Create a `.env` file (ignored by git) with your settings:
+
+```bash
+# API key for server authentication (required for production use)
+API_KEY=your-api-key-here
+
+# Optional: LLaMA.cpp version pin (default: HEAD)
+# LLAMACPP_REF=b8656
+```
+
+Generate an API key with:
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(32))"
+```
+
 ---
 
 ## Backends — Vulkan vs ROCm
@@ -87,13 +104,18 @@ Models are defined in `models.py` with per-model defaults tuned for 90 GB GPU me
 
 | Model | Params | Active | Quant | Weight ~GB | np | ctx/slot |
 |---|---|---|---|---|---|---|
-| Qwen3 Coder Next | 80B MoE | 3B | Q6_K | ~62 | 1 | 32K |
+| Qwen3 Coder 30B A3B | 30.5B MoE | 3.3B | Q8_0 | ~32.5 | 1 | 256K |
+| Qwen3 Coder Next | 80B MoE | 3B | Q6_K | ~62 | 1 | 262K |
 | GLM 4.7 Flash | 30B MoE | 3B | Q8_K_XL | ~30 | 1 | 32K |
-| Qwen3.5 35B | 35B MoE | 3B | Q8_K_XL | ~48 | 6 | 32K |
-| Mistral Small 4 | 119B MoE | 6.5B | Q4_K_M | ~55 | 1 | 32K |
-| Nemotron 3 Super | 120B MoE | 12B | Q4_K_M | ~55 | 1 | 16K |
-| Nemotron Nano Q4 | 30B MoE | 3B | Q4_K_M | ~6 | 8 | 64K |
-| Nemotron Nano Q8 | 30B MoE | 3B | Q8_K_XL | ~12 | 8 | 48K |
+| Qwen3.5 35B Throughput | 35B MoE | 3B | Q8_K_XL | ~48 | 3 | 32K |
+| Qwen3.5 35B LongCtx | 35B MoE | 3B | Q8_K_XL | ~48 | 1 | 256K |
+| Mistral Small 4 Tool/Code | 119B MoE | 6.5B | Q4_K_M | ~55 | 1 | 32K |
+| Mistral Small 4 Reasoning | 119B MoE | 6.5B | Q4_K_M | ~55 | 1 | 128K |
+| Nemotron 3 Super Reasoning | 120B MoE | 12B | Q4_K_M | ~55 | 1 | 64K |
+| Nemotron Nano Q4 Router | 30B MoE | 3B | Q4_K_M | ~6 | 8 | 32K |
+| Nemotron Nano Q4 LongCtx | 30B MoE | 3B | Q4_K_M | ~6 | 1 | 256K |
+| Nemotron Nano Q8 Router | 30B MoE | 3B | Q8_K_XL | ~12 | 8 | 32K |
+| Nemotron Nano Q8 LongCtx | 30B MoE | 3B | Q8_K_XL | ~12 | 1 | 256K |
 
 ### Parallelization
 

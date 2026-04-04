@@ -53,6 +53,11 @@ class SpecConfig:
         "draft"         use a separate small draft model
         "ngram"         draftless n-gram self-speculation  (best for MoE on UMA)
         "draft+ngram"   combine both (ngram has priority when it matches)
+        "ngram-cache"   ngram with cache (new)
+        "ngram-simple"  simple ngram mode (new)
+        "ngram-map-k"   ngram with map-k (new)
+        "ngram-map-k4v" ngram with map-k4v (new)
+        "ngram-mod"     modified ngram (default, most stable)
         None            no speculation
     """
     strategy: str | None = None
@@ -117,13 +122,31 @@ class ModelConfig:
     cache_type_k: str = "q8_0"  # --cache-type-k  (q8_0 saves ~50% vs f16)
     cache_type_v: str = "q8_0"  # --cache-type-v
 
+    #  Feature flags  
+    reasoning_format: str | None = None  # --reasoning-format (traverse, think-tags, etc.)
+    reasoning_budget: int | None = None  # --reasoning-budget (tokens)
+    reasoning: bool = False              # --reasoning (enable reasoning mode)
+    cache_ram: bool = False              # --cache-ram
+    kv_unified: bool = False             # --kv-unified
+    clear_idle: int = 0                  # --clear-idle (seconds)
+    cpu_moe: int = 0                     # --cpu-moe (layers)
+    n_cpu_moe: int = 0                   # --n-cpu-moe (n-batch)
+
     #  Speculation  
     spec: SpecConfig = field(default_factory=SpecConfig)
 
     #  Extras  
     chat_template_file: str | None = None
+    mmproj: str | None = None  # Path or filename for multimodal projector (GGUF)
     extra_args: list[str] = field(default_factory=list)
     notes: str = ""
+    api_key: str | None = None  # Global API key override (use .env file)
+
+    def __post_init__(self):
+        """Load API key from environment if set and not manually configured."""
+        import os
+        if self.api_key is None:
+            self.api_key = os.environ.get("API_KEY")
 
     @property
     def ctx_size(self) -> int:
@@ -161,7 +184,7 @@ class ModelConfig:
 
         args = [
             "-m",             str(model_path),
-            "--host",         "0.0.0.0",
+            "--host",         "127.0.0.1",
             "--port",         "8000",
             "--ctx-size",     str(total_ctx),
             "-ngl",           "999",
@@ -179,6 +202,34 @@ class ModelConfig:
 
         if self.chat_template_file:
             args += ["--chat-template-file", self.chat_template_file]
+
+        if self.mmproj:
+            mmproj_path = self.dest_dir / self.mmproj if "/" not in self.mmproj else Path(self.mmproj)
+            if mmproj_path.exists():
+                args += ["--mmproj", str(mmproj_path)]
+            else:
+                import os
+                os.environ.setdefault("LLAMA_SKIP_MMPROJ_CHECK", "1")
+
+        if self.api_key:
+            args += ["--api-key", self.api_key]
+
+        if self.reasoning_format:
+            args += ["--reasoning-format", self.reasoning_format]
+        if self.reasoning_budget:
+            args += ["--reasoning-budget", str(self.reasoning_budget)]
+        if self.reasoning:
+            args += ["--reasoning"]
+        if self.cache_ram:
+            args += ["--cache-ram"]
+        if self.kv_unified:
+            args += ["--kv-unified"]
+        if self.clear_idle > 0:
+            args += ["--clear-idle", str(self.clear_idle)]
+        if self.cpu_moe > 0:
+            args += ["--cpu-moe", str(self.cpu_moe)]
+        if self.n_cpu_moe > 0:
+            args += ["--n-cpu-moe", str(self.n_cpu_moe)]
 
         args += self.spec.server_args()
         args += self.extra_args
@@ -287,6 +338,7 @@ MODELS: list[ModelConfig] = [
         max_parallel=6,
         ctx_per_slot=262144,
         ubatch_size=256,
+        mmproj="mmproj-BF16.gguf",
         spec=SpecConfig(strategy="ngram"),
         extra_args=["--temp", "1.0", "--top-p", "0.95", "--top-k", "64"],
         notes=(
@@ -296,7 +348,7 @@ MODELS: list[ModelConfig] = [
             "256K native context. Native function calling baked into training. "
             "Thinking mode: add <|think|> at start of system prompt to enable. "
             "Google-recommended sampling: temp=1.0, top_p=0.95, top_k=64. "
-            "Vision: download mmproj-BF16.gguf separately, use --mmproj flag. "
+            "Vision: requires mmproj-BF16.gguf projector file. "
             "Apache 2.0. Day-1 note: tool-call templates still maturing in llama.cpp."
         ),
     ),
@@ -360,11 +412,11 @@ MODELS: list[ModelConfig] = [
             "Apache 2.0. Agentic coding: supports Qwen Code, CLINE, function call format."
         ),
     ),
-    # ── Mistral Small 4 ──
+    # ── Mistral Small 4 Tool/Code ──
     # ~50–60 GB at Q4 → ~28–38 GB for KV + overhead
     ModelConfig(
-        name="Mistral Small 4 (Q4_K_M)",
-        alias="mistral-small-4-q4",
+        name="Mistral Small 4 (Q4_K_M) Tool/Code",
+        alias="mistral-small-4-q4-tool",
         hf_repo="unsloth/Mistral-Small-4-119B-2603-GGUF",
         dest_dir=MODELS_DIR / "unsloth/Mistral-Small-4-119B-2603-GGUF/UD-Q4_K_M",
         download_include="UD-Q4_K_M/*.gguf",
@@ -373,7 +425,7 @@ MODELS: list[ModelConfig] = [
         parallel_slots=1,
         max_parallel=4,
         ctx_per_slot=32768,
-        extra_args=["--temp", "0.1"],
+        extra_args=["--temp", "0.1", "--top-k", "50"],
         spec=SpecConfig(
             strategy="draft+ngram",
             draft=DraftModel(
@@ -385,9 +437,35 @@ MODELS: list[ModelConfig] = [
             draft_min=2,
         ),
         notes=(
-            "Best for: all-round chat + code, tool calling. "
-            "MoE 119B (6.5B active). Largest model that fits well at Q4. "
-            "Only model where draft-model speculation helps on UMA."
+            "Best for: tool calling, code generation, fast chat. "
+            "MoE 119B (6.5B active). Temperature=0.1 for deterministic outputs. "
+            "Draft model + ngram speculation for speed. "
+            "Unsloth recommends --jinja template."
+        ),
+    ),
+
+    # ── Mistral Small 4 Reasoning ──
+    # ~50–60 GB at Q4 → ~28–38 GB for KV + overhead
+    ModelConfig(
+        name="Mistral Small 4 (Q4_K_M) Reasoning",
+        alias="mistral-small-4-q4-reasoning",
+        hf_repo="unsloth/Mistral-Small-4-119B-2603-GGUF",
+        dest_dir=MODELS_DIR / "unsloth/Mistral-Small-4-119B-2603-GGUF/UD-Q4_K_M",
+        download_include="UD-Q4_K_M/*.gguf",
+        shard_glob="*-00001-of-*.gguf",
+        quant="UD-Q4_K_M",
+        parallel_slots=1,
+        max_parallel=2,
+        ctx_per_slot=131072,
+        extra_args=["--temp", "0.7", "--top-p", "0.95", "--top-k", "20"],
+        spec=SpecConfig(
+            strategy="ngram",
+        ),
+        notes=(
+            "Best for: long-context reasoning, complex problem solving. "
+            "MoE 119B (6.5B active). Temperature=0.7 for creative reasoning. "
+            "N-gram speculation (draft model not recommended for reasoning). "
+            "256K context window (limited to 128K here)."
         ),
     ),
 
@@ -403,13 +481,15 @@ MODELS: list[ModelConfig] = [
         quant="UD-Q4_K_M",
         parallel_slots=1,
         max_parallel=3,
-        ctx_per_slot=16384,
+        ctx_per_slot=65536,
         spec=SpecConfig(strategy="ngram"),
-        extra_args=["--temp", "0.6", "--top-p", "0.95"],
+        extra_args=["--temp", "1.0", "--top-p", "0.95"],
         notes=(
             "Best for: long-context reasoning, multi-agent workflows. "
             "Hybrid Mamba2-Transformer MoE 120B (12B active). "
-            "Natively supports 1M context (limited here by memory)."
+            "Natively supports 1M context (limited here by memory). "
+            "NVIDIA-recommended: temp=1.0, top_p=0.95. "
+            "Use --reasoning-budget and --reasoning-format controls for advanced usage."
         ),
     ),
 
@@ -423,13 +503,13 @@ MODELS: list[ModelConfig] = [
         download_include="*Q4_K_M*.gguf",
         shard_glob="*Q4_K_M*.gguf",
         quant="Q4_K_M",
-        parallel_slots=8, # 116 tok/s combined
+        parallel_slots=8,
         max_parallel=12,
         ctx_per_slot=1048576,
         spec=SpecConfig(strategy="ngram"),
         extra_args=["--temp", "0.6", "--top-p", "0.95"],
         notes=(
-            "Best for: speed, lightweight tasks, quick iteration. "
+            "Best for: speed, lightweight tasks, tool calling, quick iteration. "
             "MoE 30B (3B active). Fastest model in catalog (~60+ tok/s). "
             "Good for drafting, quick Q&A, low-latency tool calls."
         ),
@@ -445,13 +525,13 @@ MODELS: list[ModelConfig] = [
         download_include="*UD-Q8_K_XL*.gguf",
         shard_glob="*UD-Q8_K_XL*.gguf",
         quant="UD-Q8_K_XL",
-        parallel_slots=8, # 83 tok/s combined
+        parallel_slots=8,
         max_parallel=10,
         ctx_per_slot=1048576,
         spec=SpecConfig(strategy="ngram"),
         extra_args=["--temp", "0.6", "--top-p", "0.95"],
         notes=(
-            "Best for: speed/quality balance, lightweight tasks. "
+            "Best for: speed/quality balance, lightweight tasks, tool calling. "
             "MoE 30B (3B active). ~45+ tok/s at Q8. "
             "Good for drafting, quick Q&A, low-latency tool calls."
         ),
