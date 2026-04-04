@@ -12,7 +12,7 @@ import urllib.request
 import urllib.error
 import sys
 
-def test_inference(port: int = 8000, timeout: int = 30) -> bool:
+def _inference_check(port: int = 8000, timeout: int = 30) -> bool:
     """Test inference with a simple prompt.
     
     Args:
@@ -77,13 +77,14 @@ def main():
     parser.add_argument("--timeout", type=int, default=30, help="Request timeout")
     args = parser.parse_args()
     
-    success = test_inference(port=args.port, timeout=args.timeout)
-    sys.exit(0 if success else 1)
+    result = _inference_check(port=args.port, timeout=args.timeout)
+    assert result is True, "Inference test failed"
 
 if __name__ == "__main__":
     main()
 
 
-def test_inference_pytest():
+def test_inference():
     """Pytest wrapper for inference test."""
-    assert test_inference() is True
+    result = _inference_check()
+    assert result is True, "Inference test failed"
