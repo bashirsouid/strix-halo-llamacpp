@@ -4,19 +4,44 @@ Comprehensive test suite for `server.py` and `models.py`.
 
 ## Quick Start
 
+### Option 1: Python pytest (for server.py unit tests)
+
 ```bash
 # Run all tests
 pytest tests/ -v
 
-# Run with parallelization
+# Run with parallelization (uses multiple CPU cores)
 pytest tests/ -n auto
 
 # Run specific test file
 pytest tests/test_server.py -v
+pytest tests/test_parallelization.py -v
 
 # Run with coverage
 pytest tests/ --cov=. --cov-report=term-missing
 ```
+
+### Option 2: Dry-Run Mode (for real server tests without disrupting main model)
+
+```bash
+# Dry-run test mode - won't start/stop server
+python server.py test --sequential --dry-run
+
+# Test with parallel slots
+python server.py test --np 4 --sequential
+
+# Test with ROCm backend
+python server.py test --backend rocm --sequential
+
+# Test specific model
+python server.py test --model nemotron-nano-q4 --sequential
+```
+
+**Why dry-run mode?** When the main conversational model is running, dry-run mode allows you to:
+- Validate configuration without starting/stopping the server
+- Test model arguments and environment variables
+- Check parallelization settings
+- Avoid interfering with the main model that powers our chat
 
 ## Test Organization
 

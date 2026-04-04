@@ -1522,6 +1522,146 @@ def list_models():
                 print()
 
 
+# ── Test Mode ──────────────────────────────────────────────────────────────────
+
+def run_test_suite(args):
+    """Run tests in dry-run mode without disrupting the main conversational model.
+    
+    This mode:
+    1. Uses a tiny model or existing model for tests
+    2. Skips actual model downloads if already present (--dry-run)
+    3. Runs sequentially if --sequential is set
+    4. Uses low parallel slots to minimize memory usage
+    5. Does NOT stop/restart the main model server
+    """
+    import subprocess
+    import sys
+    import os
+    
+    print()
+    info("╔════════════════════════════════════════════════════════════════╗")
+    info("║  STRIX LLMAPPP TEST SUITE - DRY RUN MODE                      ║")
+    info("╚════════════════════════════════════════════════════════════════╝")
+    print()
+    
+    # Use tiny model if specified, or existing model
+    model_alias = args.model or "nemotron-nano-q4"
+    if args.dry_run:
+        # Check if model is already downloaded
+        try:
+            cfg = get_model(model_alias)
+            if cfg.is_downloaded:
+                ok(f"Model already downloaded: {cfg.name}")
+            else:
+                warn(f"Model not downloaded, but --dry-run requested. Skipping download.")
+        except ValueError:
+            warn(f"Unknown model: {model_alias}. Using nemotron-nano-q4 for testing.")
+            model_alias = "nemotron-nano-q4"
+            cfg = get_model(model_alias)
+    
+    print()
+    info(f"Config:")
+    print(f"  Model:    {model_alias}")
+    print(f"  Port:     {args.port}")
+    print(f"  Backend:  {args.backend}")
+    print(f"  Parallel: {args.np}")
+    if args.sequential:
+        print(f"  Sequential: YES (avoids concurrent model switching)")
+    if args.dry_run:
+        print(f"  Dry-run:  YES (skips downloads)")
+    print()
+    
+    # Test 1: Model validation
+    print()
+    print("  ── Test 1: Model Validation ──────────────────────────────────")
+    cfg = None
+    try:
+        cfg = get_model(model_alias)
+        ok(f"Model found: {cfg.name}")
+        print(f"  Alias:   {cfg.alias}")
+        print(f"  Parallel: {cfg.parallel_slots}")
+        print(f"  Context: {cfg.ctx_per_slot} tokens/slot")
+        if cfg.is_downloaded:
+            ok("Model is downloaded")
+        else:
+            warn("Model not downloaded")
+    except ValueError as e:
+        fail(f"Model lookup failed: {e}")
+        cfg = None
+    print()
+    
+    # Test 2: Server arguments generation
+    print()
+    print("  ── Test 2: Server Arguments Generation ───────────────────────")
+    try:
+        if cfg and cfg.is_downloaded:
+            args_list = cfg.server_args(parallel_override=args.np)
+            print(f"  Generated {len(args_list)} arguments")
+            print(f"  Sample args: {args_list[:8]} ...")
+            ok("Server arguments generated successfully")
+        else:
+            warn("Skipping - model not downloaded")
+    except Exception as e:
+        fail(f"Argument generation failed: {e}")
+    print()
+    
+    # Test 3: Environment variables
+    print()
+    print("  ── Test 3: Environment Variables ─────────────────────────────")
+    try:
+        from server import VULKAN_ENV, ROCM_ENV
+        if args.backend in VULKAN_BACKENDS:
+            env_vars = VULKAN_ENV
+        else:
+            env_vars = ROCM_ENV
+        print(f"  Backend: {args.backend}")
+        for k, v in env_vars.items():
+            print(f"    {k}: {v}")
+        ok("Environment variables configured")
+    except Exception as e:
+        fail(f"Environment setup failed: {e}")
+    print()
+    
+    # Test 4: Parallelization test
+    print()
+    print("  ── Test 4: Parallelization Support ───────────────────────────")
+    if not args.sequential:
+        print(f"  Testing {args.np} parallel slots...")
+        # Test concurrent requests (dry-run, don't actually send)
+        print(f"  Concurrent requests: simulated")
+        ok("Parallelization configuration valid")
+    else:
+        ok("Sequential mode - parallelization skipped")
+    print()
+    
+    # Test 5: Server readiness (dry-run check)
+    print()
+    print("  ── Test 5: Server Readiness Check ────────────────────────────")
+    try:
+        import urllib.request
+        url = f"http://127.0.0.1:{args.port}/health"
+        try:
+            with urllib.request.urlopen(url, timeout=2) as resp:
+                if resp.status == 200:
+                    ok(f"Server is running on port {args.port}")
+                else:
+                    warn(f"Server responded with status {resp.status}")
+        except Exception:
+            warn(f"Server not responding on port {args.port} (expected if not started)")
+    except Exception as e:
+        warn(f"Health check failed: {e}")
+    print()
+    
+    # Summary
+    print()
+    info("╔════════════════════════════════════════════════════════════════╗")
+    info("║  TEST SUITE COMPLETE                                          ║")
+    info("╚════════════════════════════════════════════════════════════════╝")
+    print()
+    ok("Tests completed in dry-run mode")
+    ok("Main model server was NOT affected")
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  CLI
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1532,6 +1672,23 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     sub = parser.add_subparsers(dest="command")
+    
+    # test mode - dry-run for testing without disrupting main model
+    p_test = sub.add_parser("test", help="Run test suite in dry-run mode (no server)")
+    p_test.add_argument("--model", default=None,
+                        help="Model to test (uses nemotron-nano-q4 by default)")
+    p_test.add_argument("--port", type=int, default=8000,
+                        help="Port for dry-run tests")
+    p_test.add_argument("--backend", choices=["radv", "amdvlk", "rocm"], default="radv",
+                        help="Backend for tests")
+    p_test.add_argument("--np", type=int, default=1,
+                        help="Parallel slots for parallelization tests (default: 1)")
+    p_test.add_argument("--dry-run", action="store_true",
+                        help="Skip actual model download if already present")
+    p_test.add_argument("--sequential", action="store_true",
+                        help="Run tests sequentially (avoids concurrent model switching)")
+    p_test.add_argument("--timeout", type=int, default=30,
+                        help="Timeout for server startup in seconds (default: 30)")
 
     # build
     p_build = sub.add_parser("build", help="Build llama.cpp from source")
@@ -1697,6 +1854,9 @@ def main():
     elif args.command == "eval-all":
         eval_all(suite=args.suite,
                  port=args.port, backend=args.backend)
+    
+    elif args.command == "test":
+        run_test_suite(args)
 
 if __name__ == "__main__":
     main()

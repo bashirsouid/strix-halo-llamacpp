@@ -5,6 +5,37 @@ Builds llama.cpp from source, downloads GGUF models from Hugging Face, and serve
 
 Supports **Vulkan (RADV / AMDVLK)** and **ROCm (HIP)** backends side by side — build both and switch at serve time.
 
+## Test Suite
+
+This project includes a comprehensive test suite to validate configuration, model arguments, environment variables, and parallelization settings.
+
+### Quick Test (Dry-Run Mode)
+```bash
+# Validate configuration without affecting running server
+python server.py test --sequential --dry-run
+
+# Test with different parallel slots
+python server.py test --np 4 --sequential
+
+# Test with different backend
+python server.py test --backend rocm --sequential
+```
+
+### Python pytest Tests
+```bash
+# Run all tests
+pytest tests/ -v
+
+# Parallel execution (uses multiple CPU cores)
+pytest tests/ -n auto
+
+# Specific test files
+pytest tests/test_server.py -v
+pytest tests/test_parallelization.py -v
+```
+
+For detailed test documentation, see [TESTING.md](TESTING.md).
+
 ---
 
 ## Hardware target
