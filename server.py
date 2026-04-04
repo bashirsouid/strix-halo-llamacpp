@@ -2,20 +2,30 @@
 """
 Strix Halo llama.cpp launcher.
 
-Builds llama.cpp from source (Vulkan or ROCm), downloads models from HF,
-and serves them with tuned flags for AMD Strix Halo (Ryzen AI Max / gfx1151).
+Runs llama.cpp via pre-built container images from kyuz0/amd-strix-halo-toolboxes.
+All backends (vulkan, radv, amdvlk, rocm, rocm6, rocm7, rocm7-nightly) run in containers.
 
-Supports side-by-side builds: both Vulkan and ROCm can coexist in separate
-build directories.  Use --backend to select at build and serve time.
+Container-based architecture:
+  - All backends run via containers from docker.io/kyuz0/amd-strix-halo-toolboxes
+  - Container images ship pre-built llama.cpp for gfx1151
+  - No native build required for any backend
+  
+Available backends:
+  - vulkan/radv:    Container: vulkan-radv         (Vulkan with RADV)
+  - amdvlk:         Container: vulkan-amdvlk       (Vulkan with AMDVLK)
+  - rocm:           Container: rocm-nightly        (latest ROCm)
+  - rocm6:          Container: rocm-6.4.4          (ROCm 6.4.4)
+  - rocm7:          Container: rocm-7.2            (ROCm 7.2)
+  - rocm7-nightly:  Container: rocm7-nightlies     (nightly ROCm builds)
 
 Usage:
-    python server.py build   [--backend vulkan|rocm] [--rebuild]
+    python server.py build   [--backend vulkan|radv|amdvlk|rocm|rocm6|rocm7|rocm7-nightly]
     python server.py list
-    python server.py serve   [MODEL] [--backend radv|amdvlk|rocm] ...
+    python server.py serve   [MODEL] [--backend vulkan|radv|amdvlk|rocm|rocm6|rocm7|rocm7-nightly] ...
     python server.py stop
-    python server.py bench   [MODEL] [--backend radv|amdvlk|rocm]
-    python server.py bench-all
-    python server.py bench-parallel [MODEL]               # sweep --np to find sweet spot
+    python server.py bench   [MODEL] [--backend vulkan|radv|amdvlk|rocm|rocm6|rocm7|rocm7-nightly]
+    python server.py bench-all [--backend vulkan|radv|amdvlk|rocm|rocm6|rocm7|rocm7-nightly]
+    python server.py bench-parallel [MODEL] [--backend vulkan|radv|amdvlk|rocm|rocm6|rocm7|rocm7-nightly]
     python server.py download MODEL
 """
 
@@ -45,17 +55,45 @@ LLAMA_SRC    = PROJECT_DIR / "llama.cpp"
 PID_FILE     = PROJECT_DIR / ".server.pid"
 STATE_FILE   = PROJECT_DIR / ".server.json"
 
-# Side-by-side build directories so you can have both backends ready at once.
-# `python server.py build --backend vulkan` → build-vulkan/
-# `python server.py build --backend rocm`   → build-rocm/
-LLAMA_BUILD_VULKAN = LLAMA_SRC / "build-vulkan"
-LLAMA_BUILD_ROCM   = LLAMA_SRC / "build-rocm"
-
 # Legacy path — if you previously built into "build/", we check there as fallback.
 LLAMA_BUILD_LEGACY = LLAMA_SRC / "build"
 
-VALID_BACKENDS = ("radv", "amdvlk", "rocm")
-VULKAN_BACKENDS = ("radv", "amdvlk")
+# All backends now run via containers. We use different container tags for each backend.
+# Container images ship pre-built llama.cpp for gfx1151 from kyuz0/amd-strix-halo-toolboxes.
+#
+# Backend naming:
+#   - vulkan/radv:   Use same container (vulkan-radv tag) for backward compatibility
+#   - amdvlk:        Separate container (vulkan-amdvlk tag)
+#   - rocm:          Use rocm-nightly (latest)
+#   - rocm6:         rocm-6.4.4 (specific version)
+#   - rocm7:         rocm-7.2 (specific version)
+#   - rocm7-nightly: rocm7-nightlies (nightly builds)
+
+CONTAINER_REGISTRY = "docker.io/kyuz0/amd-strix-halo-toolboxes"
+
+CONTAINER_IMAGES = {
+    "vulkan":      f"{CONTAINER_REGISTRY}:vulkan-radv",
+    "radv":        f"{CONTAINER_REGISTRY}:vulkan-radv",
+    "amdvlk":      f"{CONTAINER_REGISTRY}:vulkan-amdvlk",
+    "rocm":        f"{CONTAINER_REGISTRY}:rocm-nightly",
+    "rocm6":       f"{CONTAINER_REGISTRY}:rocm-6.4.4",
+    "rocm7":       f"{CONTAINER_REGISTRY}:rocm-7.2",
+    "rocm7-nightly": f"{CONTAINER_REGISTRY}:rocm7-nightlies",
+}
+
+CONTAINER_NAMES = {
+    "vulkan":      "strix-llama-vulkan",
+    "radv":        "strix-llama-vulkan",
+    "amdvlk":      "strix-llama-amdvlk",
+    "rocm":        "strix-llama-rocm",
+    "rocm6":       "strix-llama-rocm6",
+    "rocm7":       "strix-llama-rocm7",
+    "rocm7-nightly": "strix-llama-rocm7-nightly",
+}
+
+VALID_BACKENDS = tuple(CONTAINER_IMAGES.keys())
+VULKAN_BACKENDS = ("vulkan", "radv", "amdvlk")
+ROCM_BACKENDS = ("rocm", "rocm6", "rocm7", "rocm7-nightly")
 
 EVAL_RESULTS_FILE = PROJECT_DIR / "eval_results.jsonl"
 EVAL_RAW_DIR      = PROJECT_DIR / "eval_raw"
@@ -71,58 +109,21 @@ def load_env_file():
                 key, value = line.split("=", 1)
                 os.environ.setdefault(key, value.strip())
 
-def _build_dir(backend: str) -> Path:
-    """Return the build directory for a given backend."""
-    if backend == "rocm":
-        return LLAMA_BUILD_ROCM
-    return LLAMA_BUILD_VULKAN
+def _container_image(backend: str) -> str:
+    """Return the container image for a given backend."""
+    return CONTAINER_IMAGES.get(backend, CONTAINER_IMAGES["vulkan"])
 
+def _container_name(backend: str) -> str:
+    """Return the container name for a given backend."""
+    return CONTAINER_NAMES.get(backend, CONTAINER_NAMES["vulkan"])
 
-def _server_bin(backend: str) -> Path:
-    """Return path to llama-server for the given backend.
+def _is_container_backend(backend: str) -> bool:
+    """All backends now use containers."""
+    return backend in VALID_BACKENDS
 
-    Falls back to legacy build/ dir if the new per-backend dir doesn't exist.
-    """
-    primary = _build_dir(backend) / "bin" / "llama-server"
-    if primary.exists():
-        return primary
-    # Fallback: old single build/ directory (before multi-backend support)
-    legacy = LLAMA_BUILD_LEGACY / "bin" / "llama-server"
-    if legacy.exists():
-        return legacy
-    return primary  # return expected path for error messages
-
-
-def _bench_bin(backend: str) -> Path:
-    """Return path to llama-bench for the given backend."""
-    primary = _build_dir(backend) / "bin" / "llama-bench"
-    if primary.exists():
-        return primary
-    legacy = LLAMA_BUILD_LEGACY / "bin" / "llama-bench"
-    if legacy.exists():
-        return legacy
-    return primary
-
-
-# ── Per-backend environment variables ────────────────────────────────────────
-#
-# Strix Halo (Ryzen AI Max 395) with GTT-mapped unified memory:
-#   - VRAM aperture is kept minimal (512MB) for display only
-#   - All model weight + KV cache lives in GTT (90GB mapped)
-#   - This means RADV_PERFTEST=nogttspill is WRONG for our setup
-#     (we *want* everything in GTT)
-
-VULKAN_ENV = {
-    "AMD_VULKAN_ICD":             "RADV",      # overridden to AMDVLK for --backend amdvlk
-    "HSA_ENABLE_SDMA":            "0",          # critical for gfx1151 stability
-    "GGML_VK_PREFER_HOST_MEMORY": "0",          # let Vulkan manage memory placement
-}
-
-ROCM_ENV = {
-    "HSA_ENABLE_SDMA":            "0",          # critical for gfx1151 stability
-    "ROCBLAS_USE_HIPBLASLT":      "1",          # use hipBLASLt for faster GEMM (prefill)
-    "HIP_VISIBLE_DEVICES":        "0",          # target the iGPU
-}
+def _is_rocm(backend: str) -> bool:
+    """True for any ROCm variant."""
+    return backend in ROCM_BACKENDS
 
 
 # ── Colours ──────────────────────────────────────────────────────────────────
@@ -246,208 +247,68 @@ def check_build_deps(backend: str = "vulkan"):
         return "native"
 
 
-def _clone_or_update_source(rebuild: bool = False, build_dir: Path | None = None):
-    """Clone llama.cpp if missing, or pull latest.  Optionally clean build dir."""    
-    ref = os.environ.get("LLAMACPP_REF", "HEAD")
-    repo = os.environ.get("LLAMACPP_REPO", "ggml-org/llama.cpp")
-    
-    if LLAMA_SRC.exists() and not rebuild:
-        info("Updating llama.cpp ...")
-        if ref != "HEAD":
-            info(f"  Using pinned ref: {ref}")
-            subprocess.run(["git", "fetch", "--tags"], cwd=LLAMA_SRC, check=True)
-            subprocess.run(["git", "checkout", ref], cwd=LLAMA_SRC, check=True)
-            subprocess.run(["git", "pull", "--ff-only"], cwd=LLAMA_SRC, check=True)
-        else:
-            subprocess.run(["git", "pull", "--ff-only"], cwd=LLAMA_SRC, check=True)
-    elif LLAMA_SRC.exists() and rebuild:
-        info("Rebuilding — cleaning build directory ...")
-        if build_dir and build_dir.exists():
-            shutil.rmtree(build_dir)
-        if ref != "HEAD":
-            info(f"  Using pinned ref: {ref}")
-            subprocess.run(["git", "fetch", "--tags"], cwd=LLAMA_SRC, check=True)
-            subprocess.run(["git", "checkout", ref], cwd=LLAMA_SRC, check=True)
-            subprocess.run(["git", "pull", "--ff-only"], cwd=LLAMA_SRC, check=True)
-        else:
-            subprocess.run(["git", "pull", "--ff-only"], cwd=LLAMA_SRC, check=True)
-    else:
-        info("Cloning llama.cpp ...")
-        if ref != "HEAD":
-            info(f"  Cloning ref: {ref}")
-            subprocess.run(
-                ["git", "clone", "--depth=1", "--branch", ref, f"https://github.com/{repo}.git",
-                 str(LLAMA_SRC)],
-                check=True,
-            )
-        else:
-            subprocess.run(
-                ["git", "clone", "--depth=1", "https://github.com/ggml-org/llama.cpp.git",
-                 str(LLAMA_SRC)],
-                check=True,
-            )
 
 
-def _build_rocm_in_container(build_dir: Path):
-    """Pull the kyuz0 ROCm toolbox image for container-based serving.
 
-    The kyuz0/amd-strix-halo-toolboxes images ship with llama.cpp pre-built
-    for gfx1151, rebuilt on every upstream commit.  Since ROCm userspace libs
-    aren't available on Debian Trixie, we run llama-server inside the
-    container at serve time (with GPU passthrough and model dir mounted).
-    """
+def _pull_container(image: str):
+    """Pull a container image and verify llama-server is present."""
     rt = _find_container_runtime()
     if not rt:
         fail("No container runtime found (need podman or docker)")
         sys.exit(1)
 
-    info(f"Pulling ROCm container image ({rt}) ...")
-    info(f"  Image: {ROCM_CONTAINER_IMAGE}")
+    info(f"Pulling container image ({rt}) ...")
+    info(f"  Image: {image}")
 
-    result = subprocess.run(
-        [rt, "pull", ROCM_CONTAINER_IMAGE],
-    )
+    result = subprocess.run([rt, "pull", image])
     if result.returncode != 0:
-        fail(f"Failed to pull {ROCM_CONTAINER_IMAGE}")
+        fail(f"Failed to pull {image}")
         sys.exit(1)
 
-    # Verify llama-server exists inside the image
     info("Verifying llama-server is present in image ...")
     verify = subprocess.run(
-        [rt, "run", "--rm", ROCM_CONTAINER_IMAGE, "llama-server", "--version"],
+        [rt, "run", "--rm", image, "llama-server", "--version"],
         capture_output=True, text=True, timeout=30,
     )
     if verify.returncode == 0:
         ver = verify.stdout.strip().splitlines()[0] if verify.stdout.strip() else "unknown"
-        ok(f"ROCm image ready — llama-server {ver}")
+        ok(f"Container ready — llama-server {ver}")
     else:
         warn("Could not verify llama-server in image (may still work)")
 
-    # Write a marker so ensure_built knows ROCm container mode is set up
-    build_dir.mkdir(parents=True, exist_ok=True)
-    (build_dir / ".container-mode").write_text(ROCM_CONTAINER_IMAGE)
-    ok(f"ROCm backend ready (container mode via {rt})")
-
-
-def _build_rocm_native(build_dir: Path):
-    """Build llama.cpp with ROCm using native hipcc."""
-    ncpu = os.cpu_count() or 4
-
-    info("Configuring with ROCm (HIP) for gfx1151 ...")
-    cmake_flags = [
-        "cmake", "-B", str(build_dir),
-        "-G", "Ninja",
-        "-DGGML_HIP=ON",
-        "-DAMDGPU_TARGETS=gfx1151",
-        "-DCMAKE_BUILD_TYPE=Release",
-    ]
-
-    cmake_env = {**os.environ}
-    hipcc = shutil.which("hipcc")
-    if hipcc:
-        hip_path_result = subprocess.run(
-            ["hipconfig", "-R"], capture_output=True, text=True
-        )
-        if hip_path_result.returncode == 0:
-            cmake_env["HIP_PATH"] = hip_path_result.stdout.strip()
-        hipcc_dir = subprocess.run(
-            ["hipconfig", "-l"], capture_output=True, text=True
-        )
-        if hipcc_dir.returncode == 0:
-            cmake_env["HIPCXX"] = f"{hipcc_dir.stdout.strip()}/clang"
-
-    subprocess.run(cmake_flags, cwd=LLAMA_SRC, check=True, env=cmake_env)
-
-    info(f"Building ROCm native (using {ncpu} cores) ...")
-    subprocess.run(
-        [
-            "cmake", "--build", str(build_dir),
-            "--config", "Release",
-            f"-j{ncpu}",
-            "--target", "llama-server", "llama-bench",
-        ],
-        check=True,
-        env=cmake_env,
-    )
-
-    server_bin = build_dir / "bin" / "llama-server"
-    if server_bin.exists():
-        ok(f"ROCm build complete (native): {server_bin}")
-    else:
-        fail("Build finished but llama-server binary not found.")
-        sys.exit(1)
-
 
 def build_llamacpp(rebuild: bool = False, backend: str = "vulkan"):
-    """Build llama.cpp for the specified backend.
-
-    For ROCm: uses native hipcc if available, otherwise extracts pre-built
-    binaries from the kyuz0 Strix Halo toolbox container image.
-    For Vulkan: builds from source (clones llama.cpp if needed).
+    """Setup the container for the specified backend.
+    
+    For container backends (all of them now), just pulls the image.
+    No local build is required since containers ship pre-built binaries.
     """
-    build_mode = check_build_deps(backend)
-    build_dir = _build_dir("rocm" if backend == "rocm" else "radv")
-
-    if backend == "rocm" and build_mode == "container":
-        # Container extraction doesn't need the source tree
-        if rebuild and build_dir.exists():
-            info("Cleaning ROCm build directory ...")
-            shutil.rmtree(build_dir)
-        _build_rocm_in_container(build_dir)
-    elif backend == "rocm":
-        _clone_or_update_source(rebuild, build_dir)
-        _build_rocm_native(build_dir)
-    else:
-        _clone_or_update_source(rebuild, build_dir)
-
-        ncpu = os.cpu_count() or 4
-        info("Configuring with Vulkan ...")
-        subprocess.run(
-            [
-                "cmake", "-B", str(build_dir),
-                "-G", "Ninja",
-                "-DGGML_VULKAN=ON",
-                "-DCMAKE_BUILD_TYPE=Release",
-            ],
-            cwd=LLAMA_SRC,
-            check=True,
-        )
-
-        info(f"Building Vulkan (using {ncpu} cores) ...")
-        subprocess.run(
-            [
-                "cmake", "--build", str(build_dir),
-                "--config", "Release",
-                f"-j{ncpu}",
-                "--target", "llama-server", "llama-bench",
-            ],
-            check=True,
-        )
-
-        server_bin = build_dir / "bin" / "llama-server"
-        if server_bin.exists():
-            ok(f"Build complete (vulkan): {server_bin}")
-        else:
-            fail("Build finished but llama-server binary not found.")
-            sys.exit(1)
+    image = _container_image(backend)
+    _pull_container(image)
+    
+    info(f"Backend '{backend}' ready (using container: {_container_name(backend)})")
 
 
 def ensure_built(backend: str = "radv"):
-    """Make sure llama-server is available for the requested backend."""
-    if backend == "rocm" and _rocm_uses_container():
-        # Container mode — check for marker file from `build --backend rocm`
-        marker = _build_dir("rocm") / ".container-mode"
-        if marker.exists():
-            return
-        warn("ROCm container not set up — run: python server.py build --backend rocm")
-        build_llamacpp(backend="rocm")
-        return
-
-    server = _server_bin(backend)
-    if not server.exists():
-        build_backend = "rocm" if backend == "rocm" else "vulkan"
-        warn(f"llama-server not found for {backend} — building from source ...")
-        build_llamacpp(backend=build_backend)
+    """Make sure the container for the requested backend is available."""
+    image = _container_image(backend)
+    
+    rt = _find_container_runtime()
+    if not rt:
+        fail("No container runtime found (need podman or docker)")
+        sys.exit(1)
+    
+    info(f"Checking container availability for {backend} ...")
+    verify = subprocess.run(
+        [rt, "image", "inspect", image],
+        capture_output=True,
+    )
+    
+    if verify.returncode != 0:
+        warn(f"Container not found — pulling {image} ...")
+        _pull_container(image)
+    else:
+        ok(f"Container available: {image}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -573,7 +434,7 @@ def download_model(cfg: ModelConfig):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def stop_server():
-    """Stop a running llama-server (native process or ROCm container)."""
+    """Stop a running llama-server."""
 
     # Read state to determine what's running
     is_container = False
@@ -605,25 +466,25 @@ def stop_server():
 
     PID_FILE.unlink(missing_ok=True)
 
-    # Stop ROCm container if running
+    # Stop all containers
     rt = _find_container_runtime()
     if rt:
-        # Check if container exists before trying to stop it
-        check = subprocess.run(
-            [rt, "container", "exists", ROCM_CONTAINER_NAME],
-            capture_output=True,
-        )
-        if check.returncode == 0:
-            subprocess.run(
-                [rt, "stop", "-t", "5", ROCM_CONTAINER_NAME],
-                capture_output=True, timeout=15,
+        for container_name in CONTAINER_NAMES.values():
+            check = subprocess.run(
+                [rt, "container", "exists", container_name],
+                capture_output=True,
             )
-            subprocess.run(
-                [rt, "rm", "-f", ROCM_CONTAINER_NAME],
-                capture_output=True, timeout=10,
-            )
-            ok(f"Stopped ROCm container ({ROCM_CONTAINER_NAME})")
-            time.sleep(1)  # let the port fully clear
+            if check.returncode == 0:
+                subprocess.run(
+                    [rt, "stop", "-t", "5", container_name],
+                    capture_output=True, timeout=15,
+                )
+                subprocess.run(
+                    [rt, "rm", "-f", container_name],
+                    capture_output=True, timeout=10,
+                )
+                ok(f"Stopped container ({container_name})")
+                time.sleep(1)  # let the port fully clear
 
     STATE_FILE.unlink(missing_ok=True)
 
@@ -664,11 +525,11 @@ def _rocm_uses_container() -> bool:
     return shutil.which("hipcc") is None
 
 
-def launch_server(cfg: ModelConfig, port: int = 8000, backend: str = "radv",
+def launch_server(cfg: ModelConfig, port: int = 8000, backend: str = "vulkan",
                   extra_args: list[str] | None = None, verbose: bool = False,
                   parallel_override: int | None = None,
                   ctx_override: int | None = None):
-    """Start llama-server as a background process (native or container)."""
+    """Start llama-server via container."""
     download_model(cfg)
 
     # Stop any existing server (native or container)
@@ -699,144 +560,88 @@ def launch_server(cfg: ModelConfig, port: int = 8000, backend: str = "radv",
     print()
     info(f"{cfg.name}  ·  {backend.upper()}  ·  ctx={total_ctx} ({ctx_per}/slot × {np}){par_str}{spec_str}")
 
-    # ── ROCm container mode ──────────────────────────────────────────────
-    if backend == "rocm" and _rocm_uses_container():
-        rt = _find_container_runtime()
-        if not rt:
-            fail("ROCm container mode requires podman or docker")
-            sys.exit(1)
+    rt = _find_container_runtime()
+    if not rt:
+        fail("Container runtime not found (need podman or docker)")
+        sys.exit(1)
 
-        from models import MODELS_DIR
+    image = _container_image(backend)
+    container_name = _container_name(backend)
 
-        # Build the container run command
-        env_flags = []
-        for k, v in ROCM_ENV.items():
-            env_flags += ["-e", f"{k}={v}"]
+    from models import MODELS_DIR
 
-        container_cmd = [
-            rt, "run", "-d",
-            "--name", ROCM_CONTAINER_NAME,
-            "--device", "/dev/dri",
-            "--device", "/dev/kfd",
-            "--group-add", "video",
-            "--group-add", "render",
-            "--security-opt", "seccomp=unconfined",
-            "-v", f"{MODELS_DIR}:{MODELS_DIR}:ro",
-            "-p", f"{port}:{port}",
-        ] + env_flags + [
-            ROCM_CONTAINER_IMAGE,
-            "llama-server",
-        ] + args
+    # Build the container run command
+    env_flags = []
+    if backend in ROCM_BACKENDS:
+        env_flags += [
+            "-e", "HSA_ENABLE_SDMA=0",
+            "-e", "ROCBLAS_USE_HIPBLASLT=1",
+            "-e", "HIP_VISIBLE_DEVICES=0",
+        ]
 
-        if verbose:
-            info(f"Container: {' '.join(container_cmd[:12])} ...")
-
-        result = subprocess.run(container_cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            fail(f"Failed to start ROCm container")
-            if result.stderr:
-                stderr_text = result.stderr.strip() if result.stderr else ""
-                for line in stderr_text.splitlines()[-3:]:
-                    fail(f"  {line}")
-            sys.exit(1)
-
-        container_id = result.stdout.strip()[:12]
-        # Don't write a PID file for container mode — stop_server uses
-        # the STATE_FILE to detect container mode and stops by container name.
-        PID_FILE.unlink(missing_ok=True)
-        STATE_FILE.write_text(json.dumps({
-            "model": cfg.alias,
-            "backend": backend,
-            "port": port,
-            "parallel": np,
-            "container": ROCM_CONTAINER_NAME,
-        }))
-
-        if verbose:
-            # Tail container logs in background
-            import threading
-            def _tail_container():
-                try:
-                    log_proc = subprocess.Popen(
-                        [rt, "logs", "-f", ROCM_CONTAINER_NAME],
-                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    )
-                    if log_proc.stdout:
-                        for line in log_proc.stdout:
-                            print(f"  │ {line.decode('utf-8', errors='replace').rstrip()}")
-                except Exception:
-                    pass
-            threading.Thread(target=_tail_container, daemon=True).start()
-
-        if not verbose:
-            print("  Loading ", end="", flush=True)
-
-        if wait_for_server(port, verbose=verbose):
-            ok(f"ROCm container running: {ROCM_CONTAINER_NAME} ({container_id})")
-        else:
-            fail("Server failed to start in container.")
-            if not verbose:
-                info("Check logs: " + f"{rt} logs {ROCM_CONTAINER_NAME}")
-            subprocess.run([rt, "stop", ROCM_CONTAINER_NAME], capture_output=True)
-            subprocess.run([rt, "rm", "-f", ROCM_CONTAINER_NAME], capture_output=True)
-            PID_FILE.unlink(missing_ok=True)
-            STATE_FILE.unlink(missing_ok=True)
-            sys.exit(1)
-
-        return
-
-    # ── Native binary mode (Vulkan or native ROCm) ───────────────────────
-    ensure_built(backend)
-
-    if backend == "rocm":
-        env = {**os.environ, **ROCM_ENV}
-    else:
-        env = {**os.environ, **VULKAN_ENV}
-        if backend == "amdvlk":
-            env["AMD_VULKAN_ICD"] = "AMDVLK"
-
-    server_bin = _server_bin(backend)
-    cmd = [str(server_bin)] + args
+    container_cmd = [
+        rt, "run", "-d",
+        "--name", container_name,
+        "--device", "/dev/dri",
+        "--device", "/dev/kfd",
+        "--group-add", "video",
+        "--group-add", "render",
+        "--security-opt", "seccomp=unconfined",
+        "-v", f"{MODELS_DIR}:{MODELS_DIR}:ro",
+        "-p", f"{port}:{port}",
+    ] + env_flags + [
+        image,
+        "llama-server",
+    ] + args
 
     if verbose:
-        info(f"Command: {' '.join(cmd[:8])} ...")
+        info(f"Container: {' '.join(container_cmd[:12])} ...")
 
-    proc = subprocess.Popen(
-        cmd,
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        stdin=subprocess.DEVNULL,
-    )
-    PID_FILE.write_text(str(proc.pid))
+    result = subprocess.run(container_cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        fail(f"Failed to start {backend} container")
+        if result.stderr:
+            stderr_text = result.stderr.strip() if result.stderr else ""
+            for line in stderr_text.splitlines()[-3:]:
+                fail(f"  {line}")
+        sys.exit(1)
+
+    container_id = result.stdout.strip()[:12]
+    PID_FILE.unlink(missing_ok=True)
     STATE_FILE.write_text(json.dumps({
         "model": cfg.alias,
         "backend": backend,
         "port": port,
         "parallel": np,
+        "container": container_name,
     }))
 
-    import threading
-
-    def _tail():
-        assert proc.stdout is not None
-        for line in proc.stdout:
-            decoded = line.decode("utf-8", errors="replace").rstrip()
-            if verbose:
-                print(f"  │ {decoded}")
-
-    tailer = threading.Thread(target=_tail, daemon=True)
-    tailer.start()
+    if verbose:
+        import threading
+        def _tail_container():
+            try:
+                log_proc = subprocess.Popen(
+                    [rt, "logs", "-f", container_name],
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                )
+                if log_proc.stdout:
+                    for line in log_proc.stdout:
+                        print(f"  │ {line.decode('utf-8', errors='replace').rstrip()}")
+            except Exception:
+                pass
+        threading.Thread(target=_tail_container, daemon=True).start()
 
     if not verbose:
         print("  Loading ", end="", flush=True)
 
     if wait_for_server(port, verbose=verbose):
-        if verbose:
-            info(f"PID {proc.pid}.  Stop with: python server.py stop")
+        ok(f"{backend.upper()} container running: {container_name} ({container_id})")
     else:
-        fail("Server failed to start.  Re-run with --verbose to see output.")
-        proc.terminate()
+        fail("Server failed to start in container.")
+        if not verbose:
+            info("Check logs: " + f"{rt} logs {container_name}")
+        subprocess.run([rt, "stop", container_name], capture_output=True)
+        subprocess.run([rt, "rm", "-f", container_name], capture_output=True)
         PID_FILE.unlink(missing_ok=True)
         STATE_FILE.unlink(missing_ok=True)
         sys.exit(1)
@@ -1605,21 +1410,16 @@ def run_test_suite(args):
         fail(f"Argument generation failed: {e}")
     print()
     
-    # Test 3: Environment variables
+    # Test 3: Container setup
     print()
-    print("  ── Test 3: Environment Variables ─────────────────────────────")
+    print("  ── Test 3: Container Setup ───────────────────────────────────")
     try:
-        from server import VULKAN_ENV, ROCM_ENV
-        if args.backend in VULKAN_BACKENDS:
-            env_vars = VULKAN_ENV
-        else:
-            env_vars = ROCM_ENV
+        image = _container_image(args.backend)
         print(f"  Backend: {args.backend}")
-        for k, v in env_vars.items():
-            print(f"    {k}: {v}")
-        ok("Environment variables configured")
+        print(f"  Container image: {image}")
+        ok("Container configuration ready")
     except Exception as e:
-        fail(f"Environment setup failed: {e}")
+        fail(f"Container setup failed: {e}")
     print()
     
     # Test 4: Parallelization test
@@ -1679,7 +1479,7 @@ def main():
                         help="Model to test (uses nemotron-nano-q4 by default)")
     p_test.add_argument("--port", type=int, default=8000,
                         help="Port for dry-run tests")
-    p_test.add_argument("--backend", choices=["radv", "amdvlk", "rocm"], default="radv",
+    p_test.add_argument("--backend", choices=["vulkan", "radv", "amdvlk", "rocm", "rocm6", "rocm7", "rocm7-nightly"], default="radv",
                         help="Backend for tests")
     p_test.add_argument("--np", type=int, default=1,
                         help="Parallel slots for parallelization tests (default: 1)")
@@ -1694,7 +1494,7 @@ def main():
     p_build = sub.add_parser("build", help="Build llama.cpp from source")
     p_build.add_argument("--rebuild", action="store_true",
                          help="Clean build directory and rebuild")
-    p_build.add_argument("--backend", choices=["vulkan", "rocm"], default="vulkan",
+    p_build.add_argument("--backend", choices=["vulkan", "radv", "amdvlk", "rocm", "rocm6", "rocm7", "rocm7-nightly"], default="vulkan",
                          help="Build backend (default: vulkan).  Both can coexist.")
 
     # list
@@ -1713,8 +1513,8 @@ def main():
                          help="Override parallel slots")
     p_serve.add_argument("--threads", "-t", type=int, default=None,
                          help="Override thread count")
-    p_serve.add_argument("--backend", choices=["radv", "amdvlk", "rocm"], default="radv",
-                         help="Backend: radv (Vulkan RADV), amdvlk (Vulkan AMDVLK), rocm (ROCm HIP)")
+    p_serve.add_argument("--backend", choices=["vulkan", "radv", "amdvlk", "rocm", "rocm6", "rocm7", "rocm7-nightly"], default="vulkan",
+                         help="Backend: vulkan/radv (RADV), amdvlk (AMDVLK), rocm/rocm6/rocm7/rocm7-nightly (ROCm)")
     p_serve.add_argument("--no-spec", action="store_true",
                          help="Disable speculative decoding")
     p_serve.add_argument("--verbose", "-v", action="store_true",
@@ -1731,13 +1531,13 @@ def main():
     p_bench.add_argument("model", nargs="?", default=None,
                          help="Model to benchmark (omit to test running server)")
     p_bench.add_argument("--port", type=int, default=8000)
-    p_bench.add_argument("--backend", choices=["radv", "amdvlk", "rocm"], default="radv")
+    p_bench.add_argument("--backend", choices=["vulkan", "radv", "amdvlk", "rocm", "rocm6", "rocm7", "rocm7-nightly"], default="radv")
 
     # bench-all
     p_ball = sub.add_parser("bench-all",
         help="Benchmark all downloaded models and print a comparison report")
     p_ball.add_argument("--port", type=int, default=8000)
-    p_ball.add_argument("--backend", choices=["radv", "amdvlk", "rocm"], default="radv")
+    p_ball.add_argument("--backend", choices=["vulkan", "radv", "amdvlk", "rocm", "rocm6", "rocm7", "rocm7-nightly"], default="radv")
 
     # bench-parallel  ← NEW
     p_bpar = sub.add_parser("bench-parallel",
@@ -1745,7 +1545,7 @@ def main():
     p_bpar.add_argument("model", nargs="?", default=None,
                         help="Model to sweep (interactive picker if omitted)")
     p_bpar.add_argument("--port", type=int, default=8000)
-    p_bpar.add_argument("--backend", choices=["radv", "amdvlk", "rocm"], default="radv")
+    p_bpar.add_argument("--backend", choices=["vulkan", "radv", "amdvlk", "rocm", "rocm6", "rocm7", "rocm7-nightly"], default="radv")
     p_bpar.add_argument("--max-np", type=int, default=None,
                         help="Max --parallel value to test (default: model's max_parallel)")
     p_bpar.add_argument("--max-tokens", type=int, default=256,
@@ -1767,7 +1567,7 @@ def main():
                         default="humaneval",
                         help="EvalPlus suite (default: humaneval)")
     p_eval.add_argument("--port", type=int, default=8000)
-    p_eval.add_argument("--backend", choices=["radv", "amdvlk", "rocm"],
+    p_eval.add_argument("--backend", choices=["vulkan", "radv", "amdvlk", "rocm", "rocm6", "rocm7", "rocm7-nightly"],
                         default="radv")
 
     # eval-all
@@ -1776,7 +1576,7 @@ def main():
     p_eval_all.add_argument("--suite", choices=["humaneval", "mbpp"],
                             default="humaneval")
     p_eval_all.add_argument("--port", type=int, default=8000)
-    p_eval_all.add_argument("--backend", choices=["radv", "amdvlk", "rocm"],
+    p_eval_all.add_argument("--backend", choices=["vulkan", "radv", "amdvlk", "rocm", "rocm6", "rocm7", "rocm7-nightly"],
                             default="radv")
 
     load_env_file()

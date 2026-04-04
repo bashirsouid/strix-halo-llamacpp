@@ -253,48 +253,39 @@ class TestModelLookup:
 class TestServerConfiguration:
     """Test server configuration and environment setup."""
     
-    def test_build_dir_vulkan(self, tmp_project_dir: Path):
-        """Vulkan build directory should be correctly identified."""
-        with patch("pathlib.Path.resolve", return_value=tmp_project_dir):
-            with patch("server.PROJECT_DIR", tmp_project_dir):
-                from server import _build_dir, LLAMA_BUILD_VULKAN
-                
-                build_dir = _build_dir("vulkan")
-                assert build_dir == LLAMA_BUILD_VULKAN
-    
-    def test_build_dir_rocm(self, tmp_project_dir: Path):
-        """ROCm build directory should be correctly identified."""
-        with patch("pathlib.Path.resolve", return_value=tmp_project_dir):
-            with patch("server.PROJECT_DIR", tmp_project_dir):
-                from server import _build_dir, LLAMA_BUILD_ROCM
-                
-                build_dir = _build_dir("rocm")
-                assert build_dir == LLAMA_BUILD_ROCM
-    
-    def test_server_bin_path(self, tmp_project_dir: Path):
-        """Server binary path should be correctly constructed."""
-        with patch("pathlib.Path.resolve", return_value=tmp_project_dir):
-            with patch("server.PROJECT_DIR", tmp_project_dir):
-                from server import _server_bin
-                
-                server_path = _server_bin("radv")
-                assert "llama-server" in str(server_path)
-    
-    def test_vulkan_env_variables(self):
-        """Vulkan environment should have correct variables."""
-        from server import VULKAN_ENV
+    def test_container_image_resolution(self):
+        """Container image should be correctly resolved for each backend."""
+        from server import _container_image, VALID_BACKENDS, CONTAINER_REGISTRY
         
-        assert "AMD_VULKAN_ICD" in VULKAN_ENV
-        assert "HSA_ENABLE_SDMA" in VULKAN_ENV
-        assert "GGML_VK_PREFER_HOST_MEMORY" in VULKAN_ENV
+        for backend in VALID_BACKENDS:
+            image = _container_image(backend)
+            assert CONTAINER_REGISTRY in image
+            assert backend in image or "vulkan" in image or "rocm" in image
     
-    def test_rocm_env_variables(self):
-        """ROCm environment should have correct variables."""
-        from server import ROCM_ENV
+    def test_container_name_resolution(self):
+        """Container name should be correctly resolved for each backend."""
+        from server import _container_name, VALID_BACKENDS
         
-        assert "HSA_ENABLE_SDMA" in ROCM_ENV
-        assert "ROCBLAS_USE_HIPBLASLT" in ROCM_ENV
-        assert "HIP_VISIBLE_DEVICES" in ROCM_ENV
+        for backend in VALID_BACKENDS:
+            name = _container_name(backend)
+            assert name.startswith("strix-llama-")
+            assert len(name) > len("strix-llama-")
+    
+    def test_container_images(self):
+        """Container images should be properly configured."""
+        from server import CONTAINER_IMAGES, VALID_BACKENDS, CONTAINER_REGISTRY
+        
+        for backend in VALID_BACKENDS:
+            assert backend in CONTAINER_IMAGES
+            assert CONTAINER_REGISTRY in CONTAINER_IMAGES[backend]
+    
+    def test_container_names(self):
+        """Container names should be properly configured."""
+        from server import CONTAINER_NAMES, VALID_BACKENDS
+        
+        for backend in VALID_BACKENDS:
+            assert backend in CONTAINER_NAMES
+            assert CONTAINER_NAMES[backend].startswith("strix-llama-")
 
 
 # ── Model Server Arguments Tests ──────────────────────────────────────────────
