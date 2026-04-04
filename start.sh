@@ -6,8 +6,9 @@
 # a model with the interactive picker.
 #
 # Usage:
-#   ./start.sh                          # Vulkan (default)
-#   ./start.sh --backend rocm           # ROCm (builds in container if needed)
+#   ./start.sh                          # Interactive: backend + model picker
+#   ./start.sh --backend rocm           # Backend specified, model picker
+#   ./start.sh nemotron-nano-q4         # Model specified, backend picker
 #   ./start.sh --backend radv nemotron-nano-q4   # specific model + backend
 #
 # Safe to run repeatedly — every step is idempotent.
@@ -17,30 +18,96 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# ── Parse --backend from args (default: radv) ───────────────────────────────
+# ── Parse arguments ──────────────────────────────────────────────────────────
 
-BACKEND="radv"
-SERVE_ARGS=()
+# Use a simple approach: collect all args, extract backend and model
+BACKEND=""
+MODEL=""
+ALL_ARGS=("$@")
 
-for arg in "$@"; do
-    if [[ "$arg" == "--backend" ]]; then
-        # Next arg is the backend value — handled below
-        SERVE_ARGS+=("$arg")
-    elif [[ "${SERVE_ARGS[*]:-}" == *"--backend" ]] && [[ -z "${BACKEND_SET:-}" ]]; then
-        BACKEND="$arg"
-        BACKEND_SET=1
-        SERVE_ARGS+=("$arg")
-    else
-        SERVE_ARGS+=("$arg")
+# Find --backend and its value
+for i in "${!ALL_ARGS[@]}"; do
+    if [[ "${ALL_ARGS[$i]}" == "--backend" ]]; then
+        if [[ -n "${ALL_ARGS[$((i+1))]:-}" ]]; then
+            BACKEND="${ALL_ARGS[$((i+1))]}"
+        fi
     fi
 done
 
-# Simpler parsing: just look for --backend VALUE in the args
-for i in "${!SERVE_ARGS[@]}"; do
-    if [[ "${SERVE_ARGS[$i]}" == "--backend" ]] && [[ -n "${SERVE_ARGS[$((i+1))]:-}" ]]; then
-        BACKEND="${SERVE_ARGS[$((i+1))]}"
-        break
+# Model is first non-flag positional arg after --backend VALUE
+# We need to track if previous arg was a flag that takes a value
+previous_was_flag_with_value=0
+skip_next=0
+
+for arg in "${ALL_ARGS[@]}"; do
+    if [[ $skip_next -eq 1 ]]; then
+        skip_next=0
+        continue
     fi
+    
+    # If previous arg was a flag that takes a value, skip this arg
+    if [[ $previous_was_flag_with_value -eq 1 ]]; then
+        previous_was_flag_with_value=0
+        continue
+    fi
+    
+    if [[ "$arg" == "--backend" ]]; then
+        previous_was_flag_with_value=1
+        continue
+    fi
+    
+    if [[ "$arg" == --* ]]; then
+        # Check if this flag typically takes a value
+        case "$arg" in
+            --np|--ctx|--ctx-per-slot|--threads|-t|--host|--port|--extra)
+                previous_was_flag_with_value=1
+                continue
+                ;;
+        esac
+        # Other flags (like --no-spec, --verbose) don't take values
+        continue
+    fi
+    
+    # This is a positional arg - if we haven't found a model yet, use it
+    if [[ -z "$MODEL" ]]; then
+        MODEL="$arg"
+    fi
+done
+
+# Reconstruct SERVE_ARGS - include backend value and other flags, exclude model
+SERVE_ARGS=()
+SKIP_NEXT=0
+for i in "${!ALL_ARGS[@]}"; do
+    if [[ $SKIP_NEXT -eq 1 ]]; then
+        SKIP_NEXT=0
+        continue
+    fi
+    
+    arg="${ALL_ARGS[$i]}"
+    
+    # Skip the model argument
+    if [[ "$arg" == "$MODEL" ]]; then
+        continue
+    fi
+    
+    # Handle --backend specially - include both --backend and its value
+    if [[ "$arg" == "--backend" ]]; then
+        SERVE_ARGS+=("--backend" "$BACKEND")
+        SKIP_NEXT=1
+        continue
+    fi
+    
+    SERVE_ARGS+=("$arg")
+    
+    # If this is a flag that takes a value, skip the next arg
+    case "$arg" in
+        --np|--ctx|--ctx-per-slot|--threads|-t|--host|--port|--extra)
+            if [[ $((i+1)) -lt ${#ALL_ARGS[@]} ]]; then
+                # Don't include value in SERVE_ARGS since we already added it above
+                SKIP_NEXT=1
+            fi
+            ;;
+    esac
 done
 
 # ── Colours ──────────────────────────────────────────────────────────────────
@@ -48,6 +115,75 @@ done
 _info()  { printf '\033[36m  ℹ  %s\033[0m\n' "$*"; }
 _ok()    { printf '\033[32m  ✓  %s\033[0m\n' "$*"; }
 _warn()  { printf '\033[33m  ⚠  %s\033[0m\n' "$*" >&2; }
+
+# ── Backend picker ───────────────────────────────────────────────────────────
+
+pick_backend() {
+    local backends=("radv" "amdvlk" "rocm" "rocm6" "rocm7" "rocm7-nightly")
+    local desc_radv="Vulkan with RADV (fast generation)"
+    local desc_amdvlk="Vulkan with AMDVLK (prompt processing)"
+    local desc_rocm="ROCm HIP (fast prefill)"
+    local desc_rocm6="ROCm 6.4.4"
+    local desc_rocm7="ROCm 7.2"
+    local desc_rocm7night="ROCm 7.2 nightly"
+    
+    local build_vulkan="$SCRIPT_DIR/llama.cpp/build-vulkan/bin/llama-server"
+    local build_rocm="$SCRIPT_DIR/llama.cpp/build-rocm/bin/llama-server"
+    
+    printf '\n'
+    printf '  Available backends:\n'
+    printf '\n'
+    
+    for i in {0..5}; do
+        local backend="${backends[$i]}"
+        local num=$((i + 1))
+        local check_mark="·"
+        
+        case "$backend" in
+            radv|amdvlk|vulkan)
+                [[ -x "$build_vulkan" ]] && check_mark="✓"
+                ;;
+            rocm|rocm6|rocm7|rocm7-nightly)
+                [[ -x "$build_rocm" ]] && check_mark="✓"
+                ;;
+        esac
+        
+        local desc_var="desc_${backend//-/_}"
+        printf "  %s %d) %-12s " "$check_mark" "$num" "$backend"
+        
+        case "$backend" in
+            radv) printf "(%s)\n" "$desc_radv" ;;
+            amdvlk) printf "(%s)\n" "$desc_amdvlk" ;;
+            rocm) printf "(%s)\n" "$desc_rocm" ;;
+            rocm6) printf "(%s)\n" "$desc_rocm6" ;;
+            rocm7) printf "(%s)\n" "$desc_rocm7" ;;
+            rocm7-nightly) printf "(%s)\n" "$desc_rocm7night" ;;
+        esac
+    done
+    
+    printf '\n'
+    
+    while true; do
+        read -p "  Enter number (1-6): " -r raw
+        case "$raw" in
+            1) PICKED_BACKEND="radv"; printf '\n'; return ;;
+            2) PICKED_BACKEND="amdvlk"; printf '\n'; return ;;
+            3) PICKED_BACKEND="rocm"; printf '\n'; return ;;
+            4) PICKED_BACKEND="rocm6"; printf '\n'; return ;;
+            5) PICKED_BACKEND="rocm7"; printf '\n'; return ;;
+            6) PICKED_BACKEND="rocm7-nightly"; printf '\n'; return ;;
+            *)
+                printf '    Invalid choice. Enter a number between 1 and 6.\n'
+                ;;
+        esac
+    done
+}
+
+# ── Model picker (via server.py) ─────────────────────────────────────────────
+
+pick_model() {
+    python3 "$SCRIPT_DIR/server.py" serve
+}
 
 # ── 1. System dependencies ───────────────────────────────────────────────────
 
@@ -64,8 +200,20 @@ DEPS=(
 )
 
 install_system_deps() {
+    if [[ -z "$BACKEND" ]]; then
+        _info "Backend not specified, showing picker..."
+        pick_backend
+        BACKEND="$PICKED_BACKEND"
+        # Rebuild SERVE_ARGS with the chosen backend
+        SERVE_ARGS=()
+        SERVE_ARGS+=("--backend" "$BACKEND")
+        if [[ -n "$MODEL" ]]; then
+            SERVE_ARGS+=("$MODEL")
+        fi
+    fi
+    
     # For ROCm backend, we only need git + container runtime — skip Vulkan deps
-    if [[ "$BACKEND" == "rocm" ]]; then
+    if [[ "$BACKEND" == "rocm" ]] || [[ "$BACKEND" == "rocm6" ]] || [[ "$BACKEND" == "rocm7" ]] || [[ "$BACKEND" == "rocm7-nightly" ]]; then
         if command -v git &>/dev/null; then
             _ok "git installed (ROCm builds inside container)."
         else
@@ -158,9 +306,11 @@ install_pip_deps() {
 
 ensure_built() {
     local build_backend="vulkan"
-    [[ "$BACKEND" == "rocm" ]] && build_backend="rocm"
+    case "$BACKEND" in
+        rocm|rocm6|rocm7|rocm7-nightly) build_backend="rocm" ;;
+    esac
 
-    if [[ "$BACKEND" == "rocm" ]]; then
+    if [[ "$BACKEND" == "rocm" ]] || [[ "$BACKEND" == "rocm6" ]] || [[ "$BACKEND" == "rocm7" ]] || [[ "$BACKEND" == "rocm7-nightly" ]]; then
         if [ -x "$SCRIPT_DIR/llama.cpp/build-rocm/bin/llama-server" ]; then
             _ok "llama.cpp (ROCm) already built."
             return
@@ -185,14 +335,30 @@ ensure_built() {
 # ── 4. Serve ─────────────────────────────────────────────────────────────────
 
 serve_model() {
-    _info "Ready to serve! (backend: $BACKEND)"
-    exec python3 "$SCRIPT_DIR/server.py" serve "${SERVE_ARGS[@]}"
+    if [[ -z "$MODEL" ]]; then
+        _info "Model not specified, showing picker..."
+        echo
+        python3 "$SCRIPT_DIR/server.py" serve "${SERVE_ARGS[@]}"
+    else
+        _info "Ready to serve! (backend: $BACKEND, model: $MODEL)"
+        exec python3 "$SCRIPT_DIR/server.py" serve "${SERVE_ARGS[@]}"
+    fi
 }
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 
-_info "strix-halo-llamacpp — quick start (backend: $BACKEND)"
-echo
+# Determine if we need to prompt
+NEED_BACKEND=0
+NEED_MODEL=0
+
+[[ -z "$BACKEND" ]] && NEED_BACKEND=1
+[[ -z "$MODEL" ]] && NEED_MODEL=1
+
+if [[ $NEED_BACKEND -eq 1 ]] || [[ $NEED_MODEL -eq 1 ]]; then
+    echo
+    _info "strix-halo-llamacpp — quick start (interactive mode)"
+    echo
+fi
 
 install_system_deps
 install_pip_deps

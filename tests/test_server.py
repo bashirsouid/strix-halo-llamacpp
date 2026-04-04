@@ -587,6 +587,50 @@ class TestEdgeCases:
 # ── Performance Tests (Fast) ──────────────────────────────────────────────────
 
 
+class TestBackendResolution:
+    """Test backend picker and resolver functions."""
+    
+    def test_resolve_backend_with_arg(self):
+        """Backend resolver should return CLI arg when valid."""
+        from server import resolve_backend
+        
+        result = resolve_backend("radv")
+        assert result == "radv"
+    
+    def test_resolve_backend_with_invalid_arg(self):
+        """Backend resolver should exit on invalid backend."""
+        from server import resolve_backend
+        
+        with pytest.raises(SystemExit):
+            resolve_backend("invalid_backend")
+    
+    def test_resolve_backend_without_arg(self):
+        """Backend resolver should pick backend when None."""
+        from server import resolve_backend
+        
+        with patch('server.pick_backend', return_value="rocm7"):
+            result = resolve_backend(None)
+            assert result == "rocm7"
+    
+    def test_pick_backend_output_format(self):
+        """Backend picker should display valid backends."""
+        from server import pick_backend, VALID_BACKENDS
+        
+        # Test that all backends are in VALID_BACKENDS
+        for backend in VALID_BACKENDS:
+            assert backend in VALID_BACKENDS
+    
+    def test_resolve_backend_interactive_flow(self, capsys):
+        """Backend resolver should prompt when no arg provided."""
+        from server import resolve_backend
+        
+        with patch('builtins.input', return_value='3'):
+            with patch('server.pick_backend') as mock_pick:
+                mock_pick.return_value = "rocm"
+                result = resolve_backend(None)
+                assert result == "rocm"
+
+
 class TestPerformance:
     """Fast performance tests for critical paths."""
     

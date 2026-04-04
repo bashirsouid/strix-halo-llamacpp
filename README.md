@@ -55,8 +55,9 @@ For detailed test documentation, see [TESTING.md](TESTING.md).
 ```bash
 git clone https://github.com/bashirsouid/strix-halo-llamacpp
 cd strix-halo-llamacpp
-./start.sh                              # Vulkan (default), interactive picker
-./start.sh --backend rocm               # ROCm backend
+./start.sh                              # Interactive: pick backend and model
+./start.sh --backend rocm               # Backend specified, pick model
+./start.sh nemotron-nano-q4             # Model specified, pick backend
 ./start.sh --backend radv nemotron-nano-q4  # specific model + backend
 ```
 
@@ -167,13 +168,13 @@ N-gram speculation is enabled by default on most models.  Mistral Small 4 additi
 ## CLI reference
 
 ```
-python server.py build    [--backend vulkan|rocm] [--rebuild]
+python server.py build    [--backend vulkan|radv|amdvlk|rocm|rocm6|rocm7|rocm7-nightly] [--rebuild]
 python server.py list
-python server.py serve    [MODEL] [--backend radv|amdvlk|rocm] [--np N] [--ctx-per-slot N] ...
+python server.py serve    [MODEL] [--backend radv|amdvlk|rocm|rocm6|rocm7|rocm7-nightly] [--np N] [--ctx-per-slot N] ...
 python server.py stop
-python server.py bench    [MODEL] [--backend radv|amdvlk|rocm]
-python server.py bench-all          [--backend radv|amdvlk|rocm]
-python server.py bench-parallel [MODEL] [--backend radv|amdvlk|rocm] [--max-np N]
+python server.py bench    [MODEL] [--backend radv|amdvlk|rocm|rocm6|rocm7|rocm7-nightly]
+python server.py bench-all          [--backend radv|amdvlk|rocm|rocm6|rocm7|rocm7-nightly]
+python server.py bench-parallel [MODEL] [--backend radv|amdvlk|rocm|rocm6|rocm7|rocm7-nightly] [--max-np N]
 python server.py download [MODEL]
 ```
 
@@ -181,7 +182,7 @@ python server.py download [MODEL]
 
 | Flag | Description |
 |---|---|
-| `--backend radv\|amdvlk\|rocm` | Backend to use (default: radv) |
+| `--backend radv\|amdvlk\|rocm\|rocm6\|rocm7\|rocm7-nightly` | Backend to use (default: radv) |
 | `--np N` | Override parallel slots |
 | `--ctx N` | Override total context size |
 | `--ctx-per-slot N` | Override context per slot (total = this × np) |

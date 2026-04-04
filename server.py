@@ -43,7 +43,6 @@ import textwrap
 import time
 import urllib.request
 import re
-import os
 from pathlib import Path
 
 from models import MODELS, get_model, ModelConfig
@@ -176,6 +175,51 @@ def resolve_model(model_arg: str | None, prompt_text: str = "Pick a model") -> M
     if model_arg:
         return get_model(model_arg)
     return pick_model(prompt_text)
+
+
+# ── Backend picker TUI ───────────────────────────────────────────────────────
+
+def pick_backend(prompt_text: str = "Pick a backend") -> str:
+    """Show a numbered list of backends and let the user pick one."""
+    backends = VALID_BACKENDS
+    print()
+    print(f"  {prompt_text}:")
+    print()
+    for i, b in enumerate(backends, 1):
+        if b in VULKAN_BACKENDS:
+            backend_type = "Vulkan"
+        else:
+            backend_type = "ROCm"
+        print(f"  {i:>2d}) {b:<12s}  {_c(90, f'({backend_type})')}")
+    print()
+
+    while True:
+        try:
+            raw = input(f"  Enter number (1-{len(backends)}): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            sys.exit(0)
+        if not raw:
+            continue
+        try:
+            idx = int(raw)
+            if 1 <= idx <= len(backends):
+                chosen = backends[idx - 1]
+                print()
+                return chosen
+        except ValueError:
+            pass
+        print(f"    Invalid choice. Enter a number between 1 and {len(backends)}.")
+
+
+def resolve_backend(backend_arg: str | None, prompt_text: str = "Pick a backend") -> str:
+    """Resolve a backend from CLI arg, or show picker if None."""
+    if backend_arg:
+        if backend_arg not in VALID_BACKENDS:
+            fail(f"Invalid backend '{backend_arg}'. Valid backends: {', '.join(VALID_BACKENDS)}")
+            sys.exit(1)
+        return backend_arg
+    return pick_backend(prompt_text)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
