@@ -127,8 +127,31 @@ pick_backend() {
     local desc_rocm7="ROCm 7.2"
     local desc_rocm7night="ROCm 7.2 nightly"
     
-    local build_vulkan="$SCRIPT_DIR/llama.cpp/build-vulkan/bin/llama-server"
-    local build_rocm="$SCRIPT_DIR/llama.cpp/build-rocm/bin/llama-server"
+    # Container image tags for each backend
+    local img_radv="docker.io/kyuz0/amd-strix-halo-toolboxes:vulkan-radv"
+    local img_amdvlk="docker.io/kyuz0/amd-strix-halo-toolboxes:vulkan-amdvlk"
+    local img_rocm="docker.io/kyuz0/amd-strix-halo-toolboxes:rocm-nightly"
+    local img_rocm6="docker.io/kyuz0/amd-strix-halo-toolboxes:rocm-6.4.4"
+    local img_rocm7="docker.io/kyuz0/amd-strix-halo-toolboxes:rocm-7.2"
+    local img_rocm7night="docker.io/kyuz0/amd-strix-halo-toolboxes:rocm7-nightlies"
+    
+    # Container name mapping
+    local name_radv="strix-llama-vulkan"
+    local name_amdvlk="strix-llama-amdvlk"
+    local name_rocm="strix-llama-rocm"
+    local name_rocm6="strix-llama-rocm6"
+    local name_rocm7="strix-llama-rocm7"
+    local name_rocm7night="strix-llama-rocm7-nightly"
+    
+    # Find container runtime
+    local rt
+    rt=$(command -v podman || command -v docker || true)
+    
+    # Check if container runtime is available
+    if [[ -z "$rt" ]]; then
+        _warn "No container runtime (podman or docker) found."
+        _warn "Install with: sudo apt install podman"
+    fi
     
     printf '\n'
     printf '  Available backends:\n'
@@ -139,14 +162,20 @@ pick_backend() {
         local num=$((i + 1))
         local check_mark="·"
         
+        # Get image ID to check if image exists (returns empty if not found)
+        local img_id=""
         case "$backend" in
-            radv|amdvlk|vulkan)
-                [[ -x "$build_vulkan" ]] && check_mark="✓"
-                ;;
-            rocm|rocm6|rocm7|rocm7-nightly)
-                [[ -x "$build_rocm" ]] && check_mark="✓"
-                ;;
+            radv) img_id=$("$rt" images --format '{{.ID}}' "$img_radv" 2>/dev/null || true) ;;
+            amdvlk) img_id=$("$rt" images --format '{{.ID}}' "$img_amdvlk" 2>/dev/null || true) ;;
+            rocm) img_id=$("$rt" images --format '{{.ID}}' "$img_rocm" 2>/dev/null || true) ;;
+            rocm6) img_id=$("$rt" images --format '{{.ID}}' "$img_rocm6" 2>/dev/null || true) ;;
+            rocm7) img_id=$("$rt" images --format '{{.ID}}' "$img_rocm7" 2>/dev/null || true) ;;
+            rocm7-nightly) img_id=$("$rt" images --format '{{.ID}}' "$img_rocm7night" 2>/dev/null || true) ;;
         esac
+        
+        if [[ -n "$img_id" ]]; then
+            check_mark="✓"
+        fi
         
         printf "  %s %d) %-16s " "$check_mark" "$num" "$backend"
         
