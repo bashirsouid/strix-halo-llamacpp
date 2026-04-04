@@ -82,3 +82,8 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+def test_inference_pytest():
+    """Pytest wrapper for inference test."""
+    assert test_inference() is True
