@@ -330,6 +330,36 @@ MODELS: list[ModelConfig] = [
         ),
     ),
 
+
+    # ── Qwen3 Coder 30B A3B ──
+    # ~32.5 GB at Q8_0 → ~57 GB for KV + overhead
+    ModelConfig(
+        name="Qwen3 Coder 30B A3B (Q8_0)",
+        alias="qwen3-coder-30b-q8",
+        hf_repo="unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",
+        dest_dir=MODELS_DIR / "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",
+        download_include="*Q8_0*",
+        shard_glob="*Q8_0*.gguf",
+        quant="Q8_0",
+        parallel_slots=1,
+        max_parallel=6,
+        ctx_per_slot=262144,
+        ubatch_size=512,
+        spec=SpecConfig(strategy="ngram"),
+        extra_args=[
+            "--temp", "0.7", "--top-p", "0.8", "--top-k", "20",
+            "--repeat-penalty", "1.05", "--min-p", "0.0",
+        ],
+        notes=(
+            "Best for: coding agents, tool calling — lighter alternative to Coder Next. "
+            "MoE 30.5B (3.3B active). 128 experts, 8 activated. "
+            "~32.5 GB at Q8_0 — near-lossless, fits easily. "
+            "256K native context. Non-thinking only (no <think> blocks). "
+            "Qwen-recommended sampling: temp=0.7, top_p=0.8, top_k=20, rep_pen=1.05. "
+            "Bug: -ub must be 512 on Strix Halo Vulkan (same qwen3_moe arch as Coder Next). "
+            "Apache 2.0. Agentic coding: supports Qwen Code, CLINE, function call format."
+        ),
+    ),
     # ── Mistral Small 4 ──
     # ~50–60 GB at Q4 → ~28–38 GB for KV + overhead
     ModelConfig(
