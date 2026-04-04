@@ -26,7 +26,8 @@ Usage:
     python server.py bench   [MODEL] [--backend vulkan|radv|amdvlk|rocm|rocm6|rocm7|rocm7-nightly]
     python server.py bench-all [--backend vulkan|radv|amdvlk|rocm|rocm6|rocm7|rocm7-nightly]
     python server.py bench-parallel [MODEL] [--backend vulkan|radv|amdvlk|rocm|rocm6|rocm7|rocm7-nightly]
-    python server.py download MODEL
+python server.py download MODEL
+    python server.py download-images
 """
 
 from __future__ import annotations
@@ -506,6 +507,43 @@ def download_model(cfg: ModelConfig):
         else:
             warn("Draft model download finished but file not found — "
                  "speculation will fall back to ngram/none.")
+
+
+def download_container_images():
+    """Download all container images with resume support."""
+    rt = _find_container_runtime()
+    if not rt:
+        fail("No container runtime found (need docker or podman)")
+        sys.exit(1)
+
+    info("Downloading all container images ...")
+    print()
+
+    for backend, image in CONTAINER_IMAGES.items():
+        info(f"Pulling image for {backend}: {image}")
+
+        proc = subprocess.Popen(
+            [rt, "pull", image],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+
+        if proc.stdout:
+            for line in proc.stdout:
+                text = line.decode("utf-8", errors="replace").rstrip()
+                if text:
+                    print(f"    {text}", flush=True)
+
+        returncode = proc.wait()
+
+        if returncode != 0:
+            fail(f"Failed to pull {image}")
+        else:
+            ok(f"Image ready: {image}")
+
+        print()
+
+    info("All container images downloaded")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1652,6 +1690,9 @@ def main():
     p_dl.add_argument("model", nargs="?", default=None,
                       help="Model alias or name (interactive picker if omitted)")
 
+    # download-images
+    sub.add_parser("download-images", help="Download all container images")
+
     # eval
     p_eval = sub.add_parser("eval",
         help="Run EvalPlus coding benchmark for a single model")
@@ -1741,6 +1782,9 @@ def main():
     elif args.command == "download":
         cfg = resolve_model(args.model, "Pick a model to download")
         download_model(cfg)
+
+    elif args.command == "download-images":
+        download_container_images()
 
     elif args.command == "eval":
         eval_single(args.model, suite=args.suite,
