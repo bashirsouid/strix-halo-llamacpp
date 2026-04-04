@@ -184,7 +184,7 @@ class ModelConfig:
 
         args = [
             "-m",             str(model_path),
-            "--host",         "127.0.0.1",
+            "--host",         "0.0.0.0",
             "--port",         "8000",
             "--ctx-size",     str(total_ctx),
             "-ngl",           "999",

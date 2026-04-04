@@ -630,8 +630,7 @@ def stop_server():
 
 def wait_for_server(port: int = 8000, timeout: int = 360, verbose: bool = False) -> bool:
     """Poll /health until the server is ready."""
-    #url = f"http://127.0.0.1:{port}/health" # TODO: This URL is not working
-    url = f"http://127.0.0.1:{port}/v1/models"
+    url = f"http://0.0.0.0:{port}/health"
     deadline = time.time() + timeout
     if verbose:
         info(f"Waiting for server on port {port} (timeout {timeout}s) ...")
@@ -882,7 +881,7 @@ def _make_prefill_prompt(target_tokens: int = 800) -> str:
 def _bench_one(port: int, prompt: str, max_tokens: int, label: str,
                timeout: int = 600) -> dict:
     """Send a single non-streaming request and return timing + token info."""
-    url = f"http://127.0.0.1:{port}/v1/chat/completions"
+    url = f"http://0.0.0.0:{port}/v1/chat/completions"
     payload = json.dumps({
         "model": "model",
         "messages": [{"role": "user", "content": prompt}],
@@ -932,7 +931,7 @@ def bench(port: int = 8000, model_alias: str | None = None,
     if model_alias is None:
         try:
             with urllib.request.urlopen(
-                f"http://127.0.0.1:{port}/v1/models", timeout=5
+                f"http://0.0.0.0:{port}/v1/models", timeout=5
             ) as resp:
                 data = json.loads(resp.read())
                 models = data.get("data", [])
@@ -1057,7 +1056,7 @@ def bench(port: int = 8000, model_alias: str | None = None,
 
 def _fire_one_request(port: int, prompt: str, max_tokens: int = 256) -> dict:
     """Send a single completion request and return timing info."""
-    url = f"http://127.0.0.1:{port}/v1/chat/completions"
+    url = f"http://0.0.0.0:{port}/v1/chat/completions"
     payload = json.dumps({
         "model": "model",
         "messages": [{"role": "user", "content": prompt}],
@@ -1432,7 +1431,7 @@ def run_evalplus(port: int, suite: str, model_alias: str,
         "--model", f"strix-{model_alias}",
         "--dataset", suite,              # "humaneval" or "mbpp"
         "--backend", "openai",
-        "--base-url", f"http://127.0.0.1:{port}/v1",
+        "--base-url", f"http://0.0.0.0:{port}/v1",
         "--greedy",
     ]
 
