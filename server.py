@@ -423,8 +423,9 @@ def stop_server():
     rt = _find_container_runtime()
     if rt:
         for container_name in CONTAINER_NAMES.values():
+            # Use docker inspect to check if container exists
             check = subprocess.run(
-                [rt, "container", "exists", container_name],
+                [rt, "inspect", container_name],
                 capture_output=True,
             )
             if check.returncode == 0:
@@ -443,14 +444,21 @@ def stop_server():
     STATE_FILE.unlink(missing_ok=True)
 
 
-def wait_for_server(port: int = 8000, timeout: int = 360, verbose: bool = False) -> bool:
-    """Poll /health until the server is ready."""
+def wait_for_server(port: int = 8000, timeout: int = 60, verbose: bool = False) -> bool:
+    """Poll /health until the server is ready with faster timeout.
+    
+    Args:
+        port: Health check port
+        timeout: Timeout in seconds (reduced from 360 to 60 for faster feedback)
+        verbose: Print detailed progress
+    """
     url = f"http://0.0.0.0:{port}/health"
     deadline = time.time() + timeout
     if verbose:
         info(f"Waiting for server on port {port} (timeout {timeout}s) ...")
 
     dots = 0
+    last_error = None
     while time.time() < deadline:
         try:
             with urllib.request.urlopen(url, timeout=2) as resp:
@@ -459,18 +467,29 @@ def wait_for_server(port: int = 8000, timeout: int = 360, verbose: bool = False)
                         print()
                     ok(f"Server ready — http://localhost:{port}/v1")
                     return True
-        except Exception:
-            pass
+        except urllib.error.URLError as e:
+            last_error = str(e)
+        except Exception as e:
+            last_error = str(e)
+        
         if not verbose:
             print(".", end="", flush=True)
             dots += 1
             if dots % 60 == 0:
                 print()
-        time.sleep(2)
+        time.sleep(1)  # Poll faster (every 1s instead of 2s)
 
     if not verbose:
         print()
-    fail(f"Server did not become ready within {timeout}s")
+    error_msg = f"Server did not become ready within {timeout}s"
+    if last_error:
+        error_msg += f" — last error: {last_error}"
+    fail(error_msg)
+    fail("This may indicate:")
+    fail("  1. Model architecture not supported by this llama.cpp container")
+    fail("  2. Insufficient VRAM for the model + KV cache")
+    fail("  3. Docker/permission issue")
+    fail("Run with --verbose to see full container logs")
     return False
 
 
@@ -527,16 +546,18 @@ def launch_server(cfg: ModelConfig, port: int = 8000, backend: str = "vulkan",
 
     from models import MODELS_DIR
 
-  # Check if container already exists
-    exists_check = [rt, "container", "exists", container_name]
+    # Check if container already exists using docker inspect
+    # (docker container exists is not a valid command)
+    exists_check = [rt, "inspect", container_name]
     exists_result = subprocess.run(exists_check, capture_output=True)
     if exists_result.returncode == 0:
         # Container already exists, start it
         subprocess.run([rt, "start", container_name], check=True)
-        # Get container ID (optional, from inspection)
+        # Get container ID
         inspect_cmd = [rt, "inspect", "-f", "{{.Id}}", container_name]
         container_id_result = subprocess.run(inspect_cmd, capture_output=True, text=True)
         container_id = container_id_result.stdout.strip()[:12]
+        info(f"Reusing existing {backend} container ({container_id})")
     else:
         # Build and run the container as before
         container_cmd = [
@@ -584,6 +605,16 @@ def launch_server(cfg: ModelConfig, port: int = 8000, backend: str = "vulkan",
         "loaded meta", "loading model", "server listening",
         "KV self size", "output buffer size",
     )
+    
+    _ERROR_PATTERNS = (
+        "error", "failed", "could not load", "invalid", 
+        "unsupported", "not supported", "deprecated",
+        "cannot open", "does not exist", "no such file",
+        "std::bad_alloc", "out of memory", "segmentation fault",
+    )
+    
+    startup_failed = [False]  # Use list to allow thread to update
+    failure_reason = [None]
 
     def _tail_container():
         try:
@@ -594,20 +625,47 @@ def launch_server(cfg: ModelConfig, port: int = 8000, backend: str = "vulkan",
             if log_proc.stdout:
                 for line in log_proc.stdout:
                     text = line.decode("utf-8", errors="replace").rstrip()
+                    lower_text = text.lower()
+                    
                     if verbose:
                         print(f"   {text}")
                     else:
                         # Show key progress lines even in non-verbose mode
-                        lower = text.lower()
-                        if any(pat in lower for pat in _PROGRESS_PATTERNS):
+                        if any(pat in lower_text for pat in _PROGRESS_PATTERNS):
                             print(f"\r\033[K  ⏳ {text}", flush=True)
+                    
+                    # Capture first critical error for quick failure reporting
+                    if not startup_failed[0]:
+                        for err_pat in _ERROR_PATTERNS:
+                            if err_pat in lower_text and ("error:" in lower_text or "failed:" in lower_text or "could not" in lower_text):
+                                startup_failed[0] = True
+                                failure_reason[0] = text
+                                break
         except Exception:
             pass
 
-    threading.Thread(target=_tail_container, daemon=True).start()
+    log_thread = threading.Thread(target=_tail_container, daemon=True)
+    log_thread.start()
 
     if not verbose:
         print("  Loading ", end="", flush=True)
+    
+    # Check for startup errors early before waiting for health endpoint
+    time.sleep(0.5)
+    if startup_failed[0]:
+        print()
+        fail(f"Model load failed immediately:")
+        fail(f"  {failure_reason[0]}")
+        fail("")
+        fail("This likely means:")
+        fail("  • Model format/architecture not supported by this llama.cpp build")
+        fail("  • Insufficient VRAM (check VRAM usage with 'rocm-smi')")
+        fail("  • Model file is corrupted or incomplete")
+        subprocess.run([rt, "stop", container_name], capture_output=True)
+        subprocess.run([rt, "rm", "-f", container_name], capture_output=True)
+        PID_FILE.unlink(missing_ok=True)
+        STATE_FILE.unlink(missing_ok=True)
+        sys.exit(1)
 
     if wait_for_server(port, verbose=verbose):
         ok(f"{backend.upper()} container running: {container_name} ({container_id})")

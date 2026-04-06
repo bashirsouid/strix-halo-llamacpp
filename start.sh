@@ -162,18 +162,20 @@ pick_backend() {
         local num=$((i + 1))
         local check_mark="·"
         
-        # Get image ID to check if image exists (returns empty if not found)
-        local img_id=""
+        # Check if image exists locally using docker image inspect
+        # This is more reliable than docker images with format
+        local img_name=""
         case "$backend" in
-            radv) img_id=$("$rt" images --format '{{.ID}}' "$img_radv" 2>/dev/null || true) ;;
-            amdvlk) img_id=$("$rt" images --format '{{.ID}}' "$img_amdvlk" 2>/dev/null || true) ;;
-            rocm) img_id=$("$rt" images --format '{{.ID}}' "$img_rocm" 2>/dev/null || true) ;;
-            rocm6) img_id=$("$rt" images --format '{{.ID}}' "$img_rocm6" 2>/dev/null || true) ;;
-            rocm7) img_id=$("$rt" images --format '{{.ID}}' "$img_rocm7" 2>/dev/null || true) ;;
-            rocm7-nightly) img_id=$("$rt" images --format '{{.ID}}' "$img_rocm7night" 2>/dev/null || true) ;;
+            radv) img_name="$img_radv" ;;
+            amdvlk) img_name="$img_amdvlk" ;;
+            rocm) img_name="$img_rocm" ;;
+            rocm6) img_name="$img_rocm6" ;;
+            rocm7) img_name="$img_rocm7" ;;
+            rocm7-nightly) img_name="$img_rocm7night" ;;
         esac
         
-        if [[ -n "$img_id" ]]; then
+        # Check if image exists
+        if [[ -n "$rt" ]] && "$rt" image inspect "$img_name" >/dev/null 2>&1; then
             check_mark="✓"
         fi
         
@@ -245,13 +247,19 @@ install_pip_deps() {
 # ── 4. Serve ─────────────────────────────────────────────────────────────────
 
 serve_model() {
+    # Always add --backend if it's set (from picker or CLI)
+    local serve_cmd=(python3 "$SCRIPT_DIR/server.py" serve "${SERVE_ARGS[@]}")
+    if [[ -n "$BACKEND" ]]; then
+        serve_cmd+=(--backend "$BACKEND")
+    fi
+    
     if [[ -z "$MODEL" ]]; then
-        _info "Model not specified, showing picker..."
+        _info "Model not specified, showing picker... (backend: ${BACKEND:-<default>})"
         echo
-        python3 "$SCRIPT_DIR/server.py" serve "${SERVE_ARGS[@]}"
+        "${serve_cmd[@]}"
     else
         _info "Ready to serve! (backend: $BACKEND, model: $MODEL)"
-        exec python3 "$SCRIPT_DIR/server.py" serve "${SERVE_ARGS[@]}"
+        exec "${serve_cmd[@]}"
     fi
 }
 
@@ -272,6 +280,14 @@ fi
 
 check_docker
 install_pip_deps
+
+# Prompt for backend if needed
+if [[ $NEED_BACKEND -eq 1 ]]; then
+    echo
+    pick_backend
+    # IMPORTANT: Assign picked backend to BACKEND so it gets passed to serve_model
+    BACKEND="$PICKED_BACKEND"
+fi
 
 echo
 serve_model
