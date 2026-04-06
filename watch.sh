@@ -26,7 +26,7 @@ is_server_running() {
         
         if [[ "$backend" == "rocm" ]] || [[ "$backend" == "rocm6" ]] || [[ "$backend" == "rocm7" ]] || [[ "$backend" == "rocm7-nightly" ]]; then
             local rt
-            rt=$(command -v podman || command -v docker)
+            rt=$(command -v docker)
             if [[ -n "$rt" ]]; then
                 local container_name="strix-llama-${backend}"
                 if "$rt" container exists "$container_name" &>/dev/null; then

@@ -37,7 +37,6 @@ import concurrent.futures
 import json
 import os
 import shutil
-import signal
 import subprocess
 import sys
 import textwrap
@@ -254,143 +253,11 @@ ROCM_CONTAINER_NAME  = "strix-llama-rocm"
 
 
 def _find_container_runtime() -> str | None:
-    """Find podman or docker."""
-    for rt in ("docker", "podman"):
-        if shutil.which(rt):
-            return rt
-    return None
-
-
-def check_build_deps(backend: str = "vulkan"):
-    """Check build dependencies.  For ROCm, returns 'native' or 'container'."""
-    missing = []
-    for tool in ("cmake", "ninja", "git"):
-        if shutil.which(tool) is None:
-            missing.append(tool)
-
-    if backend == "rocm":
-        if shutil.which("hipcc") is not None:
-            # Native ROCm available
-            if missing:
-                fail(f"Missing build tools: {', '.join(missing)}")
-                sys.exit(1)
-            return "native"
-
-        # hipcc not available — try container build
-        rt = _find_container_runtime()
-        if rt:
-            info(f"hipcc not found — will build ROCm inside container ({rt})")
-            info(f"Image: {ROCM_CONTAINER_IMAGE}")
-            # For container build we only need git on host (cmake/ninja are inside)
-            if not shutil.which("git"):
-                fail("git is required even for container builds")
-                sys.exit(1)
-            return "container"
-
-        # Neither native hipcc nor container runtime
-        fail("ROCm build requires hipcc, but it's not installed.")
-        info("AMD's ROCm packages have dependency issues on Debian Trixie.")
-        info("Options:")
-        info("  1. Install podman or docker, then re-run — builds inside a container")
-        info("     sudo apt install podman")
-        info(f"     Container image: {ROCM_CONTAINER_IMAGE}")
-        info("  2. Use distrobox/toolbox with a ROCm container for full native ROCm")
-        info("  3. On Fedora/Ubuntu: sudo dnf/apt install rocm-dev hipcc")
-        sys.exit(1)
-
-    else:
-        # Vulkan
-        if shutil.which("glslangValidator") is None:
-            missing.append("glslangValidator")
-        if missing:
-            fail(f"Missing build tools: {', '.join(missing)}")
-            info(f"Fedora:  sudo dnf install {BUILD_DEPS_FEDORA_VULKAN}")
-            info(f"Debian:  sudo apt install {BUILD_DEPS_DEBIAN_VULKAN}")
-            sys.exit(1)
-        return "native"
+    """Find Docker"""
+    return shutil.which("docker")
 
 
 
-
-
-def _pull_container(image: str):
-    """Pull a container image with streaming progress and verify llama-server is present."""
-    rt = _find_container_runtime()
-    if not rt:
-        fail("No container runtime found (need docker or podman)")
-        sys.exit(1)
-
-    info(f"Pulling container image ({rt}) ...")
-    info(f"  Image: {image}")
-    print()
-
-    # Stream pull output line-by-line so the user sees layer progress
-    proc = subprocess.Popen(
-        [rt, "pull", image],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-    )
-    if proc.stdout:
-        for line in proc.stdout:
-            text = line.decode("utf-8", errors="replace").rstrip()
-            if text:
-                print(f"    {text}", flush=True)
-    returncode = proc.wait()
-
-    if returncode != 0:
-        fail(f"Failed to pull {image}")
-        sys.exit(1)
-
-    print()
-    info("Verifying llama-server is present in image ...")
-    verify = subprocess.run(
-        [rt, "run", "--rm", image, "llama-server", "--version"],
-        capture_output=True, text=True, timeout=30,
-    )
-    if verify.returncode == 0:
-        ver = verify.stdout.strip().splitlines()[0] if verify.stdout.strip() else "unknown"
-        ok(f"Container ready — llama-server {ver}")
-    else:
-        warn("Could not verify llama-server in image (may still work)")
-
-
-def build_llamacpp(rebuild: bool = False, backend: str = "vulkan"):
-    """Setup the container for the specified backend.
-    
-    For container backends (all of them now), just pulls the image.
-    No local build is required since containers ship pre-built binaries.
-    """
-    image = _container_image(backend)
-    _pull_container(image)
-    
-    info(f"Backend '{backend}' ready (using container: {_container_name(backend)})")
-
-
-def ensure_built(backend: str = "radv"):
-    """Make sure the container for the requested backend is available."""
-    image = _container_image(backend)
-    
-    rt = _find_container_runtime()
-    if not rt:
-        fail("No container runtime found (need podman or docker)")
-        sys.exit(1)
-    
-    info(f"Checking container availability for {backend} ...")
-    verify = subprocess.run(
-        [rt, "image", "inspect", image],
-        capture_output=True,
-    )
-    
-    if verify.returncode != 0:
-        warn(f"Container not found — pulling {image} ...")
-        _pull_container(image)
-    else:
-        ok(f"Container available: {image}")
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  DOWNLOAD
-# ═══════════════════════════════════════════════════════════════════════════════
 
 def _find_hf_cli() -> str | None:
     """Find the HuggingFace CLI binary name."""
@@ -513,7 +380,7 @@ def download_container_images():
     """Download all container images with resume support."""
     rt = _find_container_runtime()
     if not rt:
-        fail("No container runtime found (need docker or podman)")
+        fail("No container runtime found (need Docker)")
         sys.exit(1)
 
     info("Downloading all container images ...")
@@ -551,39 +418,8 @@ def download_container_images():
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def stop_server():
-    """Stop a running llama-server."""
+    """Stop all llama-server containers started by this launcher."""
 
-    # Read state to determine what's running
-    is_container = False
-    if STATE_FILE.exists():
-        try:
-            state = json.loads(STATE_FILE.read_text())
-            is_container = "container" in state
-        except (json.JSONDecodeError, KeyError):
-            pass
-
-    # Stop native process (only if NOT container mode)
-    if not is_container and PID_FILE.exists():
-        try:
-            pid = int(PID_FILE.read_text().strip())
-            if pid > 0:
-                os.kill(pid, signal.SIGTERM)
-                ok(f"Sent SIGTERM to PID {pid}")
-                for _ in range(20):
-                    time.sleep(0.5)
-                    try:
-                        os.kill(pid, 0)
-                    except OSError:
-                        break
-                else:
-                    warn(f"PID {pid} still alive after 10s, sending SIGKILL")
-                    os.kill(pid, signal.SIGKILL)
-        except (OSError, ValueError):
-            pass
-
-    PID_FILE.unlink(missing_ok=True)
-
-    # Stop all containers
     rt = _find_container_runtime()
     if rt:
         for container_name in CONTAINER_NAMES.values():
@@ -601,7 +437,8 @@ def stop_server():
                     capture_output=True, timeout=10,
                 )
                 ok(f"Stopped container ({container_name})")
-                time.sleep(1)  # let the port fully clear
+        # Let the port fully clear
+        time.sleep(1)
 
     STATE_FILE.unlink(missing_ok=True)
 
@@ -637,10 +474,6 @@ def wait_for_server(port: int = 8000, timeout: int = 360, verbose: bool = False)
     return False
 
 
-def _rocm_uses_container() -> bool:
-    """Check if ROCm should run via container (no native hipcc available)."""
-    return shutil.which("hipcc") is None
-
 
 def launch_server(cfg: ModelConfig, port: int = 8000, backend: str = "vulkan",
                   extra_args: list[str] | None = None, verbose: bool = False,
@@ -662,6 +495,13 @@ def launch_server(cfg: ModelConfig, port: int = 8000, backend: str = "vulkan",
     except ValueError:
         args += ["--port", str(port)]
 
+    # Default to mmap (faster repeated loads via OS page cache) with Direct I/O off.
+    # --extra args can override these if needed.
+    if "--mmap" not in args and "--no-mmap" not in args:
+        args += ["--mmap"]
+    if "--direct-io" not in args and "--no-direct-io" not in args:
+        args += ["--no-direct-io"]
+
     if extra_args:
         args += extra_args
 
@@ -679,7 +519,7 @@ def launch_server(cfg: ModelConfig, port: int = 8000, backend: str = "vulkan",
 
     rt = _find_container_runtime()
     if not rt:
-        fail("Container runtime not found (need podman or docker)")
+        fail("Container runtime not found (need Docker)")
         sys.exit(1)
 
     image = _container_image(backend)
@@ -687,43 +527,46 @@ def launch_server(cfg: ModelConfig, port: int = 8000, backend: str = "vulkan",
 
     from models import MODELS_DIR
 
-    # Build the container run command
-    env_flags = []
-    if backend in ROCM_BACKENDS:
-        env_flags += [
-            "-e", "HSA_ENABLE_SDMA=0",
-            "-e", "ROCBLAS_USE_HIPBLASLT=1",
-            "-e", "HIP_VISIBLE_DEVICES=0",
-        ]
+  # Check if container already exists
+    exists_check = [rt, "container", "exists", container_name]
+    exists_result = subprocess.run(exists_check, capture_output=True)
+    if exists_result.returncode == 0:
+        # Container already exists, start it
+        subprocess.run([rt, "start", container_name], check=True)
+        # Get container ID (optional, from inspection)
+        inspect_cmd = [rt, "inspect", "-f", "{{.Id}}", container_name]
+        container_id_result = subprocess.run(inspect_cmd, capture_output=True, text=True)
+        container_id = container_id_result.stdout.strip()[:12]
+    else:
+        # Build and run the container as before
+        container_cmd = [
+            rt, "run", "-d",
+            "--name", container_name,
+            "--device", "/dev/dri",
+            "--device", "/dev/kfd",
+            "--group-add", "video",
+            "--group-add", "render",
+            "--security-opt", "seccomp=unconfined",
+            "-v", f"{MODELS_DIR}:{MODELS_DIR}:ro",
+            "-p", f"{port}:{port}",
+        #] + env_flags + [ #TODO: this is undefined
+            image,
+            "llama-server",
+        ] + args
 
-    container_cmd = [
-        rt, "run", "-d",
-        "--name", container_name,
-        "--device", "/dev/dri",
-        "--device", "/dev/kfd",
-        "--group-add", "video",
-        "--group-add", "render",
-        "--security-opt", "seccomp=unconfined",
-        "-v", f"{MODELS_DIR}:{MODELS_DIR}:ro",
-        "-p", f"{port}:{port}",
-    ] + env_flags + [
-        image,
-        "llama-server",
-    ] + args
+        if verbose:
+            info(f"Container: {' '.join(container_cmd[:12])} ...")
 
-    if verbose:
-        info(f"Container: {' '.join(container_cmd[:12])} ...")
+        result = subprocess.run(container_cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            fail(f"Failed to start {backend} container")
+            if result.stderr:
+                stderr_text = result.stderr.strip() if result.stderr else ""
+                for line in stderr_text.splitlines()[-3:]:
+                    fail(f"  {line}")
+            sys.exit(1)
+        container_id = result.stdout.strip()[:12]
 
-    result = subprocess.run(container_cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        fail(f"Failed to start {backend} container")
-        if result.stderr:
-            stderr_text = result.stderr.strip() if result.stderr else ""
-            for line in stderr_text.splitlines()[-3:]:
-                fail(f"  {line}")
-        sys.exit(1)
-
-    container_id = result.stdout.strip()[:12]
     PID_FILE.unlink(missing_ok=True)
     STATE_FILE.write_text(json.dumps({
         "model": cfg.alias,
@@ -1623,13 +1466,7 @@ def main():
                         help="Timeout for server startup in seconds (default: 30)")
 
     # build
-    p_build = sub.add_parser("build", help="Build llama.cpp from source")
-    p_build.add_argument("--rebuild", action="store_true",
-                         help="Clean build directory and rebuild")
-    p_build.add_argument("--backend", choices=["vulkan", "radv", "amdvlk", "rocm", "rocm6", "rocm7", "rocm7-nightly"], default="vulkan",
-                         help="Build backend (default: vulkan).  Both can coexist.")
-
-    # list
+        # list
     sub.add_parser("list", help="List available models")
 
     # serve
@@ -1722,10 +1559,7 @@ def main():
         parser.print_help()
         sys.exit(0)
 
-    if args.command == "build":
-        build_llamacpp(rebuild=args.rebuild, backend=args.backend)
-
-    elif args.command == "list":
+    if args.command == "list":
         list_models()
 
     elif args.command == "serve":

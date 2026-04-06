@@ -188,7 +188,6 @@ class ModelConfig:
             "--port",         "8000",
             "--ctx-size",     str(total_ctx),
             "-ngl",           "999",
-            "--no-mmap",
             "--flash-attn",   "on",
             "--parallel",     str(np),
             "-a",             self.alias,
