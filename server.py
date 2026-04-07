@@ -41,6 +41,7 @@ import subprocess
 import sys
 import textwrap
 import time
+import urllib.error
 import urllib.request
 import re
 from pathlib import Path
@@ -96,6 +97,13 @@ ROCM_BACKENDS = ("rocm", "rocm6", "rocm7", "rocm7-nightly")
 
 EVAL_RESULTS_FILE = PROJECT_DIR / "eval_results.jsonl"
 EVAL_RAW_DIR      = PROJECT_DIR / "eval_raw"
+
+LOCAL_API_HOST = "127.0.0.1"
+
+def _local_url(port: int, path: str) -> str:
+    """Build a localhost URL for client-side health/API calls."""
+    normalized = "/" + path.lstrip("/")
+    return f"http://{LOCAL_API_HOST}:{port}{normalized}"
 
 def load_env_file():
     """Load .env file if it exists."""
@@ -441,6 +449,7 @@ def stop_server():
         # Let the port fully clear
         time.sleep(1)
 
+    PID_FILE.unlink(missing_ok=True)
     STATE_FILE.unlink(missing_ok=True)
 
 
@@ -452,7 +461,7 @@ def wait_for_server(port: int = 8000, timeout: int = 60, verbose: bool = False) 
         timeout: Timeout in seconds (reduced from 360 to 60 for faster feedback)
         verbose: Print detailed progress
     """
-    url = f"http://0.0.0.0:{port}/health"
+    url = _local_url(port, "/health")
     deadline = time.time() + timeout
     if verbose:
         info(f"Waiting for server on port {port} (timeout {timeout}s) ...")
@@ -719,7 +728,7 @@ def _make_prefill_prompt(target_tokens: int = 800) -> str:
 def _bench_one(port: int, prompt: str, max_tokens: int, label: str,
                timeout: int = 600) -> dict:
     """Send a single non-streaming request and return timing + token info."""
-    url = f"http://0.0.0.0:{port}/v1/chat/completions"
+    url = _local_url(port, "/v1/chat/completions")
     payload = json.dumps({
         "model": "model",
         "messages": [{"role": "user", "content": prompt}],
@@ -769,7 +778,7 @@ def bench(port: int = 8000, model_alias: str | None = None,
     if model_alias is None:
         try:
             with urllib.request.urlopen(
-                f"http://0.0.0.0:{port}/v1/models", timeout=5
+                _local_url(port, "/v1/models"), timeout=5
             ) as resp:
                 data = json.loads(resp.read())
                 models = data.get("data", [])
@@ -894,7 +903,7 @@ def bench(port: int = 8000, model_alias: str | None = None,
 
 def _fire_one_request(port: int, prompt: str, max_tokens: int = 256) -> dict:
     """Send a single completion request and return timing info."""
-    url = f"http://0.0.0.0:{port}/v1/chat/completions"
+    url = _local_url(port, "/v1/chat/completions")
     payload = json.dumps({
         "model": "model",
         "messages": [{"role": "user", "content": prompt}],
@@ -1269,7 +1278,7 @@ def run_evalplus(port: int, suite: str, model_alias: str,
         "--model", f"strix-{model_alias}",
         "--dataset", suite,              # "humaneval" or "mbpp"
         "--backend", "openai",
-        "--base-url", f"http://0.0.0.0:{port}/v1",
+        "--base-url", _local_url(port, "/v1"),
         "--greedy",
     ]
 
@@ -1301,7 +1310,10 @@ def run_evalplus(port: int, suite: str, model_alias: str,
         if len(matches) >= 2:
             pass_at_1_plus = float(matches[1])
         if pass_at_1_base is not None:
-            ok(f"Base pass@1: {pass_at_1_base:.1%}  Plus pass@1: {pass_at_1_plus:.1%}")
+            score_msg = f"Base pass@1: {pass_at_1_base:.1%}"
+            if pass_at_1_plus is not None:
+                score_msg += f"  Plus pass@1: {pass_at_1_plus:.1%}"
+            ok(score_msg)
     except Exception as e:
         warn(f"Could not parse EvalPlus scores: {e}")
 

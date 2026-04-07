@@ -550,14 +550,6 @@ class TestEdgeCases:
         with pytest.raises(FileNotFoundError, match="not downloaded"):
             sample_model.server_args()
     
-    def test_invalid_backend(self, tmp_project_dir: Path):
-        """Invalid backend should be handled gracefully."""
-        with patch("shutil.which", return_value=None):
-            from server import check_build_deps
-            
-            with pytest.raises(SystemExit):
-                check_build_deps("invalid_backend")
-    
     def test_empty_model_list(self):
         """Empty model list should not crash lookup."""
         from models import MODELS

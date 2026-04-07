@@ -1,18 +1,21 @@
 #!/usr/bin/env bash
-# Run the test suite for strix-llamacpp
+# Run the automated test suite for strix-halo-llamacpp.
 
-set -e
+set -euo pipefail
 
-echo "🔧 Installing test dependencies..."
-pip install -q pytest pytest-xdist
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
 
-echo "🚀 Running test suite..."
-pytest tests/ -v --tb=short "$@"
+echo "Installing test dependencies..."
+pip install -q -r requirements-test.txt
 
-echo "✅ Tests completed!"
+echo "Running pytest..."
+pytest -q "$@"
+
 echo ""
-echo "For dry-run tests (won't disrupt main model):"
-echo "  python server.py test --sequential --dry-run"
+echo "Automated tests completed."
+echo "Dry-run launcher validation:"
+echo "  python server.py test --dry-run --sequential"
 echo ""
-echo "For inference test on running server:"
-echo "  python tests/test_inference.py --port 8000"
+echo "Optional live inference smoke test (requires a running local server):"
+echo "  STRIX_RUN_LIVE_INFERENCE=1 pytest tests/test_inference.py -m integration -v"
