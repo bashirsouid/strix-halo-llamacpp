@@ -1,0 +1,1 @@
+{"timestamp": "2026-04-07 12:00", "backend": "radv", "model": "gemma4-26b-a4b-q8", "quant": "Q8_0", "suite": "humaneval", "eval_tool": "evalplus", "ok": true, "wall_time_sec": 2852.1, "raw_log": "results/eval/raw/2026-04-07_11-13-01--gemma4-26b-a4b-q8--humaneval.log", "pass_at_1_base": 0.122, "pass_at_1_plus": 0.122}

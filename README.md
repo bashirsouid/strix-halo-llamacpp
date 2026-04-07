@@ -12,7 +12,7 @@ The project pulls prebuilt `llama.cpp` container images from `kyuz0/amd-strix-ha
 - sweeps `--parallel` values to find the best aggregate throughput
 - runs EvalPlus against the local server
 - includes shell entrypoints for quick start and watch mode
-- ships a pytest suite that covers Python helpers and shell entrypoints
+- ships a pytest suite plus bash smoke tests that cover model helpers, shell entrypoints, wrapper scripts, and the top-level `./test.sh` runner
 
 ## Requirements
 
@@ -163,16 +163,25 @@ curl http://127.0.0.1:8000/v1/chat/completions \
 
 ## Testing
 
-Run the full automated suite:
+Run the default automated suite:
 
 ```bash
 pytest -q
 ```
 
-Run only the shell entrypoint coverage:
+That default collection now includes `test_models.py`, `test_entrypoints.py`, and everything under `tests/`.
+
+Run the subprocess-based shell and wrapper entrypoint coverage only:
 
 ```bash
-pytest tests/test_entrypoints.py -v
+pytest test_entrypoints.py -v
+```
+
+Run the lightweight bash smoke scripts only:
+
+```bash
+bash tests/test_start.sh
+bash tests/test_bash_entrypoints.sh
 ```
 
 Run the manual live inference smoke test against an already-running local server:
@@ -186,5 +195,7 @@ Or use the helper script:
 ```bash
 ./test.sh
 ```
+
+`./test.sh` runs the bash smoke scripts, the default pytest suite, and the live inference smoke test. It always ends with a single `FINAL RESULT:` line so failures from any sub-step show up in the last line of output.
 
 More details live in [TESTING.md](TESTING.md).

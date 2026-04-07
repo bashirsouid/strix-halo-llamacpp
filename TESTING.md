@@ -1,6 +1,10 @@
 # Testing
 
-The test suite is split into fast automated coverage and an optional live smoke test.
+The test suite is split into three layers:
+
+- default pytest coverage that is safe for local development and CI
+- lightweight bash smoke scripts that keep shell-level checks honest
+- an optional live inference smoke test that talks to a real local server
 
 ## Run everything that is safe in CI
 
@@ -8,25 +12,30 @@ The test suite is split into fast automated coverage and an optional live smoke 
 pytest -q
 ```
 
-That command covers:
+`pytest.ini` collects these targets by default:
 
-- model lookup and argument generation in `models.py`
-- environment loading and launcher helpers in `server.py`
-- benchmark/eval helper behavior with mocks
-- shell entrypoints such as `start.sh`, `watch.sh`, `stop.sh`, and `source-me.sh`
+- `test_models.py` for model lookup and argument-generation coverage
+- `test_entrypoints.py` for subprocess-based coverage of `start.sh`, `watch.sh`, `stop.sh`, `source-me.sh`, `benchmark-run.sh`, `evaluate.sh`, and `test.sh`
+- `tests/` for `server.py`, parallelization helpers, and the opt-in live inference test wrapper
 
 ## Focused runs
 
-Python helpers only:
+Model helpers only:
 
 ```bash
-pytest tests/test_models.py tests/test_server.py -v
+pytest test_models.py -v
 ```
 
-Shell entrypoints only:
+Shell and wrapper entrypoints only:
 
 ```bash
-pytest tests/test_entrypoints.py -v
+pytest test_entrypoints.py -v
+```
+
+Server helpers only:
+
+```bash
+pytest tests/test_server.py -v
 ```
 
 Parallel benchmark helpers only:
@@ -35,10 +44,17 @@ Parallel benchmark helpers only:
 pytest tests/test_parallelization.py -v
 ```
 
-Inference helper unit tests only:
+Live inference wrapper only:
 
 ```bash
 pytest tests/test_inference.py -v
+```
+
+Legacy bash smoke scripts only:
+
+```bash
+bash tests/test_start.sh
+bash tests/test_bash_entrypoints.sh
 ```
 
 ## Dry-run launcher validation
@@ -62,15 +78,35 @@ Without that environment variable, the live test is skipped by default so `pytes
 
 ## Helper script
 
-`test.sh` installs the test requirements and runs the default pytest command:
+`./test.sh` is the top-level end-to-end helper:
 
 ```bash
 ./test.sh
 ```
 
+What it does:
+
+- optionally installs `requirements-test.txt`
+- runs `bash tests/test_start.sh`
+- runs `bash tests/test_bash_entrypoints.sh`
+- runs the default pytest collection (`test_models.py`, `test_entrypoints.py`, and `tests/`)
+- reuses an already-running local server on `STRIX_TEST_PORT` when possible, otherwise starts a temporary server
+- runs the live inference smoke test with `tests/test_inference.py`
+
+`./test.sh` keeps going across independent phases, records failures, and always prints a single trailing `FINAL RESULT:` line. That last line includes any failed sub-step, so failures from the bash smoke scripts, pytest suite, server startup, or live inference smoke test bubble all the way up to the final report.
+
+Useful environment variables for `./test.sh`:
+
+```bash
+STRIX_TEST_PORT=8000
+STRIX_TEST_BACKEND=radv
+STRIX_TEST_MODEL_ALIAS=smollm2-135m-test-q4
+STRIX_TEST_TIMEOUT=30
+```
+
 ## Notes for contributors
 
-- keep default tests hermetic and offline
-- mock Docker, HTTP, and subprocess boundaries unless the test is explicitly marked as live integration
-- prefer exercising shell entrypoints through subprocess-based tests so argument forwarding stays covered
-- when adding a new backend or CLI flag, update both Python tests and shell entrypoint tests
+- keep default tests hermetic and offline unless the test is explicitly marked as live integration
+- prefer subprocess-based tests in `test_entrypoints.py` for shell wrappers so real argument forwarding stays covered
+- keep the lightweight bash smoke scripts small and focused on shell-only behavior
+- when adding a new CLI wrapper or test phase, update both the default pytest collection and `./test.sh` so the final summary remains authoritative

@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Strix Halo Bench Results</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0a0e17; color: #c9d1d9;
+    font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', monospace;
+    padding: 24px;
+  }
+  .container { max-width: 1060px; margin: 0 auto; }
+  h1 { font-size: 22px; color: #58a6ff; margin-bottom: 4px; }
+  .subtitle { font-size: 13px; color: #6e7681; margin-bottom: 24px; }
+  .stats { display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap; }
+  .stat {
+    background: #161b22; border: 1px solid #21262d;
+    border-radius: 6px; padding: 10px 16px; flex: 1 1 160px;
+  }
+  .stat-value { font-size: 20px; font-weight: 700; color: #f0f6fc; }
+  .stat-sub { font-size: 11px; color: #6e7681; }
+  .stat-label { font-size: 11px; color: #6e7681; text-transform: uppercase; letter-spacing: 1px; }
+  .chart-box {
+    background: #0d1117; border: 1px solid #21262d;
+    border-radius: 8px; padding: 20px; margin-bottom: 24px;
+  }
+  .chart-box h2 { font-size: 14px; font-weight: 600; color: #f0f6fc; margin-bottom: 4px; }
+  .chart-box .desc { font-size: 11px; color: #6e7681; margin-bottom: 12px; }
+  .section-label {
+    font-size: 16px; font-weight: 700; color: #f0f6fc;
+    margin: 28px 0 14px; padding-top: 12px; border-top: 1px solid #21262d;
+  }
+  .legend { font-size: 11px; color: #8b949e; margin-bottom: 16px; display: flex; flex-wrap: wrap; gap: 4px 0; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
+  th, td { padding: 6px 8px; border-bottom: 1px solid #21262d; }
+  th { color: #8b949e; font-weight: 500; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>⚡ Strix Halo — benchmark results</h1>
+  <p class="subtitle">
+    3 latest records &middot;
+    1 models &middot;
+    1 backend(s) &middot;
+    3 payload tier(s) &middot;
+    3 total records
+  </p>
+
+  <div class="stats">
+    <div class="stat">
+      <div class="stat-value">40</div>
+      <div class="stat-sub">gemma4-26b-a4b-q8 (rocm6)</div>
+      <div class="stat-label">Best gen tok/s (small)</div>
+    </div>
+    <div class="stat">
+      <div class="stat-value">30</div>
+      <div class="stat-sub">gemma4-26b-a4b-q8 (rocm6)</div>
+      <div class="stat-label">Best gen tok/s (large)</div>
+    </div>
+    <div class="stat">
+      <div class="stat-value">75%</div>
+      <div class="stat-sub">gemma4-26b-a4b-q8 (rocm6)</div>
+      <div class="stat-label">Most resilient (gen retained)</div>
+    </div>
+  </div>
+
+  <div class="legend"><span style="display:inline-flex;align-items:center;gap:4px;margin-right:14px;"><span style="width:10px;height:10px;border-radius:2px;background:#2a9d8f;"></span>small: ~50 in / 256 out</span> <span style="display:inline-flex;align-items:center;gap:4px;margin-right:14px;"><span style="width:10px;height:10px;border-radius:2px;background:#457b9d;"></span>medium: ~1K in / 512 out</span> <span style="display:inline-flex;align-items:center;gap:4px;margin-right:14px;"><span style="width:10px;height:10px;border-radius:2px;background:#e63946;"></span>large: ~8K in / 2K out</span></div>
+
+  <div class="section-label">Generation throughput by context size</div>
+  
+  <div class="chart-box">
+    <h2>Generation tok/s by payload — ROCM6</h2>
+    <div class="desc">How decode speed changes with context size.  Shorter bars at larger payloads = context degradation.</div>
+    <div style="position:relative;height:250px;">
+      <canvas id="genChart_rocm6"></canvas>
+    </div>
+  </div>
+
+  
+  <div class="section-label">Prefill throughput by context size</div>
+  
+  <div class="chart-box">
+    <h2>Prefill tok/s by payload — ROCM6</h2>
+    <div class="desc">Prompt processing speed at each context size.</div>
+    <div style="position:relative;height:250px;">
+      <canvas id="ppChart_rocm6"></canvas>
+    </div>
+  </div>
+  
+
+  
+  <div class="section-label">Context degradation</div>
+  <div class="chart-box">
+    <h2>Generation retained: small → large payload (%)</h2>
+    <div class="desc">100% = no degradation.  Lower = model slows down more at long context.  Models that hold up best here are ideal for long documents and RAG.</div>
+    <div style="position:relative;height:250px;">
+      <canvas id="degradeChart"></canvas>
+    </div>
+  </div>
+  
+
+  
+
+  <div class="section-label">Detailed results</div>
+  <div class="chart-box">
+    <div style="overflow-x:auto;">
+    <table>
+      <thead>
+        <tr><th>Model</th><th>Backend</th><th colspan="3" style="text-align:center;border-bottom:2px solid #2a9d8f;">small</th><th colspan="3" style="text-align:center;border-bottom:2px solid #457b9d;">medium</th><th colspan="3" style="text-align:center;border-bottom:2px solid #e63946;">large</th></tr>
+        <tr><th></th><th></th><th style="text-align:right;font-size:10px;">Gen</th><th style="text-align:right;font-size:10px;">PP</th><th style="text-align:right;font-size:10px;">Comb</th><th style="text-align:right;font-size:10px;">Gen</th><th style="text-align:right;font-size:10px;">PP</th><th style="text-align:right;font-size:10px;">Comb</th><th style="text-align:right;font-size:10px;">Gen</th><th style="text-align:right;font-size:10px;">PP</th><th style="text-align:right;font-size:10px;">Comb</th></tr>
+      </thead>
+      <tbody>
+        <tr><td style="font-weight:600;white-space:nowrap;">gemma4-26b-a4b-q8 [Q8_0]</td><td>rocm6</td><td style="text-align:right;">39.6</td><td style="text-align:right;color:#6e7681;">4</td><td style="text-align:right;font-weight:600;">21.7</td><td style="text-align:right;">36.0</td><td style="text-align:right;color:#6e7681;">55</td><td style="text-align:right;font-weight:600;">45.3</td><td style="text-align:right;">29.7</td><td style="text-align:right;color:#6e7681;">284</td><td style="text-align:right;font-weight:600;">156.6</td></tr>
+      </tbody>
+    </table>
+    </div>
+  </div>
+</div>
+
+<script>
+Chart.defaults.color = '#6e7681';
+Chart.defaults.borderColor = '#21262d';
+
+const modelLabels = ["gemma4-26b-a4b-q8 [Q8_0]"];
+
+function makeBar(id, datasets, xLabel) {
+  new Chart(document.getElementById(id), {
+    type: 'bar',
+    data: { labels: modelLabels, datasets: datasets },
+    options: {
+      indexAxis: 'y',
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { labels: { font: { size: 10 }, usePointStyle: true, pointStyle: 'rect' } },
+        tooltip: {
+          backgroundColor: '#161b22', borderColor: '#30363d', borderWidth: 1,
+          bodyFont: { size: 11 },
+          callbacks: { label: ctx => ctx.dataset.label + ': ' + ctx.parsed.x + ' tok/s' }
+        }
+      },
+      scales: {
+        x: { beginAtZero: true, title: { display: true, text: xLabel, font: { size: 11 } }, ticks: { font: { size: 11 } } },
+        y: { ticks: { font: { size: 11 }, autoSkip: false } }
+      }
+    }
+  });
+}
+
+makeBar('genChart_rocm6', [{
+                label: 'small (~50 in / 256 out)',
+                data: [39.6],
+                backgroundColor: '#2a9d8f',
+                borderColor: '#2a9d8f',
+                borderWidth: 1,
+                borderRadius: 4,
+            }, {
+                label: 'medium (~1K in / 512 out)',
+                data: [36.0],
+                backgroundColor: '#457b9d',
+                borderColor: '#457b9d',
+                borderWidth: 1,
+                borderRadius: 4,
+            }, {
+                label: 'large (~8K in / 2K out)',
+                data: [29.7],
+                backgroundColor: '#e63946',
+                borderColor: '#e63946',
+                borderWidth: 1,
+                borderRadius: 4,
+            }], 'Generation tok/s');
+makeBar('ppChart_rocm6', [{
+                    label: 'small',
+                    data: [3.9],
+                    backgroundColor: '#2a9d8f88',
+                    borderColor: '#2a9d8f',
+                    borderWidth: 1,
+                    borderRadius: 4,
+                }, {
+                    label: 'medium',
+                    data: [54.6],
+                    backgroundColor: '#457b9d88',
+                    borderColor: '#457b9d',
+                    borderWidth: 1,
+                    borderRadius: 4,
+                }, {
+                    label: 'large',
+                    data: [283.6],
+                    backgroundColor: '#e6394688',
+                    borderColor: '#e63946',
+                    borderWidth: 1,
+                    borderRadius: 4,
+                }], 'Prefill tok/s');
+
+
+new Chart(document.getElementById('degradeChart'), {
+  type: 'bar',
+  data: { labels: modelLabels, datasets: [{
+            label: 'ROCM6',
+            data: [75.0],
+            backgroundColor: '#457b9d',
+            borderColor: '#457b9d',
+            borderWidth: 1,
+            borderRadius: 4,
+        }] },
+  options: {
+    indexAxis: 'y',
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: { labels: { font: { size: 10 }, usePointStyle: true, pointStyle: 'rect' } },
+      tooltip: {
+        backgroundColor: '#161b22', borderColor: '#30363d', borderWidth: 1,
+        bodyFont: { size: 11 },
+        callbacks: { label: ctx => ctx.dataset.label + ': ' + ctx.parsed.x + '% retained' }
+      }
+    },
+    scales: {
+      x: { beginAtZero: true, max: 110, title: { display: true, text: '% of small-payload gen speed retained', font: { size: 11 } }, ticks: { font: { size: 11 }, callback: v => v + '%' } },
+      y: { ticks: { font: { size: 11 }, autoSkip: false } }
+    }
+  }
+});
+
+
+
+</script>
+</body>
+</html>
