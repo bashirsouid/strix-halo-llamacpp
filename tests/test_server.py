@@ -537,7 +537,7 @@ class TestLightweightIntegration:
         assert len(MODELS) > 0
 
 
-# ──边缘测试与错误处理 ─────────────────────────────────────────────────────────
+# Error handling ─────────────────────────────────────────────────────────
 
 
 class TestEdgeCases:
