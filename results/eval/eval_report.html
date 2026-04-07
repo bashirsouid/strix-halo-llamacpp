@@ -53,27 +53,27 @@
 <div class="container">
   <h1>🧪 Strix Halo Eval Results</h1>
   <p class="subtitle">
-    3 runs &middot;
-    2 models &middot;
+    4 runs &middot;
+    3 models &middot;
     2 backends &middot;
-    3 sessions
+    4 sessions
   </p>
 
   <div class="stats">
     <div class="stat">
-      <div class="stat-value">3</div>
+      <div class="stat-value">4</div>
       <div class="stat-label">Total Runs</div>
     </div>
     <div class="stat">
-      <div class="stat-value">2</div>
+      <div class="stat-value">3</div>
       <div class="stat-label">Models</div>
     </div>
     <div class="stat">
-      <div class="stat-value">2</div>
+      <div class="stat-value">3</div>
       <div class="stat-label">With Scores</div>
     </div>
     <div class="stat" style="flex: 2 1 200px;">
-      <div class="stat-value" style="font-size:14px; padding-top:3px;">nemotron-nano-q4 (rocm7, humaneval) [Q4_K_M] @ 67.1%</div>
+      <div class="stat-value" style="font-size:14px; padding-top:3px;">qwen3-coder-next-q6 (rocm7, humaneval) [Q6_K] @ 88.4%</div>
       <div class="stat-label">Best Plus pass@1</div>
     </div>
   </div>
@@ -123,6 +123,17 @@
       </thead>
       <tbody>
         <tr>
+          <td>qwen3-coder-next-q6</td>
+          <td class="mono">Q6_K</td>
+          <td class="mono">rocm7</td>
+          <td class="mono">humaneval</td>
+          <td class="score good">92.1%</td>
+          <td class="score good">88.4%</td>
+          <td class="mono">3s (0.0m)</td>
+          <td class="status ok">✓</td>
+          <td class="mono dim">2026-04-07 14:17</td>
+        </tr>
+        <tr>
           <td>nemotron-nano-q4</td>
           <td class="mono">Q4_K_M</td>
           <td class="mono">rocm7</td>
@@ -156,21 +167,21 @@ Chart.defaults.borderColor = '#21262d';
 new Chart(document.getElementById('passChart'), {
   type: 'bar',
   data: {
-    labels: ["nemotron-nano-q4 (rocm7, humaneval) [Q4_K_M]", "gemma4-26b-a4b-q8 (radv, humaneval) [Q8_0]"],
+    labels: ["qwen3-coder-next-q6 (rocm7, humaneval) [Q6_K]", "nemotron-nano-q4 (rocm7, humaneval) [Q4_K_M]", "gemma4-26b-a4b-q8 (radv, humaneval) [Q8_0]"],
     datasets: [
       {
         label: 'Base pass@1 (%)',
-        data: [68.3, 12.2],
-        backgroundColor: ["#e63946", "#457b9d"].map(c => c + 'aa'),
-        borderColor: ["#e63946", "#457b9d"],
+        data: [92.1, 68.3, 12.2],
+        backgroundColor: ["#e63946", "#457b9d", "#2a9d8f"].map(c => c + 'aa'),
+        borderColor: ["#e63946", "#457b9d", "#2a9d8f"],
         borderWidth: 1,
         borderRadius: 3,
       },
       {
         label: 'Plus pass@1 (%)',
-        data: [67.1, 12.2],
-        backgroundColor: ["#e63946", "#457b9d"],
-        borderColor: ["#e63946", "#457b9d"],
+        data: [88.4, 67.1, 12.2],
+        backgroundColor: ["#e63946", "#457b9d", "#2a9d8f"],
+        borderColor: ["#e63946", "#457b9d", "#2a9d8f"],
         borderWidth: 1,
         borderRadius: 3,
       },
@@ -202,7 +213,7 @@ new Chart(document.getElementById('passChart'), {
 new Chart(document.getElementById('scatterChart'), {
   type: 'scatter',
   data: {
-    datasets: [{"x": 1.7, "y": 12.2, "label": "gemma4-26b-a4b-q8 (radv, humaneval) [Q8_0]", "color": "#e63946"}, {"x": 2.2, "y": 67.1, "label": "nemotron-nano-q4 (rocm7, humaneval) [Q4_K_M]", "color": "#457b9d"}].map((pt, i) => ({
+    datasets: [{"x": 1.7, "y": 12.2, "label": "gemma4-26b-a4b-q8 (radv, humaneval) [Q8_0]", "color": "#e63946"}, {"x": 2.2, "y": 67.1, "label": "nemotron-nano-q4 (rocm7, humaneval) [Q4_K_M]", "color": "#457b9d"}, {"x": 2.8, "y": 88.4, "label": "qwen3-coder-next-q6 (rocm7, humaneval) [Q6_K]", "color": "#2a9d8f"}].map((pt, i) => ({
       label: pt.label,
       data: [{ x: pt.x, y: pt.y }],
       backgroundColor: pt.color,
@@ -240,10 +251,10 @@ new Chart(document.getElementById('scatterChart'), {
 new Chart(document.getElementById('wallChart'), {
   type: 'bar',
   data: {
-    labels: ["gemma4-26b-a4b-q8 (radv, humaneval) [Q8_0]", "nemotron-nano-q4 (rocm7, humaneval) [Q4_K_M]"],
+    labels: ["gemma4-26b-a4b-q8 (radv, humaneval) [Q8_0]", "nemotron-nano-q4 (rocm7, humaneval) [Q4_K_M]", "qwen3-coder-next-q6 (rocm7, humaneval) [Q6_K]"],
     datasets: [{
-      data: [1.7, 2.2],
-      backgroundColor: ["#e63946", "#457b9d"],
+      data: [1.7, 2.2, 2.8],
+      backgroundColor: ["#e63946", "#457b9d", "#2a9d8f"],
       borderRadius: 4,
     }]
   },
@@ -272,19 +283,26 @@ new Chart(document.getElementById('wallChart'), {
 new Chart(document.getElementById('historyChart'), {
   type: 'line',
   data: {
-    labels: ["2026-04-07 12:00", "2026-04-07 13:59", "2026-04-07 14:12"],
+    labels: ["2026-04-07 12:00", "2026-04-07 13:59", "2026-04-07 14:12", "2026-04-07 14:17"],
     datasets: [{
             label: "gemma4-26b-a4b-q8 (radv, humaneval) [Q8_0]",
-            data: [12.2, 12.2, null],
+            data: [12.2, 12.2, null, null],
             borderColor: '#e63946',
             backgroundColor: '#e6394633',
             borderWidth: 2, pointRadius: 4, pointHoverRadius: 6,
             tension: 0.2, spanGaps: true,
         }, {
             label: "nemotron-nano-q4 (rocm7, humaneval) [Q4_K_M]",
-            data: [null, null, 67.1],
+            data: [null, null, 67.1, null],
             borderColor: '#457b9d',
             backgroundColor: '#457b9d33',
+            borderWidth: 2, pointRadius: 4, pointHoverRadius: 6,
+            tension: 0.2, spanGaps: true,
+        }, {
+            label: "qwen3-coder-next-q6 (rocm7, humaneval) [Q6_K]",
+            data: [null, null, null, 88.4],
+            borderColor: '#2a9d8f',
+            backgroundColor: '#2a9d8f33',
             borderWidth: 2, pointRadius: 4, pointHoverRadius: 6,
             tension: 0.2, spanGaps: true,
         }]
@@ -314,19 +332,26 @@ new Chart(document.getElementById('historyChart'), {
 new Chart(document.getElementById('wallHistoryChart'), {
   type: 'line',
   data: {
-    labels: ["2026-04-07 12:00", "2026-04-07 13:59", "2026-04-07 14:12"],
+    labels: ["2026-04-07 12:00", "2026-04-07 13:59", "2026-04-07 14:12", "2026-04-07 14:17"],
     datasets: [{
             label: "gemma4-26b-a4b-q8 (radv, humaneval) [Q8_0]",
-            data: [2852.1, 1.7, null],
+            data: [2852.1, 1.7, null, null],
             borderColor: '#e63946',
             backgroundColor: '#e6394633',
             borderWidth: 2, pointRadius: 4, pointHoverRadius: 6,
             tension: 0.2, spanGaps: true,
         }, {
             label: "nemotron-nano-q4 (rocm7, humaneval) [Q4_K_M]",
-            data: [null, null, 2.2],
+            data: [null, null, 2.2, null],
             borderColor: '#457b9d',
             backgroundColor: '#457b9d33',
+            borderWidth: 2, pointRadius: 4, pointHoverRadius: 6,
+            tension: 0.2, spanGaps: true,
+        }, {
+            label: "qwen3-coder-next-q6 (rocm7, humaneval) [Q6_K]",
+            data: [null, null, null, 2.8],
+            borderColor: '#2a9d8f',
+            backgroundColor: '#2a9d8f33',
             borderWidth: 2, pointRadius: 4, pointHoverRadius: 6,
             tension: 0.2, spanGaps: true,
         }]

@@ -33,6 +33,7 @@ python server.py download MODEL
 from __future__ import annotations
 
 import argparse
+import copy
 import concurrent.futures
 import json
 import os
@@ -45,8 +46,23 @@ import urllib.error
 import urllib.request
 import re
 from pathlib import Path
+from typing import Any
 
 from models import MODELS, get_model, ModelConfig
+from repo_cache import (
+    DEFAULT_PROXY_HOST,
+    DEFAULT_PROXY_PORT,
+    DEFAULT_SLOT_ID,
+    SLOT_CACHE_ROOT,
+    ensure_cache_dirs,
+    ensure_gitignore_entry,
+    load_repo_context,
+    make_warm_payload,
+    refresh_repo_context,
+    repo_paths,
+    start_repo_proxy,
+    write_opencode_config,
+)
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 
@@ -114,6 +130,105 @@ def _local_url(port: int, path: str) -> str:
     """Build a localhost URL for client-side health/API calls."""
     normalized = "/" + path.lstrip("/")
     return f"http://{LOCAL_API_HOST}:{port}{normalized}"
+
+def _load_state() -> dict[str, Any] | None:
+    """Load the current launcher state file if present."""
+    if not STATE_FILE.exists():
+        return None
+    try:
+        data = json.loads(STATE_FILE.read_text())
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _current_model_alias() -> str | None:
+    state = _load_state() or {}
+    model = state.get("model")
+    return model if isinstance(model, str) and model else None
+
+
+def _api_key_for_model(model_alias: str | None = None) -> str | None:
+    alias = model_alias or _current_model_alias()
+    if alias:
+        try:
+            return get_model(alias).api_key
+        except Exception:
+            pass
+    return os.environ.get("API_KEY")
+
+
+def _local_api_headers(api_key: str | None = None) -> dict[str, str]:
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    return headers
+
+
+def _request_json(port: int, path: str, payload: dict[str, Any] | None = None,
+                  method: str | None = None, timeout: int = 600,
+                  api_key: str | None = None) -> dict[str, Any]:
+    data = None if payload is None else json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(
+        _local_url(port, path),
+        data=data,
+        headers=_local_api_headers(api_key),
+        method=method or ("POST" if data is not None else "GET"),
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        body = response.read()
+    if not body:
+        return {}
+    return json.loads(body.decode("utf-8"))
+
+
+def warm_repo_slot(repo_dir: str | Path, *, port: int = 8000,
+                   model_alias: str | None = None,
+                   slot_id: int = DEFAULT_SLOT_ID) -> dict[str, Any]:
+    alias = model_alias or _current_model_alias()
+    if not alias:
+        raise ValueError("No model specified and no running server state found")
+    context_text = load_repo_context(repo_dir, refresh_if_missing=True)
+    payload = make_warm_payload(context_text, model_alias=alias, slot_id=slot_id)
+    return _request_json(
+        port,
+        "/v1/chat/completions",
+        payload=payload,
+        method="POST",
+        timeout=600,
+        api_key=_api_key_for_model(alias),
+    )
+
+
+def save_repo_slot(repo_dir: str | Path, *, port: int = 8000,
+                   slot_id: int = DEFAULT_SLOT_ID,
+                   filename: str | None = None) -> dict[str, Any]:
+    paths = repo_paths(repo_dir)
+    slot_file = filename or paths.slot_filename
+    return _request_json(
+        port,
+        f"/slots/{slot_id}?action=save",
+        payload={"filename": slot_file},
+        method="POST",
+        timeout=600,
+        api_key=_api_key_for_model(),
+    )
+
+
+def restore_repo_slot(repo_dir: str | Path, *, port: int = 8000,
+                      slot_id: int = DEFAULT_SLOT_ID,
+                      filename: str | None = None) -> dict[str, Any]:
+    paths = repo_paths(repo_dir)
+    slot_file = filename or paths.slot_filename
+    return _request_json(
+        port,
+        f"/slots/{slot_id}?action=restore",
+        payload={"filename": slot_file},
+        method="POST",
+        timeout=600,
+        api_key=_api_key_for_model(),
+    )
+
 
 def load_env_file():
     """Load .env file if it exists."""
@@ -198,6 +313,17 @@ def resolve_model(model_arg: str | None, prompt_text: str = "Pick a model") -> M
     """Resolve a model from CLI arg, or show picker if None."""
     if model_arg:
         return get_model(model_arg)
+    return pick_model(prompt_text)
+
+
+def resolve_model_or_running(model_arg: str | None,
+                             prompt_text: str = "Pick a model") -> ModelConfig:
+    """Resolve an explicit model, otherwise use the running server model, otherwise prompt."""
+    if model_arg:
+        return get_model(model_arg)
+    running = _current_model_alias()
+    if running:
+        return get_model(running)
     return pick_model(prompt_text)
 
 
@@ -531,6 +657,14 @@ def launch_server(cfg: ModelConfig, port: int = 8000, backend: str = "vulkan",
 
     np = parallel_override if parallel_override is not None else cfg.parallel_slots
 
+    ensure_cache_dirs()
+    if cfg.slot_save_path:
+        slot_save_dir = Path(cfg.slot_save_path).expanduser().resolve()
+    else:
+        slot_save_dir = SLOT_CACHE_ROOT
+        cfg.slot_save_path = str(slot_save_dir)
+    slot_save_dir.mkdir(parents=True, exist_ok=True)
+
     # Build the llama-server argument list
     args = cfg.server_args(parallel_override=parallel_override, ctx_override=ctx_override)
     try:
@@ -542,7 +676,9 @@ def launch_server(cfg: ModelConfig, port: int = 8000, backend: str = "vulkan",
     # Default to mmap (faster repeated loads via OS page cache) with Direct I/O off.
     # --extra args can override these if needed.
     if "--mmap" not in args and "--no-mmap" not in args:
-        args += ["--mmap"]
+        # TODO: it seems like mmap might be slower. Needs more investigation.
+        #args += ["--mmap"]
+        args += ["--no-mmap"]
     if "--direct-io" not in args and "--no-direct-io" not in args:
         args += ["--no-direct-io"]
 
@@ -594,7 +730,8 @@ def launch_server(cfg: ModelConfig, port: int = 8000, backend: str = "vulkan",
             "--group-add", "render",
             "--security-opt", "seccomp=unconfined",
             "-v", f"{MODELS_DIR}:{MODELS_DIR}:ro",
-            "-p", f"{port}:{port}",
+            "-v", f"{slot_save_dir}:{slot_save_dir}",
+            "-p", f"{LOCAL_API_HOST}:{port}:{port}",
         #] + env_flags + [ #TODO: this is undefined
             image,
             "llama-server",
@@ -614,12 +751,17 @@ def launch_server(cfg: ModelConfig, port: int = 8000, backend: str = "vulkan",
         container_id = result.stdout.strip()[:12]
 
     PID_FILE.unlink(missing_ok=True)
+    cache_ram = 8192 if cfg.cache_ram is True else cfg.cache_ram
     STATE_FILE.write_text(json.dumps({
         "model": cfg.alias,
         "backend": backend,
         "port": port,
         "parallel": np,
         "container": container_name,
+        "cache_prompt": cfg.cache_prompt,
+        "cache_reuse": cfg.cache_reuse if cfg.cache_prompt else 0,
+        "cache_ram": cache_ram,
+        "slot_save_path": str(slot_save_dir),
     }))
 
 # Tail container logs for progress — always, not just in verbose mode
@@ -1577,11 +1719,99 @@ def main():
                          help="Disable speculative decoding")
     p_serve.add_argument("--verbose", "-v", action="store_true",
                          help="Show full llama-server output while loading")
+    p_serve.add_argument("--cache-reuse", type=int, default=None,
+                         help="Override llama.cpp --cache-reuse chunk size")
+    p_serve.add_argument("--cache-ram", type=int, default=None,
+                         help="Enable llama.cpp host-memory prompt cache in MiB")
+    p_serve.add_argument("--disable-prompt-cache", action="store_true",
+                         help="Disable llama.cpp prompt caching for this launch")
+    p_serve.add_argument("--slot-save-path", default=None,
+                         help="Directory used for llama.cpp slot save/restore snapshots")
+    p_serve.add_argument("--disable-slot-persistence", action="store_true",
+                         help="Disable llama.cpp slot save/restore endpoints for this launch")
     p_serve.add_argument("--extra", nargs=argparse.REMAINDER, default=[],
                          help="Extra args passed to llama-server")
 
     # stop
     sub.add_parser("stop", help="Stop the running server")
+
+    # repo-aware caching helpers
+    p_repo_init = sub.add_parser("repo-init",
+        help="Generate stable repo context and an OpenCode config for a project")
+    p_repo_init.add_argument("--repo", default=".",
+                             help="Project repository path (default: current directory)")
+    p_repo_init.add_argument("--model", default=None,
+                             help="Model alias or name for OpenCode (default: running model or picker)")
+    p_repo_init.add_argument("--proxy-port", type=int, default=DEFAULT_PROXY_PORT,
+                             help="Port that the repo-aware proxy will listen on")
+    p_repo_init.add_argument("--context-limit", type=int, default=None,
+                             help="Context limit to publish in opencode.json (default: selected model ctx)")
+    p_repo_init.add_argument("--output-limit", type=int, default=8192,
+                             help="Output token limit to publish in opencode.json")
+    p_repo_init.add_argument("--provider-id", default="strix-local",
+                             help="Provider ID written into opencode.json")
+    p_repo_init.add_argument("--provider-name", default="Strix Halo llama.cpp",
+                             help="Provider display name written into opencode.json")
+
+    p_repo_refresh = sub.add_parser("repo-refresh",
+        help="Refresh the cached architecture summary for a project repo")
+    p_repo_refresh.add_argument("--repo", default=".",
+                                help="Project repository path (default: current directory)")
+
+    p_repo_proxy = sub.add_parser("repo-proxy",
+        help="Run a local OpenAI-compatible proxy that injects cached repo context")
+    p_repo_proxy.add_argument("--repo", default=".",
+                              help="Project repository path (default: current directory)")
+    p_repo_proxy.add_argument("--host", default=DEFAULT_PROXY_HOST,
+                              help="Proxy listen host")
+    p_repo_proxy.add_argument("--port", type=int, default=DEFAULT_PROXY_PORT,
+                              help="Proxy listen port")
+    p_repo_proxy.add_argument("--server-port", type=int, default=8000,
+                              help="Upstream llama-server port")
+    p_repo_proxy.add_argument("--slot-id", type=int, default=DEFAULT_SLOT_ID,
+                              help="llama.cpp slot ID to pin this repo to")
+    p_repo_proxy.add_argument("--refresh", action="store_true",
+                              help="Refresh the repo context before starting the proxy")
+    p_repo_proxy.add_argument("--verbose", action="store_true",
+                              help="Enable proxy request logging")
+
+    p_repo_warm = sub.add_parser("repo-warm",
+        help="Prime llama.cpp prompt cache for a project repo")
+    p_repo_warm.add_argument("--repo", default=".",
+                             help="Project repository path (default: current directory)")
+    p_repo_warm.add_argument("--port", type=int, default=8000,
+                             help="Upstream llama-server port")
+    p_repo_warm.add_argument("--model", default=None,
+                             help="Model alias or name (default: running model)")
+    p_repo_warm.add_argument("--slot-id", type=int, default=DEFAULT_SLOT_ID,
+                             help="llama.cpp slot ID to warm")
+
+    p_repo_save = sub.add_parser("repo-save",
+        help="Save the warmed llama.cpp KV state for a repo slot to disk")
+    p_repo_save.add_argument("--repo", default=".",
+                             help="Project repository path (default: current directory)")
+    p_repo_save.add_argument("--port", type=int, default=8000,
+                             help="Upstream llama-server port")
+    p_repo_save.add_argument("--slot-id", type=int, default=DEFAULT_SLOT_ID,
+                             help="llama.cpp slot ID to save")
+    p_repo_save.add_argument("--filename", default=None,
+                             help="Override the slot snapshot filename")
+
+    p_repo_restore = sub.add_parser("repo-restore",
+        help="Restore a previously saved llama.cpp KV state for a repo slot")
+    p_repo_restore.add_argument("--repo", default=".",
+                                help="Project repository path (default: current directory)")
+    p_repo_restore.add_argument("--port", type=int, default=8000,
+                                help="Upstream llama-server port")
+    p_repo_restore.add_argument("--slot-id", type=int, default=DEFAULT_SLOT_ID,
+                                help="llama.cpp slot ID to restore")
+    p_repo_restore.add_argument("--filename", default=None,
+                                help="Override the slot snapshot filename")
+
+    p_repo_status = sub.add_parser("repo-status",
+        help="Show cached repo context files and current server settings")
+    p_repo_status.add_argument("--repo", default=".",
+                               help="Project repository path (default: current directory)")
 
     # bench
     p_bench = sub.add_parser("bench",
@@ -1652,7 +1882,7 @@ def main():
         list_models()
 
     elif args.command == "serve":
-        cfg = resolve_model(args.model, "Pick a model to serve")
+        cfg = copy.deepcopy(resolve_model(args.model, "Pick a model to serve"))
 
         # Apply overrides
         parallel_override = None
@@ -1669,6 +1899,17 @@ def main():
             cfg.threads = args.threads
         if args.no_spec:
             cfg.spec.strategy = None
+        if args.cache_reuse is not None:
+            cfg.cache_reuse = args.cache_reuse
+        if args.cache_ram is not None:
+            cfg.cache_ram = args.cache_ram
+        if args.disable_prompt_cache:
+            cfg.cache_prompt = False
+            cfg.cache_reuse = 0
+        if args.disable_slot_persistence:
+            cfg.slot_save_path = None
+        elif args.slot_save_path is not None:
+            cfg.slot_save_path = args.slot_save_path
 
         launch_server(cfg, port=args.port, backend=args.backend,
                       extra_args=args.extra, verbose=args.verbose,
@@ -1677,6 +1918,91 @@ def main():
 
     elif args.command == "stop":
         stop_server()
+
+    elif args.command == "repo-init":
+        cfg = copy.deepcopy(resolve_model_or_running(args.model, "Pick a model for OpenCode"))
+        paths = refresh_repo_context(args.repo)
+        config_path = write_opencode_config(
+            paths.repo_dir,
+            model_alias=cfg.alias,
+            model_name=cfg.name,
+            context_limit=args.context_limit or cfg.ctx_size,
+            proxy_port=args.proxy_port,
+            provider_id=args.provider_id,
+            provider_name=args.provider_name,
+            output_limit=args.output_limit,
+        )
+        ok(f"Wrote repo context: {paths.context_file}")
+        ok(f"Wrote metadata: {paths.metadata_file}")
+        ok(f"Wrote OpenCode config: {config_path}")
+        info(f"Next: python server.py repo-proxy --repo {paths.repo_dir}")
+
+    elif args.command == "repo-refresh":
+        paths = refresh_repo_context(args.repo)
+        ok(f"Refreshed repo context: {paths.context_file}")
+
+    elif args.command == "repo-proxy":
+        if args.refresh:
+            paths = refresh_repo_context(args.repo)
+        else:
+            paths = repo_paths(args.repo)
+            if not paths.context_file.exists():
+                paths = refresh_repo_context(args.repo)
+        upstream_headers: dict[str, str] = {}
+        api_key = _api_key_for_model()
+        if api_key:
+            upstream_headers["Authorization"] = f"Bearer {api_key}"
+        info(
+            f"Repo proxy for {paths.repo_dir} on http://{args.host}:{args.port} -> "
+            f"http://127.0.0.1:{args.server_port} (slot {args.slot_id})"
+        )
+        start_repo_proxy(
+            paths.repo_dir,
+            listen_host=args.host,
+            listen_port=args.port,
+            upstream_port=args.server_port,
+            slot_id=args.slot_id,
+            upstream_headers=upstream_headers,
+            verbose=args.verbose,
+        )
+
+    elif args.command == "repo-warm":
+        model_alias = args.model
+        if model_alias:
+            model_alias = get_model(model_alias).alias
+        result = warm_repo_slot(args.repo, port=args.port, model_alias=model_alias, slot_id=args.slot_id)
+        usage = result.get("usage") if isinstance(result, dict) else None
+        ok(f"Warmed repo cache for slot {args.slot_id}")
+        if isinstance(usage, dict) and usage:
+            info(f"Warm request usage: {usage}")
+
+    elif args.command == "repo-save":
+        result = save_repo_slot(args.repo, port=args.port, slot_id=args.slot_id, filename=args.filename)
+        ok(f"Saved slot {args.slot_id} to {result.get('filename', args.filename or repo_paths(args.repo).slot_filename)}")
+
+    elif args.command == "repo-restore":
+        result = restore_repo_slot(args.repo, port=args.port, slot_id=args.slot_id, filename=args.filename)
+        ok(f"Restored slot {args.slot_id} from {result.get('filename', args.filename or repo_paths(args.repo).slot_filename)}")
+
+    elif args.command == "repo-status":
+        paths = repo_paths(args.repo)
+        state = _load_state() or {}
+        slot_root = Path(state.get("slot_save_path", SLOT_CACHE_ROOT))
+        slot_file = slot_root / paths.slot_filename
+        print()
+        info(f"Repo: {paths.repo_dir}")
+        info(f"Context file: {paths.context_file} ({'present' if paths.context_file.exists() else 'missing'})")
+        info(f"Metadata file: {paths.metadata_file} ({'present' if paths.metadata_file.exists() else 'missing'})")
+        info(f"OpenCode config: {paths.opencode_file} ({'present' if paths.opencode_file.exists() else 'missing'})")
+        info(f"Slot snapshot: {slot_file} ({'present' if slot_file.exists() else 'missing'})")
+        if state:
+            info(
+                "Running server: "
+                f"model={state.get('model')} backend={state.get('backend')} port={state.get('port')} "
+                f"cache_reuse={state.get('cache_reuse')} slot_save_path={state.get('slot_save_path')}"
+            )
+        else:
+            warn("No running server state file found")
 
     elif args.command == "bench":
         if args.model:

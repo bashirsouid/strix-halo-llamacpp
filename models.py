@@ -135,7 +135,10 @@ class ModelConfig:
     reasoning_format: str | None = None  # --reasoning-format (traverse, think-tags, etc.)
     reasoning_budget: int | None = None  # --reasoning-budget (tokens)
     reasoning: bool = False              # --reasoning (enable reasoning mode)
-    cache_ram: bool = False              # --cache-ram
+    cache_prompt: bool = True            # --cache-prompt / --no-cache-prompt
+    cache_reuse: int = 256               # --cache-reuse (min reusable chunk)
+    cache_ram: int | bool | None = None  # --cache-ram MiB; True keeps legacy 8 GiB behavior
+    slot_save_path: str | None = None    # --slot-save-path (enables /slots save/restore)
     kv_unified: bool = False             # --kv-unified
     clear_idle: int = 0                  # --clear-idle (seconds)
     cpu_moe: int = 0                     # --cpu-moe (layers)
@@ -202,6 +205,7 @@ class ModelConfig:
             "--flash-attn",   "on",
             "--parallel",     str(np),
             "-a",             self.alias,
+            "--cache-prompt" if self.cache_prompt else "--no-cache-prompt",
             "--cache-type-k", self.cache_type_k,
             "--cache-type-v", self.cache_type_v,
             "-b",             str(self.batch_size),
@@ -246,8 +250,13 @@ class ModelConfig:
             args += ["--reasoning-budget", str(self.reasoning_budget)]
         if self.reasoning:
             args += ["--reasoning"]
-        if self.cache_ram:
-            args += ["--cache-ram"]
+        if self.cache_prompt and self.cache_reuse > 0:
+            args += ["--cache-reuse", str(self.cache_reuse)]
+        if self.cache_ram not in (None, False, 0):
+            cache_ram = 8192 if self.cache_ram is True else int(self.cache_ram)
+            args += ["--cache-ram", str(cache_ram)]
+        if self.slot_save_path:
+            args += ["--slots", "--slot-save-path", self.slot_save_path]
         if self.kv_unified:
             args += ["--kv-unified"]
         if self.clear_idle > 0:

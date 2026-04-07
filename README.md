@@ -11,7 +11,9 @@ The project pulls prebuilt `llama.cpp` container images from `kyuz0/amd-strix-ha
 - benchmarks single-request and concurrent throughput
 - sweeps `--parallel` values to find the best aggregate throughput
 - runs EvalPlus against the local server
-- includes shell entrypoints for quick start and watch mode
+- exposes repo-aware caching helpers for local coding tools such as OpenCode
+- generates a stable per-repo architecture summary that can be reused across many requests
+- can warm, save, and restore llama.cpp slot state for one repo at a time
 - ships a pytest suite plus bash smoke tests that cover model helpers, shell entrypoints, wrapper scripts, and the top-level `./test.sh` runner
 
 ## Requirements
@@ -79,6 +81,15 @@ python server.py serve MODEL --backend radv
 python server.py serve MODEL --backend rocm --np 4 --ctx-per-slot 32768
 ```
 
+Useful cache-related serve flags:
+
+```bash
+python server.py serve MODEL --backend radv --cache-reuse 256
+python server.py serve MODEL --backend radv --cache-ram 8192
+python server.py serve MODEL --backend radv --disable-prompt-cache
+python server.py serve MODEL --backend radv --slot-save-path ~/.cache/strix-halo-llamacpp/slots
+```
+
 Download a model only:
 
 ```bash
@@ -117,6 +128,18 @@ Dry-run launcher checks without touching a live server:
 python server.py test --dry-run --sequential
 ```
 
+Repo-aware caching helpers:
+
+```bash
+python server.py repo-init --repo ~/code/my-app --model qwen3-coder-next-q6
+python server.py repo-refresh --repo ~/code/my-app
+python server.py repo-proxy --repo ~/code/my-app
+python server.py repo-warm --repo ~/code/my-app
+python server.py repo-save --repo ~/code/my-app
+python server.py repo-restore --repo ~/code/my-app
+python server.py repo-status --repo ~/code/my-app
+```
+
 ## Backends
 
 All backends run in containers.
@@ -143,11 +166,95 @@ Each model can specify:
 - cache and reasoning flags
 - backend-independent launch defaults
 
+Useful caching fields in `ModelConfig` now include:
+
+- `cache_prompt`
+- `cache_reuse`
+- `cache_ram`
+- `slot_save_path`
+- `cache_type_k` / `cache_type_v`
+
 Use `python server.py list` to inspect the current catalog.
+
+## Repo-aware caching and OpenCode workflow
+
+This launcher now includes a stateful workflow aimed at code work on a single repository at a time.
+
+### What gets cached
+
+1. A stable repo summary is generated from files such as `README.md`, `AGENTS.md`, `ARCHITECTURE.md`, key manifests, and a trimmed file tree.
+2. The repo summary is injected as the first system message through a tiny local proxy.
+3. Requests are pinned to one llama.cpp slot by setting `id_slot`.
+4. The slot can be warmed once, then saved to disk and restored later.
+
+The design goal is to keep the reusable architecture context byte-stable so llama.cpp prompt caching can avoid recomputing the same prefix over and over.
+
+### Files written by the repo helper
+
+For a repo at `~/code/my-app`, the helper writes cache files under:
+
+```text
+~/.cache/strix-halo-llamacpp/repositories/<repo-slug>/repo-context.md
+~/.cache/strix-halo-llamacpp/repositories/<repo-slug>/repo-context.json
+```
+
+`repo-init` also writes an `opencode.json` inside the target project so OpenCode can talk to the local proxy.
+
+### Recommended flow
+
+1. Start the local model server.
+
+```bash
+python server.py serve qwen3-coder-next-q6 --backend radv
+```
+
+2. Generate repo context and OpenCode config.
+
+```bash
+python server.py repo-init --repo ~/code/my-app --model qwen3-coder-next-q6
+```
+
+3. Run the repo-aware proxy in another terminal.
+
+```bash
+python server.py repo-proxy --repo ~/code/my-app
+```
+
+4. Warm the repo slot once after each server restart.
+
+```bash
+python server.py repo-warm --repo ~/code/my-app
+```
+
+5. Start OpenCode from inside the repo.
+
+```bash
+cd ~/code/my-app
+opencode
+```
+
+6. Before shutting down or switching workloads, save the warmed slot.
+
+```bash
+python server.py repo-save --repo ~/code/my-app
+```
+
+7. After launching the model server again, restore it.
+
+```bash
+python server.py repo-restore --repo ~/code/my-app
+```
+
+### Notes
+
+- `repo-proxy` listens on `127.0.0.1:8001` by default and forwards to the local `llama-server` on `127.0.0.1:8000`.
+- If your upstream local server uses an API key, the proxy forwards that key upstream. The generated `opencode.json` does not need to store secrets.
+- The launcher publishes the container port to `127.0.0.1` only. This keeps the slot management endpoints local to the machine.
+- Use `repo-refresh` after major refactors so the cached architecture summary stays relevant.
 
 ## API
 
-The server exposes the OpenAI-compatible API on localhost.
+The server exposes the OpenAI-compatible API on localhost only.
 
 ```bash
 curl http://127.0.0.1:8000/v1/models
@@ -160,6 +267,8 @@ curl http://127.0.0.1:8000/v1/chat/completions \
     "max_tokens": 128
   }'
 ```
+
+When slot persistence is enabled, llama.cpp slot save and restore are available through the local `/slots` endpoints. This launcher intentionally binds the server to localhost on the host side so those endpoints are not exposed on the LAN by default.
 
 ## Testing
 
