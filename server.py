@@ -453,7 +453,7 @@ def stop_server():
     STATE_FILE.unlink(missing_ok=True)
 
 
-def wait_for_server(port: int = 8000, timeout: int = 60, verbose: bool = False) -> bool:
+def wait_for_server(port: int = 8000, timeout: int = 300, verbose: bool = False) -> bool:
     """Poll /health until the server is ready with faster timeout.
     
     Args:
