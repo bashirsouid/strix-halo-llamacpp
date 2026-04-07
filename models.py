@@ -140,6 +140,7 @@ class ModelConfig:
     mmproj: str | None = None  # Path or filename for multimodal projector (GGUF)
     extra_args: list[str] = field(default_factory=list)
     notes: str = ""
+    hidden: bool = False
     api_key: str | None = None  # Global API key override (use .env file)
 
     def __post_init__(self):
@@ -535,6 +536,30 @@ MODELS: list[ModelConfig] = [
             "Good for drafting, quick Q&A, low-latency tool calls."
         ),
     ),
+
+    # ── Hidden smoke-test model ──
+    ModelConfig(
+        name="SmolLM2 135M Instruct (Q4_K_M) [test]",
+        alias="smollm2-135m-test-q4",
+        hf_repo="bartowski/SmolLM2-135M-Instruct-GGUF",
+        dest_dir=MODELS_DIR / "bartowski/SmolLM2-135M-Instruct-GGUF",
+        download_include="SmolLM2-135M-Instruct-Q4_K_M.gguf",
+        shard_glob="*Q4_K_M*.gguf",
+        quant="Q4_K_M",
+        parallel_slots=1,
+        max_parallel=2,
+        ctx_per_slot=4096,
+        batch_size=256,
+        ubatch_size=64,
+        threads=2,
+        hidden=True,
+        notes=(
+            "Hidden smoke-test model for ./test.sh. "
+            "Kept out of the interactive picker and --all flows, but still "
+            "addressable by alias from the CLI."
+        ),
+    ),
+
 ]
 
 

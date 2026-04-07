@@ -17,7 +17,8 @@ import sys
 import webbrowser
 from pathlib import Path
 
-DEFAULT_FILE = Path(__file__).resolve().parent / "bench_parallel_results.jsonl"
+PROJECT_DIR = Path(__file__).resolve().parents[1]
+DEFAULT_FILE = PROJECT_DIR / "results" / "benchmark" / "bench_parallel_results.jsonl"
 
 PAYLOAD_ORDER = ["small", "medium", "large"]
 PAYLOAD_DESC = {
@@ -418,7 +419,7 @@ def main():
 
     if not path.exists():
         print(f"No parallel benchmark file found at: {path}")
-        print(f"Run 'python server.py bench-parallel MODEL' first to generate results.")
+        print("Run './benchmark-run.sh --parallel MODEL' first to generate results.")
         sys.exit(1)
 
     records = load_records(path)

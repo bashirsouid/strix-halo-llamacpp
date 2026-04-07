@@ -95,10 +95,20 @@ VALID_BACKENDS = tuple(CONTAINER_IMAGES.keys())
 VULKAN_BACKENDS = ("vulkan", "radv", "amdvlk")
 ROCM_BACKENDS = ("rocm", "rocm6", "rocm7", "rocm7-nightly")
 
-EVAL_RESULTS_FILE = PROJECT_DIR / "eval_results.jsonl"
-EVAL_RAW_DIR      = PROJECT_DIR / "eval_raw"
+RESULTS_DIR = PROJECT_DIR / "results"
+BENCH_RESULTS_DIR = RESULTS_DIR / "benchmark"
+EVAL_RESULTS_DIR = RESULTS_DIR / "eval"
+BENCH_RESULTS_FILE = BENCH_RESULTS_DIR / "bench_results.jsonl"
+BENCH_PARALLEL_RESULTS_FILE = BENCH_RESULTS_DIR / "bench_parallel_results.jsonl"
+EVAL_RESULTS_FILE = EVAL_RESULTS_DIR / "eval_results.jsonl"
+EVAL_RAW_DIR = EVAL_RESULTS_DIR / "raw"
 
 LOCAL_API_HOST = "127.0.0.1"
+
+def _ensure_results_dirs():
+    BENCH_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    EVAL_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    EVAL_RAW_DIR.mkdir(parents=True, exist_ok=True)
 
 def _local_url(port: int, path: str) -> str:
     """Build a localhost URL for client-side health/API calls."""
@@ -146,12 +156,18 @@ def fail(msg: str):  print(_c(31, f"  ✗  {msg}"), file=sys.stderr)
 
 # ── Model picker TUI ────────────────────────────────────────────────────────
 
+def visible_models() -> list[ModelConfig]:
+    """Models intended for interactive selection and user-facing listings."""
+    return [m for m in MODELS if not getattr(m, "hidden", False)]
+
+
 def pick_model(prompt_text: str = "Pick a model") -> ModelConfig:
     """Show a numbered list of models and let the user pick one."""
+    models = visible_models()
     print()
     print(f"  {prompt_text}:")
     print()
-    for i, m in enumerate(MODELS, 1):
+    for i, m in enumerate(models, 1):
         dl = _c(32, "✓") if m.is_downloaded else _c(90, "·")
         spec = f"  [{m.spec.strategy}]" if m.spec.strategy else ""
         par = f"  np={m.parallel_slots}" if m.parallel_slots > 1 else ""
@@ -161,7 +177,7 @@ def pick_model(prompt_text: str = "Pick a model") -> ModelConfig:
 
     while True:
         try:
-            raw = input(f"  Enter number (1-{len(MODELS)}): ").strip()
+            raw = input(f"  Enter number (1-{len(models)}): ").strip()
         except (EOFError, KeyboardInterrupt):
             print()
             sys.exit(0)
@@ -169,13 +185,13 @@ def pick_model(prompt_text: str = "Pick a model") -> ModelConfig:
             continue
         try:
             idx = int(raw)
-            if 1 <= idx <= len(MODELS):
-                chosen = MODELS[idx - 1]
+            if 1 <= idx <= len(models):
+                chosen = models[idx - 1]
                 print()
                 return chosen
         except ValueError:
             pass
-        print(f"    Invalid choice. Enter a number between 1 and {len(MODELS)}.")
+        print(f"    Invalid choice. Enter a number between 1 and {len(models)}.")
 
 
 def resolve_model(model_arg: str | None, prompt_text: str = "Pick a model") -> ModelConfig:
@@ -824,7 +840,8 @@ def bench(port: int = 8000, model_alias: str | None = None,
         except ValueError:
             pass
 
-    report_file = PROJECT_DIR / "bench_results.jsonl"
+    _ensure_results_dirs()
+    report_file = BENCH_RESULTS_FILE
     timestamp = time.strftime("%Y-%m-%d %H:%M")
     all_tier_results = {}
 
@@ -1006,8 +1023,9 @@ def bench_parallel(cfg: ModelConfig, port: int = 8000, backend: str = "radv",
     info(f"╚══════════════════════════════════════════════════════════════╝")
     print()
 
+    _ensure_results_dirs()
     results: list[dict] = []
-    report_file = PROJECT_DIR / "bench_parallel_results.jsonl"
+    report_file = BENCH_PARALLEL_RESULTS_FILE
 
     for np_val in range(1, upper + 1):
         print()
@@ -1172,7 +1190,7 @@ def eval_all(suite: str = "humaneval",
              port: int = 8000,
              backend: str = "radv"):
     """Run EvalPlus for every downloaded model and print a summary."""
-    downloaded = [m for m in MODELS if m.is_downloaded]
+    downloaded = [m for m in MODELS if m.is_downloaded and not getattr(m, "hidden", False)]
     if not downloaded:
         fail("No models downloaded.  Run 'python server.py download MODEL' first.")
         sys.exit(1)
@@ -1206,11 +1224,11 @@ def eval_all(suite: str = "humaneval",
 
     if EVAL_RESULTS_FILE.exists():
         ok(f"All eval results logged to {EVAL_RESULTS_FILE}")
-    info("Raw EvalPlus output logs are under ./eval_raw/")
+    info("Raw EvalPlus output logs are under ./results/eval/raw/")
 
 def bench_all(port: int = 8000, backend: str = "radv"):
     """Benchmark every downloaded model at all payload tiers."""
-    downloaded = [m for m in MODELS if m.is_downloaded]
+    downloaded = [m for m in MODELS if m.is_downloaded and not getattr(m, "hidden", False)]
     if not downloaded:
         fail("No models downloaded.  Run 'python server.py download MODEL' first.")
         sys.exit(1)
@@ -1252,7 +1270,7 @@ def bench_all(port: int = 8000, backend: str = "radv"):
     print(f"  ══════════════════════════════════════════════════════════════════════════════════════")
     print()
 
-    report_file = PROJECT_DIR / "bench_results.jsonl"
+    report_file = BENCH_RESULTS_FILE
     if report_file.exists():
         ok(f"All results logged to {report_file}")
     info("Run with --backend rocm to compare.")
@@ -1265,7 +1283,7 @@ def run_evalplus(port: int, suite: str, model_alias: str,
     Returns a dict with status + wall time. We don't try to parse pass@k yet;
     instead we store raw stdout in a file and reference it from JSONL.
     """
-    EVAL_RAW_DIR.mkdir(parents=True, exist_ok=True)
+    _ensure_results_dirs()
 
     timestamp = time.strftime("%Y-%m-%d_%H-%M-%S")
     raw_fname = f"{timestamp}--{model_alias}--{suite}.log"
@@ -1351,19 +1369,20 @@ def run_evalplus(port: int, suite: str, model_alias: str,
 
 def list_models():
     """Print a table of available models."""
+    models = visible_models()
     print()
     print(f"  {'Alias':<28s} {'Quant':<14s} {'np':>3s} {'ctx/slot':>9s} {'Spec':<14s} {'DL':>3s}")
     print(f"  {'─'*28} {'─'*14} {'─'*3} {'─'*9} {'─'*14} {'─'*3}")
-    for m in MODELS:
+    for m in models:
         spec = m.spec.strategy or "—"
         dl = "✓" if m.is_downloaded else "·"
         quant = m.quant or "—"
         ctx_k = f"{m.ctx_per_slot // 1024}K"
         print(f"  {m.alias:<28s} {quant:<14s} {m.parallel_slots:>3d} {ctx_k:>9s} {spec:<14s} {dl:>3s}")
     print()
-    if any(m.notes for m in MODELS):
+    if any(m.notes for m in models):
         print("  Notes:")
-        for m in MODELS:
+        for m in models:
             if m.notes:
                 wrapped = textwrap.fill(m.notes, width=72, initial_indent="    ",
                                         subsequent_indent="    ")
@@ -1395,7 +1414,7 @@ def run_test_suite(args):
     print()
     
     # Use tiny model if specified, or existing model
-    model_alias = args.model or "nemotron-nano-q4"
+    model_alias = args.model or "smollm2-135m-test-q4"
     if args.dry_run:
         # Check if model is already downloaded
         try:
@@ -1405,8 +1424,8 @@ def run_test_suite(args):
             else:
                 warn(f"Model not downloaded, but --dry-run requested. Skipping download.")
         except ValueError:
-            warn(f"Unknown model: {model_alias}. Using nemotron-nano-q4 for testing.")
-            model_alias = "nemotron-nano-q4"
+            warn(f"Unknown model: {model_alias}. Using smollm2-135m-test-q4 for testing.")
+            model_alias = "smollm2-135m-test-q4"
             cfg = get_model(model_alias)
     
     print()
@@ -1521,7 +1540,7 @@ def main():
     # test mode - dry-run for testing without disrupting main model
     p_test = sub.add_parser("test", help="Run test suite in dry-run mode (no server)")
     p_test.add_argument("--model", default=None,
-                        help="Model to test (uses nemotron-nano-q4 by default)")
+                        help="Model to test (uses the hidden smoke-test model by default)")
     p_test.add_argument("--port", type=int, default=8000,
                         help="Port for dry-run tests")
     p_test.add_argument("--backend", choices=["vulkan", "radv", "amdvlk", "rocm", "rocm6", "rocm7", "rocm7-nightly"], default="radv",

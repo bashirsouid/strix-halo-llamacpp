@@ -5,3 +5,6 @@ llama.cpp/
 .server.json
 .env
 patches/
+.pytest_cache/
+TEST_RESULTS.txt
+nodeids

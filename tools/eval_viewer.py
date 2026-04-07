@@ -13,7 +13,8 @@ import sys
 import webbrowser
 from pathlib import Path
 
-DEFAULT_FILE = Path(__file__).resolve().parent / "eval_results.jsonl"
+PROJECT_DIR = Path(__file__).resolve().parents[1]
+DEFAULT_FILE = PROJECT_DIR / "results" / "eval" / "eval_results.jsonl"
 
 
 def load_records(path: Path) -> list[dict]:
@@ -506,7 +507,7 @@ def main():
 
     if not path.exists():
         print(f"No eval file found at: {path}")
-        print("Run './evaluate.sh MODEL' or './evaluate-all.sh' first.")
+        print("Run './evaluate.sh MODEL' or './evaluate.sh --all' first.")
         sys.exit(1)
 
     records = load_records(path)

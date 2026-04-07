@@ -17,4 +17,41 @@ if [[ -z "${VIRTUAL_ENV:-}" ]]; then
     source "$VENV_DIR/bin/activate"
 fi
 
-python3 server.py eval "$@"
+mode="single"
+args=()
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --all)
+            mode="all"
+            shift
+            ;;
+        -h|--help)
+            cat <<'USAGE'
+Usage:
+  ./evaluate.sh [MODEL] [server.py eval args]
+  ./evaluate.sh --all [server.py eval-all args]
+
+Examples:
+  ./evaluate.sh qwen3-coder-next-q6 --suite humaneval
+  ./evaluate.sh --all --suite mbpp
+USAGE
+            exit 0
+            ;;
+        *)
+            args+=("$1")
+            shift
+            ;;
+    esac
+done
+
+case "$mode" in
+    single)
+        python3 server.py eval "${args[@]}"
+        ;;
+    all)
+        python3 server.py eval-all "${args[@]}"
+        ;;
+esac
+
+python3 tools/eval_viewer.py results/eval/eval_results.jsonl

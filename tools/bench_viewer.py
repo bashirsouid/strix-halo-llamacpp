@@ -17,7 +17,8 @@ import sys
 import webbrowser
 from pathlib import Path
 
-DEFAULT_FILE = Path(__file__).resolve().parent / "bench_results.jsonl"
+PROJECT_DIR = Path(__file__).resolve().parents[1]
+DEFAULT_FILE = PROJECT_DIR / "results" / "benchmark" / "bench_results.jsonl"
 
 PAYLOAD_ORDER = ["small", "medium", "large"]
 PAYLOAD_DESC = {
@@ -482,7 +483,7 @@ def main():
 
     if not path.exists():
         print(f"No benchmark file found at: {path}")
-        print(f"Run 'python server.py bench MODEL' first to generate results.")
+        print("Run './benchmark-run.sh MODEL' or './benchmark-run.sh --all' first.")
         sys.exit(1)
 
     records = load_records(path)
