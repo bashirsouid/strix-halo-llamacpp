@@ -1,4 +1,0 @@
-#!/usr/bin/env bash
-cd "$(dirname "$0")"
-python3 ./server.py serve nemotron-nano-q8 --backend rocm
-
