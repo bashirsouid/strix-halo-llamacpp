@@ -74,28 +74,45 @@ class TestModelServerArgs:
     ):
         dummy_model.reasoning = True
         dummy_model.reasoning_format = "traverse"
-        dummy_model.reasoning_budget = 512
+        dummy_model.reasoning_budget = 0
         dummy_model.cache_ram = True
         dummy_model.kv_unified = True
         dummy_model.clear_idle = 60
         dummy_model.cpu_moe = 2
         dummy_model.n_cpu_moe = 128
-        dummy_model.extra_args = ["--temp", "0.7"]
+        dummy_model.temperature = 0.7
+        dummy_model.top_p = 0.95
+        dummy_model.top_k = 40
+        dummy_model.min_p = 0.0
+        dummy_model.repeat_penalty = 1.05
+        dummy_model.chat_template_kwargs = {
+            "enable_thinking": True,
+            "reasoning_effort": "high",
+        }
+        dummy_model.extra_args = ["--mirostat", "2"]
 
         args = dummy_model.server_args(parallel_override=4, ctx_override=16384)
 
         assert args[args.index("-m") + 1].endswith("dummy-model.Q4_K_M.gguf")
         assert args[args.index("--parallel") + 1] == "4"
         assert args[args.index("--ctx-size") + 1] == "16384"
+        assert args[args.index("--temp") + 1] == "0.7"
+        assert args[args.index("--top-p") + 1] == "0.95"
+        assert args[args.index("--top-k") + 1] == "40"
+        assert args[args.index("--min-p") + 1] == "0.0"
+        assert args[args.index("--repeat-penalty") + 1] == "1.05"
+        assert args[args.index("--chat-template-kwargs") + 1] == (
+            '{"enable_thinking":true,"reasoning_effort":"high"}'
+        )
         assert "--reasoning" in args
         assert args[args.index("--reasoning-format") + 1] == "traverse"
-        assert args[args.index("--reasoning-budget") + 1] == "512"
+        assert args[args.index("--reasoning-budget") + 1] == "0"
         assert "--cache-ram" in args
         assert "--kv-unified" in args
         assert args[args.index("--clear-idle") + 1] == "60"
         assert args[args.index("--cpu-moe") + 1] == "2"
         assert args[args.index("--n-cpu-moe") + 1] == "128"
-        assert args[-2:] == ["--temp", "0.7"]
+        assert args[-2:] == ["--mirostat", "2"]
 
     def test_model_server_args_include_mmproj_when_present(
         self, dummy_model: ModelConfig, tmp_path: Path

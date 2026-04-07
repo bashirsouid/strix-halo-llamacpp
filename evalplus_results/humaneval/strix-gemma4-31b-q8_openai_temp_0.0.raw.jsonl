@@ -1,0 +1,2 @@
+{"task_id": "HumanEval/0", "solution": ""}
+{"task_id": "HumanEval/1", "solution": "```python\nfrom typing import List\n\ndef separate_paren_groups(paren_string: str) -> List[str]:\n    \"\"\" \n    Input to this function is a string containing multiple groups of nested parentheses. \n    Your goal is to separate those group into separate strings and return the list of those.\n    Separate groups are balanced (each"}

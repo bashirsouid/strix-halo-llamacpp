@@ -25,6 +25,8 @@ for your exact hardware config, then update parallel_slots to match.
 """
 
 from __future__ import annotations
+
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -122,6 +124,13 @@ class ModelConfig:
     cache_type_k: str = "q8_0"  # --cache-type-k  (q8_0 saves ~50% vs f16)
     cache_type_v: str = "q8_0"  # --cache-type-v
 
+    #  Sampling defaults
+    temperature: float | None = None     # --temp
+    top_p: float | None = None           # --top-p
+    top_k: int | None = None             # --top-k
+    min_p: float | None = None           # --min-p
+    repeat_penalty: float | None = None  # --repeat-penalty
+
     #  Feature flags  
     reasoning_format: str | None = None  # --reasoning-format (traverse, think-tags, etc.)
     reasoning_budget: int | None = None  # --reasoning-budget (tokens)
@@ -137,8 +146,9 @@ class ModelConfig:
 
     #  Extras  
     chat_template_file: str | None = None
+    chat_template_kwargs: dict[str, object] = field(default_factory=dict)
     mmproj: str | None = None  # Path or filename for multimodal projector (GGUF)
-    extra_args: list[str] = field(default_factory=list)
+    extra_args: list[str] = field(default_factory=list)  # One-off / experimental llama.cpp flags
     notes: str = ""
     hidden: bool = False
     api_key: str | None = None  # Global API key override (use .env file)
@@ -200,8 +210,24 @@ class ModelConfig:
             "--jinja",
         ]
 
+        if self.temperature is not None:
+            args += ["--temp", str(self.temperature)]
+        if self.top_p is not None:
+            args += ["--top-p", str(self.top_p)]
+        if self.top_k is not None:
+            args += ["--top-k", str(self.top_k)]
+        if self.min_p is not None:
+            args += ["--min-p", str(self.min_p)]
+        if self.repeat_penalty is not None:
+            args += ["--repeat-penalty", str(self.repeat_penalty)]
+
         if self.chat_template_file:
             args += ["--chat-template-file", self.chat_template_file]
+        if self.chat_template_kwargs:
+            args += [
+                "--chat-template-kwargs",
+                json.dumps(self.chat_template_kwargs, separators=(",", ":"), sort_keys=True),
+            ]
 
         if self.mmproj:
             mmproj_path = self.dest_dir / self.mmproj if "/" not in self.mmproj else Path(self.mmproj)
@@ -216,7 +242,7 @@ class ModelConfig:
 
         if self.reasoning_format:
             args += ["--reasoning-format", self.reasoning_format]
-        if self.reasoning_budget:
+        if self.reasoning_budget is not None:
             args += ["--reasoning-budget", str(self.reasoning_budget)]
         if self.reasoning:
             args += ["--reasoning"]
@@ -267,8 +293,11 @@ MODELS: list[ModelConfig] = [
         max_parallel=3,
         ctx_per_slot=262144,
         ubatch_size=512,
+        temperature=1.0,
+        top_p=0.95,
+        top_k=40,
+        min_p=0.01,
         spec=SpecConfig(strategy="ngram"),
-        extra_args=["--temp", "1.0", "--top-p", "0.95", "--top-k", "40", "--min-p", "0.01"],
         notes=(
             "Best for: coding agents, tool calling, agentic workflows. "
             "MoE 80B (3B active). #1 on SWE-rebench. ~62 GB at Q6_K. "
@@ -291,10 +320,15 @@ MODELS: list[ModelConfig] = [
         parallel_slots=1,
         max_parallel=8,
         ctx_per_slot=32768,
+        temperature=0.7,
+        top_p=1.0,
+        min_p=0.01,
+        repeat_penalty=1.0,
         spec=SpecConfig(strategy="ngram"),
-        extra_args=["--temp", "0.7", "--top-p", "1.0", "--repeat-penalty", "1.0", "--min-p", "0.01"],
+        chat_template_kwargs={"enable_thinking": True},
         notes=(
-            "Best for: code + chat at high speed, interleaved thinking."
+            "Best for: code + chat at high speed, interleaved thinking. "
+            "Thinking is forced on via chat_template_kwargs.enable_thinking. "
             "Parallelism is only effective on ROCM; latest testing is slower than sequential on RADV."
             "MoE 30B (3B active). Best 30B model on SWE-Bench + GPQA."
             "~30 GB at Q8 — near-lossless, fits easily. 200K context."
@@ -315,11 +349,15 @@ MODELS: list[ModelConfig] = [
         parallel_slots=3,
         max_parallel=6,
         ctx_per_slot=32768,
+        temperature=0.6,
+        top_p=0.95,
+        top_k=20,
+        repeat_penalty=1.0,
         spec=SpecConfig(strategy="ngram"),
-        extra_args=["--temp", "0.6", "--top-p", "0.95", "--top-k", "20", "--repeat-penalty", "1.0"],
+        chat_template_kwargs={"enable_thinking": True},
         notes=(
             "Best for: reasoning, summarization, general-purpose. "
-            "MoE 35B (3B active). Thinking mode on by default. "
+            "MoE 35B (3B active). Thinking mode forced on via chat_template_kwargs.enable_thinking. "
             "~48 GB at Q8_K_XL — high quality. Multimodal."
         ),
     ),
@@ -339,14 +377,17 @@ MODELS: list[ModelConfig] = [
         ctx_per_slot=262144,
         ubatch_size=256,
         mmproj="mmproj-BF16.gguf",
+        temperature=1.0,
+        top_p=0.95,
+        top_k=64,
         spec=SpecConfig(strategy="ngram"),
-        extra_args=["--temp", "1.0", "--top-p", "0.95", "--top-k", "64"],
+        chat_template_kwargs={"enable_thinking": True},
         notes=(
             "Best for: code, tool calling, reasoning, vision (with mmproj). "
             "MoE 25.2B (3.8B active). 128 experts, 8 active + 1 shared. "
             "~27 GB at Q8_0 — near-lossless, fast MoE inference (~50-70 tok/s). "
             "256K native context. Native function calling baked into training. "
-            "Thinking mode: add <|think|> at start of system prompt to enable. "
+            "Thinking mode is forced on via chat_template_kwargs.enable_thinking. "
             "Google-recommended sampling: temp=1.0, top_p=0.95, top_k=64. "
             "Vision: requires mmproj-BF16.gguf projector file. "
             "Apache 2.0. Day-1 note: tool-call templates still maturing in llama.cpp."
@@ -367,14 +408,17 @@ MODELS: list[ModelConfig] = [
         max_parallel=2,
         ctx_per_slot=32768,
         ubatch_size=256,
-        extra_args=["--temp", "1.0", "--top-p", "0.95", "--top-k", "64"],
+        temperature=1.0,
+        top_p=0.95,
+        top_k=64,
+        chat_template_kwargs={"enable_thinking": True},
         notes=(
             "Best for: maximum code quality, hard reasoning, vision. "
             "Dense 30.7B — all params active every token. SLOW (~6-8 tok/s). "
             "~32.6 GB at Q8_0. Highest benchmarks: LCB 80.0%, CF ELO 2150, "
             "GPQA 84.3%, AIME 89.2%. Use for hard single-shot problems where "
             "you can wait — too slow for interactive agentic loops. "
-            "Thinking mode: add <|think|> at start of system prompt to enable. "
+            "Thinking mode is forced on via chat_template_kwargs.enable_thinking. "
             "Google-recommended sampling: temp=1.0, top_p=0.95, top_k=64. "
             "Vision: download mmproj-BF16.gguf separately, use --mmproj flag. "
             "Apache 2.0. No speculation — dense models don't benefit much from "
@@ -397,11 +441,12 @@ MODELS: list[ModelConfig] = [
         max_parallel=6,
         ctx_per_slot=262144,
         ubatch_size=512,
+        temperature=0.7,
+        top_p=0.8,
+        top_k=20,
+        min_p=0.0,
+        repeat_penalty=1.05,
         spec=SpecConfig(strategy="ngram"),
-        extra_args=[
-            "--temp", "0.7", "--top-p", "0.8", "--top-k", "20",
-            "--repeat-penalty", "1.05", "--min-p", "0.0",
-        ],
         notes=(
             "Best for: coding agents, tool calling — lighter alternative to Coder Next. "
             "MoE 30.5B (3.3B active). 128 experts, 8 activated. "
@@ -425,7 +470,9 @@ MODELS: list[ModelConfig] = [
         parallel_slots=1,
         max_parallel=4,
         ctx_per_slot=32768,
-        extra_args=["--temp", "0.1", "--top-k", "50"],
+        temperature=0.1,
+        top_k=50,
+        chat_template_kwargs={"reasoning_effort": "none"},
         spec=SpecConfig(
             strategy="draft+ngram",
             draft=DraftModel(
@@ -439,6 +486,7 @@ MODELS: list[ModelConfig] = [
         notes=(
             "Best for: tool calling, code generation, fast chat. "
             "MoE 119B (6.5B active). Temperature=0.1 for deterministic outputs. "
+            "Reasoning is pinned to reasoning_effort=none for the tool/code alias. "
             "Draft model + ngram speculation for speed. "
             "Unsloth recommends --jinja template."
         ),
@@ -457,13 +505,17 @@ MODELS: list[ModelConfig] = [
         parallel_slots=1,
         max_parallel=2,
         ctx_per_slot=131072,
-        extra_args=["--temp", "0.7", "--top-p", "0.95", "--top-k", "20"],
+        temperature=0.7,
+        top_p=0.95,
+        top_k=20,
+        chat_template_kwargs={"reasoning_effort": "high"},
         spec=SpecConfig(
             strategy="ngram",
         ),
         notes=(
             "Best for: long-context reasoning, complex problem solving. "
             "MoE 119B (6.5B active). Temperature=0.7 for creative reasoning. "
+            "Reasoning is forced on via chat_template_kwargs.reasoning_effort=high. "
             "N-gram speculation (draft model not recommended for reasoning). "
             "256K context window (limited to 128K here)."
         ),
@@ -482,13 +534,16 @@ MODELS: list[ModelConfig] = [
         parallel_slots=1,
         max_parallel=3,
         ctx_per_slot=65536,
+        temperature=1.0,
+        top_p=0.95,
         spec=SpecConfig(strategy="ngram"),
-        extra_args=["--temp", "1.0", "--top-p", "0.95"],
+        chat_template_kwargs={"enable_thinking": True},
         notes=(
             "Best for: long-context reasoning, multi-agent workflows. "
             "Hybrid Mamba2-Transformer MoE 120B (12B active). "
             "Natively supports 1M context (limited here by memory). "
             "NVIDIA-recommended: temp=1.0, top_p=0.95. "
+            "Thinking mode is forced on via chat_template_kwargs.enable_thinking. "
             "Use --reasoning-budget and --reasoning-format controls for advanced usage."
         ),
     ),
@@ -506,11 +561,14 @@ MODELS: list[ModelConfig] = [
         parallel_slots=8,
         max_parallel=12,
         ctx_per_slot=1048576,
+        temperature=0.6,
+        top_p=0.95,
         spec=SpecConfig(strategy="ngram"),
-        extra_args=["--temp", "0.6", "--top-p", "0.95"],
+        chat_template_kwargs={"enable_thinking": True},
         notes=(
             "Best for: speed, lightweight tasks, tool calling, quick iteration. "
             "MoE 30B (3B active). Fastest model in catalog (~60+ tok/s). "
+            "Thinking mode is forced on via chat_template_kwargs.enable_thinking. "
             "Good for drafting, quick Q&A, low-latency tool calls."
         ),
     ),
@@ -528,11 +586,14 @@ MODELS: list[ModelConfig] = [
         parallel_slots=8,
         max_parallel=10,
         ctx_per_slot=1048576,
+        temperature=0.6,
+        top_p=0.95,
         spec=SpecConfig(strategy="ngram"),
-        extra_args=["--temp", "0.6", "--top-p", "0.95"],
+        chat_template_kwargs={"enable_thinking": True},
         notes=(
             "Best for: speed/quality balance, lightweight tasks, tool calling. "
             "MoE 30B (3B active). ~45+ tok/s at Q8. "
+            "Thinking mode is forced on via chat_template_kwargs.enable_thinking. "
             "Good for drafting, quick Q&A, low-latency tool calls."
         ),
     ),

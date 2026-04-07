@@ -223,6 +223,9 @@ class TestServerLifecycle:
         monkeypatch.setattr(server.time, "sleep", lambda seconds: None)
         monkeypatch.setattr(server.threading if hasattr(server, 'threading') else __import__('threading'), 'Thread', DummyThread)
 
+        dummy_model.temperature = 0.7
+        dummy_model.chat_template_kwargs = {"enable_thinking": True}
+
         run_commands: list[list[str]] = []
 
         def fake_run(cmd: list[str], **kwargs):
@@ -240,7 +243,7 @@ class TestServerLifecycle:
             dummy_model,
             port=8081,
             backend="rocm",
-            extra_args=["--temp", "0.1"],
+            extra_args=["--mirostat", "2"],
             parallel_override=4,
             ctx_override=16384,
         )
@@ -258,8 +261,10 @@ class TestServerLifecycle:
         assert ["-p", "8081:8081"] == docker_run[docker_run.index("-p") : docker_run.index("-p") + 2]
         assert "--mmap" in docker_run
         assert "--no-direct-io" in docker_run
-        assert "--temp" in docker_run
-        assert "0.1" in docker_run
+        assert docker_run[docker_run.index("--temp") + 1] == "0.7"
+        assert docker_run[docker_run.index("--chat-template-kwargs") + 1] == '{"enable_thinking":true}'
+        assert "--mirostat" in docker_run
+        assert "2" in docker_run
 
 
 class TestBenchmarkAndEvalHelpers:

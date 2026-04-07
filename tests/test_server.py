@@ -374,6 +374,39 @@ class TestModelServerArgs:
         assert "--draft-max" in args
         assert "--draft-min" in args
 
+    def test_named_sampling_defaults_and_template_kwargs_preserve_zero_values(
+        self, sample_model: ModelConfig, tmp_path: Path
+    ):
+        """Named sampling defaults and template kwargs should be emitted verbatim."""
+        dummy_model = tmp_path / "test.Q4_K_M.gguf"
+        dummy_model.parent.mkdir(parents=True, exist_ok=True)
+        dummy_model.write_text("dummy")
+
+        sample_model.dest_dir = tmp_path
+        sample_model.shard_glob = "*.gguf"
+        sample_model.temperature = 0.6
+        sample_model.top_p = 0.95
+        sample_model.top_k = 40
+        sample_model.min_p = 0.0
+        sample_model.repeat_penalty = 1.05
+        sample_model.reasoning_budget = 0
+        sample_model.chat_template_kwargs = {
+            "enable_thinking": True,
+            "reasoning_effort": "high",
+        }
+
+        args = sample_model.server_args()
+
+        assert args[args.index("--temp") + 1] == "0.6"
+        assert args[args.index("--top-p") + 1] == "0.95"
+        assert args[args.index("--top-k") + 1] == "40"
+        assert args[args.index("--min-p") + 1] == "0.0"
+        assert args[args.index("--repeat-penalty") + 1] == "1.05"
+        assert args[args.index("--reasoning-budget") + 1] == "0"
+        assert args[args.index("--chat-template-kwargs") + 1] == (
+            '{"enable_thinking":true,"reasoning_effort":"high"}'
+        )
+
 
 # ── Model Download Tests ──────────────────────────────────────────────────────
 
