@@ -120,12 +120,18 @@ Run the recommended Aider benchmark:
 
 ```bash
 python server.py aider-setup
-python server.py aider-bench MODEL --backend radv --profile python-30m
+python server.py aider-bench MODEL --backend radv --profile python-quick
 python server.py aider-bench MODEL --backend radv --profile python-all
-python server.py aider-bench-all --backend rocm --profile python-30m
+python server.py aider-bench-all --backend rocm --profile python-quick
 ```
 
-The default `python-30m` profile is a fixed 18-exercise subset. `python-all` is the full 34-exercise Python set from Aider's polyglot benchmark.
+The default `python-quick` profile is a fixed 18-exercise subset. `python-all` is the full 34-exercise Python set from Aider's polyglot benchmark. Every Aider run now uses a fresh benchmark directory and forces a clean rerun so repeated invocations always produce a new score. Terminal output is filtered to progress plus warning lines only, and the full raw log is saved under `results/aider/logs/`.
+
+Visualize the Aider results:
+
+```bash
+python tools/eval_viewer.py
+```
 
 Legacy EvalPlus commands are still available, but the repo is now set up for Aider-style code editing benchmarks first:
 

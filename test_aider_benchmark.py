@@ -130,3 +130,15 @@ def test_summarize_run_dir_computes_pass_rates_and_token_rates(tmp_path: Path) -
     assert summary["num_malformed_responses"] == 2
     assert summary["syntax_errors"] == 1
     assert summary["exhausted_context_windows"] == 1
+
+
+def test_resolve_profile_accepts_python_quick_and_legacy_alias() -> None:
+    assert aider_benchmark.resolve_profile("python-quick").name == "python-quick"
+    assert aider_benchmark.resolve_profile("python-30m").name == "python-quick"
+
+
+
+def test_should_echo_aider_line_keeps_warnings_but_hides_chatter() -> None:
+    assert not aider_benchmark._should_echo_aider_line("fnames: beer_song.py")
+    assert aider_benchmark._should_echo_aider_line("  exhausted_context_windows: 2")
+    assert aider_benchmark._should_echo_aider_line("Warning: context window exhausted")

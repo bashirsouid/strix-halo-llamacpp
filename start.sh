@@ -242,7 +242,7 @@ show_post_start_info() {
     _ok "Official llama.cpp Web UI: http://localhost:${active_port}/"
 
     if [[ -n "$active_model" ]]; then
-        _info "Recommended 30m benchmark: python3 server.py aider-bench ${active_model} --backend ${active_backend:-radv} --profile python-30m"
+        _info "Recommended quick benchmark: python3 server.py aider-bench ${active_model} --backend ${active_backend:-radv} --profile python-quick"
     fi
 }
 

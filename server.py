@@ -27,8 +27,8 @@ Usage:
     python server.py bench-all [--backend vulkan|radv|amdvlk|rocm|rocm6|rocm7|rocm7-nightly]
     python server.py bench-parallel [MODEL] [--backend vulkan|radv|amdvlk|rocm|rocm6|rocm7|rocm7-nightly]
     python server.py aider-setup
-    python server.py aider-bench [MODEL] [--profile python-30m|python-all]
-    python server.py aider-bench-all [--profile python-30m|python-all]
+    python server.py aider-bench [MODEL] [--profile python-quick|python-all]
+    python server.py aider-bench-all [--profile python-quick|python-all]
     python server.py download MODEL
     python server.py download-images
 """
@@ -1976,7 +1976,7 @@ def aider_bench_single(
     *,
     port: int = 8000,
     backend: str = "radv",
-    profile_name: str = "python-30m",
+    profile_name: str = "python-quick",
     manifest_path: str | None = None,
     run_label: str | None = None,
     max_tokens: int = 8192,
@@ -2026,11 +2026,20 @@ def aider_bench_single(
             update_harness=update_harness,
             aider_ref=aider_ref,
             polyglot_ref=polyglot_ref,
+            model_display_name=cfg.name,
+            quant=cfg.quant,
         )
     finally:
         stop_server()
         time.sleep(2)
 
+    if not result.get("ok"):
+        fail(f"Aider benchmark exited with return code {result.get('returncode')}.")
+        log_tail = result.get("log_tail") or []
+        if log_tail:
+            print("    Last benchmark log lines:")
+            for line in log_tail[-12:]:
+                print(f"      {line}")
     if result.get("pass_rate_1") is not None:
         ok(f"Aider pass rate after try 1: {result['pass_rate_1']:.1f}%")
     if result.get("pass_rate_2") is not None:
@@ -2041,6 +2050,24 @@ def aider_bench_single(
         info(f"Wall time per case: {result['seconds_per_case_wall']:.2f}s")
     if result.get("completion_tok_s_wall") is not None:
         info(f"Completion tok/s (wall clock): {result['completion_tok_s_wall']:.2f}")
+    if result.get("exhausted_context_windows"):
+        warn(
+            f"Context window exhaustion seen {int(result['exhausted_context_windows'])} time(s). "
+            f"Consider raising --max-tokens or the server context window."
+        )
+    if result.get("num_malformed_responses"):
+        warn(f"Malformed responses seen: {int(result['num_malformed_responses'])}")
+    if result.get("syntax_errors"):
+        warn(f"Syntax errors seen in generated code: {int(result['syntax_errors'])}")
+    if result.get("test_timeouts"):
+        warn(f"Timed out test runs: {int(result['test_timeouts'])}")
+    important_lines = result.get("important_log_lines") or []
+    if important_lines:
+        warn("Important benchmark warnings:")
+        for line in important_lines[:8]:
+            print(f"    {line}")
+    if result.get("log_file"):
+        info(f"Full benchmark log saved to {result['log_file']}")
     if result.get("metadata_file"):
         info(f"Run metadata saved to {result['metadata_file']}")
     if result.get("results_file"):
@@ -2053,7 +2080,7 @@ def aider_bench_all(
     *,
     port: int = 8000,
     backend: str = "radv",
-    profile_name: str = "python-30m",
+    profile_name: str = "python-quick",
     manifest_path: str | None = None,
     run_label: str | None = None,
     max_tokens: int = 8192,
@@ -2480,8 +2507,8 @@ def main():
         help="Run the Aider code-edit benchmark against a fixed local subset")
     p_aider.add_argument("model", nargs="?", default=None,
                          help="Model to benchmark (omit for interactive picker)")
-    p_aider.add_argument("--profile", choices=AIDER_PROFILE_NAMES, default="python-30m",
-                         help="Fixed benchmark profile to run (default: python-30m)")
+    p_aider.add_argument("--profile", default="python-quick", metavar="PROFILE",
+                         help=f"Fixed benchmark profile to run (default: python-quick). Built-ins: {', '.join(AIDER_PROFILE_NAMES)}")
     p_aider.add_argument("--manifest", default=None,
                          help="Custom manifest file of exercises to benchmark instead of a built-in profile")
     p_aider.add_argument("--label", default=None,
@@ -2507,7 +2534,8 @@ def main():
     # aider-bench-all
     p_aider_all = sub.add_parser("aider-bench-all",
         help="Run the Aider benchmark for all downloaded models")
-    p_aider_all.add_argument("--profile", choices=AIDER_PROFILE_NAMES, default="python-30m")
+    p_aider_all.add_argument("--profile", default="python-quick", metavar="PROFILE",
+                             help=f"Fixed benchmark profile to run (default: python-quick). Built-ins: {', '.join(AIDER_PROFILE_NAMES)}")
     p_aider_all.add_argument("--manifest", default=None,
                              help="Custom manifest file of exercises to benchmark instead of a built-in profile")
     p_aider_all.add_argument("--label", default=None,

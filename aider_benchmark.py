@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import datetime
 import hashlib
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -22,6 +24,7 @@ MANIFEST_DIR = PROJECT_DIR / "benchmark_manifests"
 RESULTS_DIR = PROJECT_DIR / "results" / "aider"
 RESULTS_FILE = RESULTS_DIR / "aider_results.jsonl"
 METADATA_DIR = RESULTS_DIR / "metadata"
+LOG_DIR = RESULTS_DIR / "logs"
 
 AIDER_IMAGE = os.environ.get("STRIX_AIDER_IMAGE", "strix-aider-benchmark")
 AIDER_REPO_URL = os.environ.get("STRIX_AIDER_REPO_URL", "https://github.com/Aider-AI/aider.git")
@@ -43,9 +46,9 @@ class AiderProfile:
 
 
 BUILTIN_PROFILES: dict[str, AiderProfile] = {
-    "python-30m": AiderProfile(
-        name="python-30m",
-        manifest_path=MANIFEST_DIR / "aider-python-30m.txt",
+    "python-quick": AiderProfile(
+        name="python-quick",
+        manifest_path=MANIFEST_DIR / "aider-python-quick.txt",
         description=(
             "Fixed 18-exercise Python subset intended to finish in roughly 30 minutes "
             "on local reasoning models, while still covering parsing, data structures, "
@@ -61,7 +64,63 @@ BUILTIN_PROFILES: dict[str, AiderProfile] = {
         ),
     ),
 }
+PROFILE_ALIASES = {
+    "python-30m": "python-quick",
+}
 AIDER_PROFILE_NAMES = tuple(BUILTIN_PROFILES.keys())
+
+SUMMARY_LINE_RE = re.compile(
+    r"^(?:"
+    r"- dirname:|"
+    r"Copying |"
+    r"Cleaning up and replacing|"
+    r"Using pre-existing |"
+    r"\.\.\.done$|"
+    r"(?:test_cases|reasoning_effort|thinking_tokens|pass_rate_\d+|"
+    r"percent_cases_well_formed|num_malformed_responses|num_with_malformed_responses|"
+    r"syntax_errors|indentation_errors|exhausted_context_windows|test_timeouts|"
+    r"total_tests|seconds_per_case):"
+    r")"
+)
+NOISY_LINE_PREFIXES = (
+    "fnames:",
+    "Aider v",
+    "Model:",
+    "Git repo:",
+    "Repo-map:",
+    "Added ",
+    "Removed ",
+    "Tokens: ",
+    "Cost: ",
+    "Committing ",
+    "Applying edits",
+    "Search/replace",
+    "Undoing",
+    "Edit format:",
+)
+IMPORTANT_LINE_KEYWORDS = (
+    "warning",
+    "error",
+    "exception",
+    "traceback",
+    "timed out",
+    "timeout",
+    "failed to parse",
+    "tests failed",
+    "syntaxerror",
+    "indentationerror",
+    "malformed",
+    "context window",
+    "exhausted context",
+    "token budget",
+    "max token",
+    "max_tokens",
+    "out of tokens",
+    "too many tokens",
+    "truncated",
+    "truncate",
+    "rate limit",
+)
 
 
 def _slugify(text: str) -> str:
@@ -80,6 +139,11 @@ def _slugify(text: str) -> str:
     return slug or "run"
 
 
+def _canonical_profile_name(profile_name: str) -> str:
+    normalized = (profile_name or "python-quick").strip()
+    return PROFILE_ALIASES.get(normalized, normalized)
+
+
 def _sha1_text(text: str) -> str:
     return hashlib.sha1(text.encode("utf-8")).hexdigest()
 
@@ -90,6 +154,7 @@ def _ensure_dirs() -> None:
     CURATED_ROOT.mkdir(parents=True, exist_ok=True)
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     METADATA_DIR.mkdir(parents=True, exist_ok=True)
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _require_command(name: str) -> str:
@@ -125,6 +190,94 @@ def _run(
     return result
 
 
+def _looks_like_summary_line(line: str) -> bool:
+    return bool(SUMMARY_LINE_RE.match(line.strip()))
+
+
+def _should_echo_aider_line(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped:
+        return False
+    if any(stripped.startswith(prefix) for prefix in NOISY_LINE_PREFIXES):
+        return False
+    if _looks_like_summary_line(stripped):
+        return True
+    if stripped.startswith("Not a dir:") or stripped.startswith("No exercise directories found"):
+        return True
+    lowered = stripped.lower()
+    if any(keyword in lowered for keyword in IMPORTANT_LINE_KEYWORDS):
+        if stripped.startswith(("```", "diff --git", "@@", "+++", "---")):
+            return False
+        return True
+    return False
+
+
+def _collect_log_highlights(log_path: Path, *, limit: int = 20) -> list[str]:
+    if not log_path.exists():
+        return []
+    highlights: list[str] = []
+    seen: set[str] = set()
+    for raw_line in log_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        stripped = raw_line.strip()
+        if not stripped:
+            continue
+        if _looks_like_summary_line(stripped):
+            continue
+        if any(stripped.startswith(prefix) for prefix in NOISY_LINE_PREFIXES):
+            continue
+        lowered = stripped.lower()
+        if not any(keyword in lowered for keyword in IMPORTANT_LINE_KEYWORDS):
+            continue
+        if stripped not in seen:
+            seen.add(stripped)
+            highlights.append(stripped)
+        if len(highlights) >= limit:
+            break
+    return highlights
+
+
+def _tail_lines(path: Path, *, count: int = 40) -> list[str]:
+    if not path.exists():
+        return []
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    return lines[-count:]
+
+
+def _run_filtered(
+    cmd: list[str],
+    *,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+    log_path: Path,
+    check: bool = True,
+) -> subprocess.CompletedProcess[str]:
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("w", encoding="utf-8") as handle:
+        process = subprocess.Popen(
+            cmd,
+            cwd=str(cwd) if cwd else None,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+        )
+        assert process.stdout is not None
+        for raw_line in process.stdout:
+            handle.write(raw_line)
+            if _should_echo_aider_line(raw_line):
+                print(raw_line.rstrip("\n"), flush=True)
+        process.stdout.close()
+        returncode = process.wait()
+
+    result = subprocess.CompletedProcess(cmd, returncode)
+    if check and returncode != 0:
+        raise subprocess.CalledProcessError(returncode, cmd)
+    return result
+
+
 def _git_head(repo_dir: Path) -> str:
     result = _run(["git", "rev-parse", "HEAD"], cwd=repo_dir, capture_output=True)
     return (result.stdout or "").strip()
@@ -152,7 +305,6 @@ def _ensure_checkout(repo_url: str, dest: Path, ref: str, *, update: bool = Fals
         _run(["git", "fetch", "--all", "--tags"], cwd=dest)
         if ref:
             _run(["git", "checkout", ref], cwd=dest)
-            # Pull if the ref looks like a branch. If it is a detached commit/tag, ignore pull failures.
             _run(["git", "pull", "--ff-only", "origin", ref], cwd=dest, check=False)
     return _git_head(dest)
 
@@ -177,7 +329,10 @@ def read_manifest_entries(manifest_path: str | Path) -> list[str]:
     return entries
 
 
-def resolve_profile(profile_name: str = "python-30m", manifest_path: str | Path | None = None) -> AiderProfile:
+def resolve_profile(
+    profile_name: str = "python-quick",
+    manifest_path: str | Path | None = None,
+) -> AiderProfile:
     if manifest_path:
         custom_path = Path(manifest_path).expanduser().resolve()
         return AiderProfile(
@@ -185,10 +340,14 @@ def resolve_profile(profile_name: str = "python-30m", manifest_path: str | Path 
             manifest_path=custom_path,
             description=f"Custom benchmark manifest from {custom_path}",
         )
+
+    canonical = _canonical_profile_name(profile_name)
     try:
-        return BUILTIN_PROFILES[profile_name]
+        return BUILTIN_PROFILES[canonical]
     except KeyError as exc:
-        raise ValueError(f"Unknown aider benchmark profile: {profile_name}") from exc
+        raise ValueError(
+            f"Unknown aider benchmark profile: {profile_name}. Available: {', '.join(AIDER_PROFILE_NAMES)}"
+        ) from exc
 
 
 def _materialize_manifest(polyglot_root: Path, profile: AiderProfile) -> Path:
@@ -432,12 +591,27 @@ def ensure_aider_setup(
     }
 
 
+def _build_run_id(
+    *,
+    model_alias: str,
+    profile_name: str,
+    backend: str,
+    run_label: str | None = None,
+) -> str:
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S-%f")[:-3]
+    label_suffix = f"--{_slugify(run_label)}" if run_label else ""
+    return (
+        f"{timestamp}--{_slugify(model_alias)}--{_slugify(profile_name)}--{_slugify(backend)}"
+        f"{label_suffix}"
+    )
+
+
 def run_aider_benchmark(
     *,
     model_alias: str,
     backend: str,
     port: int,
-    profile_name: str = "python-30m",
+    profile_name: str = "python-quick",
     manifest_path: str | Path | None = None,
     run_label: str | None = None,
     max_tokens: int = 16384,
@@ -449,7 +623,10 @@ def run_aider_benchmark(
     update_harness: bool = False,
     aider_ref: str = DEFAULT_AIDER_REF,
     polyglot_ref: str = DEFAULT_POLYGLOT_REF,
+    model_display_name: str | None = None,
+    quant: str | None = None,
 ) -> dict[str, Any]:
+    _ensure_dirs()
     setup = ensure_aider_setup(update=update_harness, aider_ref=aider_ref, polyglot_ref=polyglot_ref)
     profile = resolve_profile(profile_name, manifest_path)
     curated_dir = _materialize_manifest(POLYGLOT_REPO_DIR, profile)
@@ -468,10 +645,17 @@ def run_aider_benchmark(
         max_tokens=max_tokens,
     )
 
-    timestamp = time.strftime("%Y-%m-%d-%H-%M-%S")
-    label_suffix = f"--{_slugify(run_label)}" if run_label else ""
-    run_id = f"{timestamp}--{_slugify(model_alias)}--{_slugify(profile.name)}--{_slugify(backend)}{label_suffix}"
+    run_id = _build_run_id(
+        model_alias=model_alias,
+        profile_name=profile.name,
+        backend=backend,
+        run_label=run_label,
+    )
     run_dir = AIDER_BENCHMARK_ROOT / run_id
+    if run_dir.exists():
+        shutil.rmtree(run_dir)
+    log_path = LOG_DIR / f"{run_id}.log"
+
     relative_exercises_dir = curated_dir.relative_to(AIDER_BENCHMARK_ROOT).as_posix()
     base_url = f"http://host.docker.internal:{port}/v1"
 
@@ -491,6 +675,7 @@ def run_aider_benchmark(
         relative_exercises_dir,
         "--read-model-settings",
         "/aider/.aider.model.settings.yml",
+        "--clean",
     ]
     inner_stats = ["python3", "./benchmark/benchmark.py", run_id, "--stats"]
     shell_command = (
@@ -528,16 +713,19 @@ def run_aider_benchmark(
     ]
 
     started_at = time.perf_counter()
-    run_proc = _run(docker_cmd, check=False)
+    run_proc = _run_filtered(docker_cmd, log_path=log_path, check=False)
     wall_time_sec = time.perf_counter() - started_at
 
     summary = summarize_run_dir(run_dir, wall_time_sec=wall_time_sec)
+    important_log_lines = _collect_log_highlights(log_path)
     summary.update(
         {
             "ok": run_proc.returncode == 0,
             "run_id": run_id,
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
             "model": model_alias,
+            "model_display_name": model_display_name or model_alias,
+            "quant": quant,
             "backend": backend,
             "profile": profile.name,
             "profile_description": profile.description,
@@ -559,8 +747,14 @@ def run_aider_benchmark(
             "settings_file": str(settings_path),
             "model_metadata_file": str(metadata_path),
             "returncode": run_proc.returncode,
+            "force_rerun": True,
+            "log_file": str(log_path),
+            "important_log_lines": important_log_lines,
+            "important_log_line_count": len(important_log_lines),
         }
     )
+    if run_proc.returncode != 0:
+        summary["log_tail"] = _tail_lines(log_path, count=40)
 
     metadata_path_out = METADATA_DIR / f"{run_id}.json"
     summary["metadata_file"] = str(metadata_path_out)

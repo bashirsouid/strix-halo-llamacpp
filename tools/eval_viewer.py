@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """
-Eval viewer — reads eval_results.jsonl and opens an interactive report
-in your browser.  No dependencies beyond Python stdlib.
+Aider evaluation viewer.
+
+Reads the Aider benchmark JSONL at results/aider/aider_results.jsonl and opens an
+interactive report in your browser. No dependencies beyond the Python stdlib.
 
 Usage:
-    python eval_viewer.py                    # uses ./eval_results.jsonl
-    python eval_viewer.py path/to/results.jsonl
+    python tools/eval_viewer.py
+    python tools/eval_viewer.py path/to/aider_results.jsonl
 """
+
+from __future__ import annotations
 
 import json
 import sys
@@ -14,58 +18,102 @@ import webbrowser
 from pathlib import Path
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
-DEFAULT_FILE = PROJECT_DIR / "results" / "eval" / "eval_results.jsonl"
+DEFAULT_FILE = PROJECT_DIR / "results" / "aider" / "aider_results.jsonl"
+DEFAULT_OUTPUT = PROJECT_DIR / "eval_report.html"
+
+
+def _safe_float(value) -> float | None:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_int(value) -> int | None:
+    try:
+        if value is None:
+            return None
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def load_records(path: Path) -> list[dict]:
     records = []
-    for line in path.read_text().splitlines():
+    if not path.exists():
+        return records
+    for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line or not line.startswith("{"):
             continue
         try:
-            records.append(json.loads(line))
+            payload = json.loads(line)
         except json.JSONDecodeError:
-            pass
+            continue
+        if isinstance(payload, dict):
+            records.append(payload)
     return records
 
 
-def _run_variant_key(r: dict) -> str:
-    label = (r.get("run_label") or "").strip()
+def _display_model(record: dict) -> str:
+    name = str(record.get("model_display_name") or record.get("model") or "unknown").strip()
+    quant = str(record.get("quant") or "").strip()
+    if quant and quant not in name:
+        return f"{name} [{quant}]"
+    return name
+
+
+def _variant_parts(record: dict) -> list[str]:
+    parts: list[str] = []
+    backend = str(record.get("backend") or "").strip()
+    profile = str(record.get("profile") or record.get("eval_profile") or "").strip()
+    label = str(record.get("run_label") or "").strip()
+    edit_format = str(record.get("edit_format") or "").strip()
+    max_tokens = _safe_int(record.get("max_tokens"))
+    tries = _safe_int(record.get("tries"))
+
+    if backend:
+        parts.append(backend)
+    if profile:
+        parts.append(profile)
+    if max_tokens:
+        parts.append(f"max={max_tokens}")
+    if tries:
+        parts.append(f"tries={tries}")
+    if edit_format and edit_format != "whole":
+        parts.append(edit_format)
     if label:
-        return f"label={label}"
-    fingerprint = (r.get("config_fingerprint") or "").strip()
-    if fingerprint:
-        return f"cfg={fingerprint[:8]}"
-    return ""
+        parts.append(f"label={label}")
+    return parts
 
 
-def _model_key(r: dict) -> str:
-    """Short label: model [quant] (backend, suite, profile, variant)"""
-    quant = r.get("quant") or ""
-    suite = r.get("suite", "")
-    model = r["model"]
-    backend = r["backend"]
-    profile = r.get("eval_profile") or r.get("eval_profile_requested") or "full"
-    parts = [backend, suite, profile]
-    variant = _run_variant_key(r)
-    if variant:
-        parts.append(variant)
-    task_count = r.get("task_count")
-    if task_count:
-        parts.append(f"{task_count}t")
-    base = f"{model} ({', '.join(parts)})"
-    return f"{base} [{quant}]" if quant else base
+def _series_key(record: dict) -> str:
+    base = _display_model(record)
+    parts = _variant_parts(record)
+    return f"{base} ({', '.join(parts)})" if parts else base
 
 
-def _latest_per_model(records: list[dict]) -> list[dict]:
-    """For each unique model/backend/suite/quant combo, keep only the most recent run."""
-    latest: dict[str, dict] = {}
-    for r in records:
-        key = _model_key(r)
-        if key not in latest or r["timestamp"] > latest[key]["timestamp"]:
-            latest[key] = r
-    return list(latest.values())
+def _latest_per_series(records: list[dict]) -> list[dict]:
+    latest: dict[str, tuple[str, int, dict]] = {}
+    for index, record in enumerate(records):
+        key = _series_key(record)
+        stamp = str(record.get("timestamp") or "")
+        current = latest.get(key)
+        if current is None or (stamp, index) >= (current[0], current[1]):
+            latest[key] = (stamp, index, record)
+    return [value[2] for value in latest.values()]
+
+
+def _metric(record: dict, name: str, default: float = 0.0) -> float:
+    value = _safe_float(record.get(name))
+    return value if value is not None else default
+
+
+def _int_metric(record: dict, name: str, default: int = 0) -> int:
+    value = _safe_int(record.get(name))
+    return value if value is not None else default
 
 
 def generate_html(records: list[dict]) -> str:
@@ -75,481 +123,553 @@ def generate_html(records: list[dict]) -> str:
         "#023047", "#8ecae6",
     ]
 
-    latest = _latest_per_model(records)
-    timestamps = sorted(set(r["timestamp"] for r in records))
+    latest = _latest_per_series(records)
+    latest = sorted(
+        latest,
+        key=lambda record: (
+            _metric(record, "pass_rate_2", -1.0),
+            _metric(record, "pass_rate_1", -1.0),
+            str(record.get("timestamp") or ""),
+        ),
+        reverse=True,
+    )
 
-    # ── Pass@1 bar data (ranked by plus, or base if no plus) ─────────────
-    scored = [r for r in latest if r.get("pass_at_1_base") is not None]
-    scored_sorted = sorted(scored, key=lambda r: r.get("pass_at_1_plus") or r.get("pass_at_1_base") or 0, reverse=True)
-    bar_labels    = [_model_key(r) for r in scored_sorted]
-    bar_base      = [round((r.get("pass_at_1_base") or 0) * 100, 1) for r in scored_sorted]
-    bar_plus      = [round((r.get("pass_at_1_plus") or 0) * 100, 1) for r in scored_sorted]
-    bar_colors    = [palette[i % len(palette)] for i in range(len(scored_sorted))]
-    has_scores    = len(scored_sorted) > 0
-
-    # ── Wall time bar data (ranked fastest first) ─────────────────────────
-    timed_sorted = sorted(latest, key=lambda r: r.get("wall_time_sec") or 0)
-    time_labels  = [_model_key(r) for r in timed_sorted]
-    time_values  = [r.get("wall_time_sec") or 0 for r in timed_sorted]
-    time_colors  = [palette[i % len(palette)] for i in range(len(timed_sorted))]
-
-    # ── Scatter: pass@1 plus vs wall time ─────────────────────────────────
-    scatter_points = []
-    for i, r in enumerate(scored):
-        if r.get("wall_time_sec"):
-            scatter_points.append({
-                "x": r["wall_time_sec"],
-                "y": round((r.get("pass_at_1_plus") or 0) * 100, 1),
-                "label": _model_key(r),
-                "color": palette[i % len(palette)],
-            })
-    has_scatter = len(scatter_points) >= 2
-
-    # ── History lines: pass@1 plus over time per model ────────────────────
-    history_series: dict[str, list[dict]] = {}
-    for r in records:
-        if r.get("pass_at_1_plus") is not None:
-            key = _model_key(r)
-            history_series.setdefault(key, []).append(r)
-    has_history = any(len(v) > 1 for v in history_series.values())
-
-    history_datasets_js = []
-    for i, (key, recs) in enumerate(sorted(history_series.items())):
-        color = palette[i % len(palette)]
-        lookup = {r["timestamp"]: round((r["pass_at_1_plus"] or 0) * 100, 1) for r in recs}
-        pts = [lookup.get(ts, "null") for ts in timestamps]
-        history_datasets_js.append(f"""{{
-            label: {json.dumps(key)},
-            data: [{', '.join(str(p) for p in pts)}],
-            borderColor: '{color}',
-            backgroundColor: '{color}33',
-            borderWidth: 2, pointRadius: 4, pointHoverRadius: 6,
-            tension: 0.2, spanGaps: true,
-        }}""")
-
-    # ── Wall time history lines ───────────────────────────────────────────
-    wall_series: dict[str, list[dict]] = {}
-    for r in records:
-        if r.get("wall_time_sec") is not None:
-            key = _model_key(r)
-            wall_series.setdefault(key, []).append(r)
-
-    wall_datasets_js = []
-    for i, (key, recs) in enumerate(sorted(wall_series.items())):
-        color = palette[i % len(palette)]
-        lookup = {r["timestamp"]: r["wall_time_sec"] for r in recs}
-        pts = [lookup.get(ts, "null") for ts in timestamps]
-        wall_datasets_js.append(f"""{{
-            label: {json.dumps(key)},
-            data: [{', '.join(str(p) for p in pts)}],
-            borderColor: '{color}',
-            backgroundColor: '{color}33',
-            borderWidth: 2, pointRadius: 4, pointHoverRadius: 6,
-            tension: 0.2, spanGaps: true,
-        }}""")
-
-    # ── Summary table rows ────────────────────────────────────────────────
-    table_rows_sorted = sorted(latest,
-        key=lambda r: r.get("pass_at_1_plus") or r.get("pass_at_1_base") or 0,
-        reverse=True)
-    table_rows_html = ""
-    for r in table_rows_sorted:
-        base = r.get("pass_at_1_base")
-        plus = r.get("pass_at_1_plus")
-        wall = r.get("wall_time_sec")
-        ok_flag = "✓" if r.get("ok") else "✗"
-        base_str = f"{base*100:.1f}%" if base is not None else "—"
-        plus_str = f"{plus*100:.1f}%" if plus is not None else "—"
-        wall_str = f"{wall:.0f}s ({wall/60:.1f}m)" if wall else "—"
-        suite = r.get("suite", "—")
-        quant = r.get("quant") or "—"
-        backend = r.get("backend", "—")
-        profile = r.get("eval_profile") or r.get("eval_profile_requested") or "—"
-        task_count = r.get("task_count")
-        task_str = str(task_count) if task_count else "—"
-        run_label = r.get("run_label") or "—"
-        cfg = ((r.get("config_fingerprint") or "")[:8]) or "—"
-        model = r["model"]
-        ts = r["timestamp"]
-        table_rows_html += f"""
-        <tr>
-          <td>{model}</td>
-          <td class="mono">{quant}</td>
-          <td class="mono">{backend}</td>
-          <td class="mono">{suite}</td>
-          <td class="mono">{profile}</td>
-          <td class="mono">{task_str}</td>
-          <td>{run_label}</td>
-          <td class="mono">{cfg}</td>
-          <td class="score {'good' if base and base >= 0.7 else 'mid' if base and base >= 0.5 else 'low' if base else ''}">{base_str}</td>
-          <td class="score {'good' if plus and plus >= 0.7 else 'mid' if plus and plus >= 0.5 else 'low' if plus else ''}">{plus_str}</td>
-          <td class="mono">{wall_str}</td>
-          <td class="status {'ok' if r.get('ok') else 'fail'}">{ok_flag}</td>
-          <td class="mono dim">{ts}</td>
-        </tr>"""
-
-    # ── JSON blobs for JS ─────────────────────────────────────────────────
-    bar_labels_js    = json.dumps(bar_labels)
-    bar_base_js      = json.dumps(bar_base)
-    bar_plus_js      = json.dumps(bar_plus)
-    bar_colors_js    = json.dumps(bar_colors)
-    time_labels_js   = json.dumps(time_labels)
-    time_values_js   = json.dumps(time_values)
-    time_colors_js   = json.dumps(time_colors)
-    scatter_js       = json.dumps(scatter_points)
-    timestamps_js    = json.dumps(timestamps)
-
-    score_section = f"""
-  <div class="chart-box">
-    <h2>pass@1 — base vs plus (latest run per model)</h2>
-    <p class="chart-sub">Base = original HumanEval/MBPP tests &nbsp;|&nbsp; Plus = expanded test suite (harder, less contamination risk)</p>
-    <canvas id="passChart"></canvas>
-  </div>
-""" if has_scores else """
-  <div class="chart-box empty-box">
-    <h2>pass@1 scores</h2>
-    <p class="dim">No pass@1 data yet — run evaluate.sh to generate scores.</p>
-  </div>
-"""
-
-    scatter_section = f"""
-  <div class="chart-box">
-    <h2>Quality vs speed tradeoff (plus pass@1 vs wall time)</h2>
-    <p class="chart-sub">Up and left is better — higher score, faster eval</p>
-    <canvas id="scatterChart"></canvas>
-  </div>
-""" if has_scatter else ""
-
-    history_section = f"""
-  <div class="chart-box">
-    <h2>pass@1 plus — history over time</h2>
-    <canvas id="historyChart"></canvas>
-  </div>
-""" if has_history else ""
-
-    score_chart_js = f"""
-new Chart(document.getElementById('passChart'), {{
-  type: 'bar',
-  data: {{
-    labels: {bar_labels_js},
-    datasets: [
-      {{
-        label: 'Base pass@1 (%)',
-        data: {bar_base_js},
-        backgroundColor: {bar_colors_js}.map(c => c + 'aa'),
-        borderColor: {bar_colors_js},
-        borderWidth: 1,
-        borderRadius: 3,
-      }},
-      {{
-        label: 'Plus pass@1 (%)',
-        data: {bar_plus_js},
-        backgroundColor: {bar_colors_js},
-        borderColor: {bar_colors_js},
-        borderWidth: 1,
-        borderRadius: 3,
-      }},
-    ]
-  }},
-  options: {{
-    indexAxis: 'y',
-    responsive: true,
-    plugins: {{
-      legend: {{ labels: {{ font: {{ size: 11 }}, usePointStyle: true }} }},
-      tooltip: {{
-        backgroundColor: '#161b22', borderColor: '#30363d', borderWidth: 1,
-        callbacks: {{ label: ctx => ctx.dataset.label + ': ' + ctx.parsed.x + '%' }}
-      }}
-    }},
-    scales: {{
-      x: {{
-        min: 0, max: 100,
-        title: {{ display: true, text: 'pass@1 (%)', font: {{ size: 11 }} }},
-        ticks: {{ font: {{ size: 11 }}, callback: v => v + '%' }}
-      }},
-      y: {{ ticks: {{ font: {{ size: 10 }} }} }}
-    }}
-  }}
-}});
-""" if has_scores else ""
-
-    scatter_chart_js = f"""
-new Chart(document.getElementById('scatterChart'), {{
-  type: 'scatter',
-  data: {{
-    datasets: {scatter_js}.map((pt, i) => ({{
-      label: pt.label,
-      data: [{{ x: pt.x, y: pt.y }}],
-      backgroundColor: pt.color,
-      borderColor: pt.color,
-      pointRadius: 8,
-      pointHoverRadius: 10,
-    }}))
-  }},
-  options: {{
-    responsive: true,
-    plugins: {{
-      legend: {{ labels: {{ font: {{ size: 10 }} }} }},
-      tooltip: {{
-        backgroundColor: '#161b22', borderColor: '#30363d', borderWidth: 1,
-        callbacks: {{
-          label: ctx => `${{ctx.dataset.label}}: ${{ctx.parsed.y}}% pass@1, ${{ctx.parsed.x}}s wall`
-        }}
-      }}
-    }},
-    scales: {{
-      x: {{
-        title: {{ display: true, text: 'Wall time (s)', font: {{ size: 11 }} }},
-        ticks: {{ font: {{ size: 11 }} }}
-      }},
-      y: {{
-        min: 0, max: 100,
-        title: {{ display: true, text: 'Plus pass@1 (%)', font: {{ size: 11 }} }},
-        ticks: {{ font: {{ size: 11 }}, callback: v => v + '%' }}
-      }}
-    }}
-  }}
-}});
-""" if has_scatter else ""
-
-    history_chart_js = f"""
-new Chart(document.getElementById('historyChart'), {{
-  type: 'line',
-  data: {{
-    labels: {timestamps_js},
-    datasets: [{', '.join(history_datasets_js)}]
-  }},
-  options: {{
-    responsive: true,
-    interaction: {{ mode: 'index', intersect: false }},
-    plugins: {{
-      legend: {{ labels: {{ font: {{ size: 11 }}, usePointStyle: true, pointStyle: 'circle' }} }},
-      tooltip: {{
-        backgroundColor: '#161b22', borderColor: '#30363d', borderWidth: 1,
-        callbacks: {{ label: ctx => ctx.dataset.label + ': ' + ctx.parsed.y + '%' }}
-      }}
-    }},
-    scales: {{
-      x: {{ ticks: {{ font: {{ size: 10 }}, maxRotation: 45 }} }},
-      y: {{
-        min: 0, max: 100,
-        title: {{ display: true, text: 'Plus pass@1 (%)', font: {{ size: 11 }} }},
-        ticks: {{ font: {{ size: 11 }}, callback: v => v + '%' }}
-      }}
-    }}
-  }}
-}});
-""" if has_history else ""
-
-    n_models = len(set(r["model"] for r in records))
-    n_backends = len(set(r["backend"] for r in records))
-    best = max(scored_sorted, key=lambda r: r.get("pass_at_1_plus") or 0) if scored_sorted else None
-    best_str = f"{_model_key(best)} @ {best['pass_at_1_plus']*100:.1f}%" if best else "—"
-
-    return f"""<!DOCTYPE html>
-<html lang="en">
+    if not latest:
+        return """<!doctype html>
+<html lang=\"en\">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Strix Halo Eval Results</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
-<style>
-  * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-  body {{
-    background: #0a0e17; color: #c9d1d9;
-    font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', monospace;
-    padding: 24px;
-  }}
-  .container {{ max-width: 1060px; margin: 0 auto; }}
-  h1 {{ font-size: 22px; color: #58a6ff; margin-bottom: 4px; }}
-  .subtitle {{ font-size: 13px; color: #6e7681; margin-bottom: 24px; }}
-  .stats {{ display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap; }}
-  .stat {{
-    background: #161b22; border: 1px solid #21262d;
-    border-radius: 6px; padding: 10px 16px; flex: 1 1 100px;
-  }}
-  .stat-value {{ font-size: 20px; font-weight: 700; color: #f0f6fc; }}
-  .stat-label {{ font-size: 11px; color: #6e7681; text-transform: uppercase; letter-spacing: 1px; }}
-  .chart-box {{
-    background: #0d1117; border: 1px solid #21262d;
-    border-radius: 8px; padding: 20px; margin-bottom: 24px;
-  }}
-  .empty-box {{ opacity: 0.5; }}
-  .chart-box h2 {{ font-size: 14px; font-weight: 600; color: #f0f6fc; margin-bottom: 6px; }}
-  .chart-sub {{ font-size: 11px; color: #6e7681; margin-bottom: 14px; }}
-  canvas {{ max-height: 380px; }}
-  table {{ width: 100%; border-collapse: collapse; font-size: 12px; }}
-  th {{
-    text-align: left; padding: 8px 10px;
-    background: #161b22; color: #8b949e;
-    border-bottom: 1px solid #21262d;
-    font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; font-size: 10px;
-  }}
-  td {{ padding: 7px 10px; border-bottom: 1px solid #161b22; }}
-  tr:hover td {{ background: #161b22; }}
-  .mono {{ font-family: 'JetBrains Mono', monospace; }}
-  .dim {{ color: #6e7681; }}
-  .score {{ font-weight: 700; }}
-  .good {{ color: #3fb950; }}
-  .mid  {{ color: #e3b341; }}
-  .low  {{ color: #f85149; }}
-  .status.ok   {{ color: #3fb950; }}
-  .status.fail {{ color: #f85149; }}
-</style>
+  <meta charset=\"utf-8\">
+  <title>Strix Halo Aider Results</title>
+  <style>
+    body { font-family: Inter, system-ui, sans-serif; margin: 40px; background: #0d1117; color: #e6edf3; }
+    .box { max-width: 760px; margin: 80px auto; padding: 24px; border: 1px solid #30363d; border-radius: 16px; background: #161b22; }
+    code { background: #0d1117; padding: 2px 6px; border-radius: 6px; }
+  </style>
 </head>
 <body>
-<div class="container">
-  <h1>🧪 Strix Halo Eval Results</h1>
-  <p class="subtitle">
-    {len(records)} runs &middot;
-    {n_models} models &middot;
-    {n_backends} backends &middot;
-    {len(timestamps)} sessions
-  </p>
-
-  <div class="stats">
-    <div class="stat">
-      <div class="stat-value">{len(records)}</div>
-      <div class="stat-label">Total Runs</div>
-    </div>
-    <div class="stat">
-      <div class="stat-value">{n_models}</div>
-      <div class="stat-label">Models</div>
-    </div>
-    <div class="stat">
-      <div class="stat-value">{len(scored_sorted)}</div>
-      <div class="stat-label">With Scores</div>
-    </div>
-    <div class="stat" style="flex: 2 1 200px;">
-      <div class="stat-value" style="font-size:14px; padding-top:3px;">{best_str}</div>
-      <div class="stat-label">Best Plus pass@1</div>
-    </div>
+  <div class=\"box\">
+    <h1>No Aider benchmark results found</h1>
+    <p>Run <code>python server.py aider-bench MODEL --profile python-quick</code> first.</p>
   </div>
-
-  {score_section}
-
-  {scatter_section}
-
-  <div class="chart-box">
-    <h2>Wall time — latest run per model (seconds, lower is faster)</h2>
-    <canvas id="wallChart"></canvas>
-  </div>
-
-  {history_section}
-
-  <div class="chart-box">
-    <h2>Wall time — history over time</h2>
-    <canvas id="wallHistoryChart"></canvas>
-  </div>
-
-  <div class="chart-box">
-    <h2>All runs</h2>
-    <table>
-      <thead>
-        <tr>
-          <th>Model</th><th>Quant</th><th>Backend</th><th>Suite</th>
-          <th>Profile</th><th>Tasks</th><th>Label</th><th>Cfg</th>
-          <th>Base pass@1</th><th>Plus pass@1</th>
-          <th>Wall time</th><th>OK</th><th>Timestamp</th>
-        </tr>
-      </thead>
-      <tbody>{table_rows_html}</tbody>
-    </table>
-  </div>
-
-</div>
-<script>
-Chart.defaults.color = '#6e7681';
-Chart.defaults.borderColor = '#21262d';
-
-{score_chart_js}
-
-{scatter_chart_js}
-
-new Chart(document.getElementById('wallChart'), {{
-  type: 'bar',
-  data: {{
-    labels: {time_labels_js},
-    datasets: [{{
-      data: {time_values_js},
-      backgroundColor: {time_colors_js},
-      borderRadius: 4,
-    }}]
-  }},
-  options: {{
-    indexAxis: 'y',
-    responsive: true,
-    plugins: {{
-      legend: {{ display: false }},
-      tooltip: {{
-        backgroundColor: '#161b22', borderColor: '#30363d', borderWidth: 1,
-        callbacks: {{ label: ctx => (ctx.parsed.x / 60).toFixed(1) + ' min (' + ctx.parsed.x + 's)' }}
-      }}
-    }},
-    scales: {{
-      x: {{
-        beginAtZero: true,
-        title: {{ display: true, text: 'Seconds', font: {{ size: 11 }} }},
-        ticks: {{ font: {{ size: 11 }} }}
-      }},
-      y: {{ ticks: {{ font: {{ size: 10 }} }} }}
-    }}
-  }}
-}});
-
-{history_chart_js}
-
-new Chart(document.getElementById('wallHistoryChart'), {{
-  type: 'line',
-  data: {{
-    labels: {timestamps_js},
-    datasets: [{', '.join(wall_datasets_js)}]
-  }},
-  options: {{
-    responsive: true,
-    interaction: {{ mode: 'index', intersect: false }},
-    plugins: {{
-      legend: {{ labels: {{ font: {{ size: 11 }}, usePointStyle: true, pointStyle: 'circle' }} }},
-      tooltip: {{
-        backgroundColor: '#161b22', borderColor: '#30363d', borderWidth: 1,
-        callbacks: {{ label: ctx => ctx.dataset.label + ': ' + (ctx.parsed.y/60).toFixed(1) + ' min' }}
-      }}
-    }},
-    scales: {{
-      x: {{ ticks: {{ font: {{ size: 10 }}, maxRotation: 45 }} }},
-      y: {{
-        beginAtZero: true,
-        title: {{ display: true, text: 'Wall time (s)', font: {{ size: 11 }} }},
-        ticks: {{ font: {{ size: 11 }} }}
-      }}
-    }}
-  }}
-}});
-</script>
 </body>
 </html>"""
 
+    pass_labels = [_series_key(record) for record in latest]
+    pass_try1 = [round(_metric(record, "pass_rate_1"), 1) for record in latest]
+    pass_try2 = [round(_metric(record, "pass_rate_2"), 1) for record in latest]
+    pass_colors = [palette[index % len(palette)] for index in range(len(latest))]
 
-def main():
-    path = Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_FILE
+    speed_sorted = sorted(latest, key=lambda record: _metric(record, "completion_tok_s_wall"), reverse=True)
+    speed_labels = [_series_key(record) for record in speed_sorted]
+    speed_values = [round(_metric(record, "completion_tok_s_wall"), 2) for record in speed_sorted]
+    speed_colors = [palette[index % len(palette)] for index in range(len(speed_sorted))]
 
-    if not path.exists():
-        print(f"No eval file found at: {path}")
-        print("Run './evaluate.sh MODEL' or './evaluate.sh --all' first.")
-        sys.exit(1)
+    time_sorted = sorted(
+        latest,
+        key=lambda record: _metric(record, "seconds_per_case_wall", 10**9),
+    )
+    time_labels = [_series_key(record) for record in time_sorted]
+    time_values = [round(_metric(record, "seconds_per_case_wall"), 2) for record in time_sorted]
+    time_colors = [palette[index % len(palette)] for index in range(len(time_sorted))]
 
-    records = load_records(path)
-    if not records:
-        print(f"No valid records in {path}")
-        sys.exit(1)
+    warning_labels = [_series_key(record) for record in latest]
+    exhausted_values = [_int_metric(record, "exhausted_context_windows") for record in latest]
+    malformed_values = [_int_metric(record, "num_malformed_responses") for record in latest]
+    timeout_values = [_int_metric(record, "test_timeouts") for record in latest]
 
+    scatter_points = []
+    for index, record in enumerate(latest):
+        seconds = _safe_float(record.get("seconds_per_case_wall"))
+        score = _safe_float(record.get("pass_rate_2"))
+        if seconds is None or score is None:
+            continue
+        scatter_points.append(
+            {
+                "x": round(seconds, 2),
+                "y": round(score, 1),
+                "label": _series_key(record),
+                "color": palette[index % len(palette)],
+                "wellFormed": round(_metric(record, "percent_cases_well_formed"), 1),
+            }
+        )
+
+    timestamps = sorted({str(record.get("timestamp") or "") for record in records if record.get("timestamp")})
+    history_map: dict[str, list[dict]] = {}
+    for record in records:
+        if record.get("pass_rate_2") is None:
+            continue
+        history_map.setdefault(_series_key(record), []).append(record)
+
+    history_datasets = []
+    for index, (key, series_records) in enumerate(sorted(history_map.items())):
+        if len(series_records) < 2:
+            continue
+        color = palette[index % len(palette)]
+        lookup = {
+            str(record.get("timestamp") or ""): round(_metric(record, "pass_rate_2"), 1)
+            for record in series_records
+        }
+        values = [lookup.get(timestamp, None) for timestamp in timestamps]
+        history_datasets.append(
+            {
+                "label": key,
+                "data": values,
+                "borderColor": color,
+                "backgroundColor": f"{color}33",
+            }
+        )
+
+    best_try2 = max(latest, key=lambda record: _metric(record, "pass_rate_2", -1.0), default=None)
+    fastest = min(
+        [record for record in latest if record.get("seconds_per_case_wall") is not None],
+        key=lambda record: _metric(record, "seconds_per_case_wall", 10**9),
+        default=None,
+    )
+    fastest_tps = max(
+        [record for record in latest if record.get("completion_tok_s_wall") is not None],
+        key=lambda record: _metric(record, "completion_tok_s_wall", -1.0),
+        default=None,
+    )
+    cleanest = max(
+        latest,
+        key=lambda record: _metric(record, "percent_cases_well_formed", -1.0),
+        default=None,
+    )
+
+    def card(metric: str, record: dict | None, value: str) -> str:
+        if not record:
+            return ""
+        return f"""
+      <div class=\"stat-card\">
+        <div class=\"stat-value\">{value}</div>
+        <div class=\"stat-label\">{metric}</div>
+        <div class=\"stat-model\">{_series_key(record)}</div>
+      </div>
+"""
+
+    cards_html = "".join(
+        [
+            card(
+                "Best try 2",
+                best_try2,
+                f"{_metric(best_try2, 'pass_rate_2'):.1f}%" if best_try2 else "—",
+            ),
+            card(
+                "Fastest case",
+                fastest,
+                f"{_metric(fastest, 'seconds_per_case_wall'):.2f}s" if fastest else "—",
+            ),
+            card(
+                "Best tok/s",
+                fastest_tps,
+                f"{_metric(fastest_tps, 'completion_tok_s_wall'):.2f}" if fastest_tps else "—",
+            ),
+            card(
+                "Cleanest output",
+                cleanest,
+                f"{_metric(cleanest, 'percent_cases_well_formed'):.1f}%" if cleanest else "—",
+            ),
+        ]
+    )
+
+    table_rows = []
+    for record in latest:
+        cases = f"{_int_metric(record, 'completed_tests')}/{_int_metric(record, 'total_tests')}"
+        ok_flag = "✓" if record.get("ok") else "✗"
+        table_rows.append(
+            f"""
+        <tr>
+          <td>{_display_model(record)}</td>
+          <td class=\"mono\">{record.get('backend') or '—'}</td>
+          <td class=\"mono\">{record.get('profile') or '—'}</td>
+          <td class=\"mono\">{record.get('run_label') or '—'}</td>
+          <td class=\"mono\">{_int_metric(record, 'max_tokens') or '—'}</td>
+          <td class=\"score\">{_metric(record, 'pass_rate_1'):.1f}%</td>
+          <td class=\"score\">{_metric(record, 'pass_rate_2'):.1f}%</td>
+          <td class=\"mono\">{cases}</td>
+          <td class=\"mono\">{_metric(record, 'seconds_per_case_wall'):.2f}</td>
+          <td class=\"mono\">{_metric(record, 'completion_tok_s_wall'):.2f}</td>
+          <td class=\"mono\">{_metric(record, 'percent_cases_well_formed'):.1f}%</td>
+          <td class=\"mono\">{_int_metric(record, 'exhausted_context_windows')}</td>
+          <td class=\"mono\">{_int_metric(record, 'num_malformed_responses')}</td>
+          <td class=\"mono\">{_int_metric(record, 'syntax_errors')}</td>
+          <td class=\"mono\">{_int_metric(record, 'test_timeouts')}</td>
+          <td class=\"status {'ok' if record.get('ok') else 'fail'}\">{ok_flag}</td>
+          <td class=\"mono dim\">{record.get('timestamp') or '—'}</td>
+        </tr>
+"""
+        )
+    table_rows_html = "".join(table_rows)
+
+    timestamps_js = json.dumps(timestamps)
+    pass_labels_js = json.dumps(pass_labels)
+    pass_try1_js = json.dumps(pass_try1)
+    pass_try2_js = json.dumps(pass_try2)
+    pass_colors_js = json.dumps(pass_colors)
+    speed_labels_js = json.dumps(speed_labels)
+    speed_values_js = json.dumps(speed_values)
+    speed_colors_js = json.dumps(speed_colors)
+    time_labels_js = json.dumps(time_labels)
+    time_values_js = json.dumps(time_values)
+    time_colors_js = json.dumps(time_colors)
+    warning_labels_js = json.dumps(warning_labels)
+    exhausted_js = json.dumps(exhausted_values)
+    malformed_js = json.dumps(malformed_values)
+    timeout_js = json.dumps(timeout_values)
+    scatter_js = json.dumps(scatter_points)
+    history_datasets_js = json.dumps(history_datasets)
+
+    return f"""<!doctype html>
+<html lang=\"en\">
+<head>
+  <meta charset=\"utf-8\">
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
+  <title>Strix Halo Aider Results</title>
+  <script src=\"https://cdn.jsdelivr.net/npm/chart.js\"></script>
+  <style>
+    :root {{
+      color-scheme: dark;
+      --bg: #0d1117;
+      --panel: #161b22;
+      --panel-2: #11161d;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --border: #30363d;
+      --ok: #3fb950;
+      --fail: #f85149;
+      --accent: #58a6ff;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{ margin: 0; background: var(--bg); color: var(--text); font-family: Inter, system-ui, sans-serif; }}
+    main {{ max-width: 1600px; margin: 0 auto; padding: 28px; }}
+    h1 {{ margin: 0 0 8px; font-size: 34px; }}
+    h2 {{ margin: 0 0 10px; font-size: 18px; }}
+    p {{ margin: 0; }}
+    .lead {{ color: var(--muted); margin-bottom: 22px; }}
+    .stats-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin: 18px 0 24px; }}
+    .stat-card, .chart-box, .table-box {{ background: var(--panel); border: 1px solid var(--border); border-radius: 16px; box-shadow: 0 12px 32px rgba(0,0,0,0.20); }}
+    .stat-card {{ padding: 18px 18px 16px; }}
+    .stat-value {{ font-size: 28px; font-weight: 700; margin-bottom: 6px; }}
+    .stat-label {{ font-size: 13px; color: var(--muted); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.04em; }}
+    .stat-model {{ font-size: 13px; line-height: 1.45; color: var(--text); }}
+    .chart-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(520px, 1fr)); gap: 18px; }}
+    .chart-box {{ padding: 18px; }}
+    .chart-sub {{ color: var(--muted); font-size: 13px; margin-bottom: 12px; }}
+    .chart-box canvas {{ width: 100%; max-width: 100%; height: 360px; }}
+    .table-box {{ margin-top: 22px; overflow: hidden; }}
+    .table-scroll {{ overflow-x: auto; }}
+    table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
+    th, td {{ padding: 10px 12px; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap; }}
+    th {{ background: var(--panel-2); position: sticky; top: 0; z-index: 1; }}
+    tr:hover td {{ background: #1d2530; }}
+    .mono {{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }}
+    .dim {{ color: var(--muted); }}
+    .score {{ font-weight: 600; }}
+    .status.ok {{ color: var(--ok); font-weight: 700; }}
+    .status.fail {{ color: var(--fail); font-weight: 700; }}
+    @media (max-width: 900px) {{
+      main {{ padding: 18px; }}
+      .chart-grid {{ grid-template-columns: 1fr; }}
+      .chart-box canvas {{ height: 320px; }}
+    }}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Strix Halo — Aider benchmark results</h1>
+    <p class=\"lead\">{len(records)} total records · {len(latest)} latest comparison rows · input file: {DEFAULT_FILE if DEFAULT_FILE.exists() else 'custom path'}</p>
+
+    <section class=\"stats-grid\">{cards_html}</section>
+
+    <section class=\"chart-grid\">
+      <div class=\"chart-box\">
+        <h2>Pass rate by model</h2>
+        <p class=\"chart-sub\">Try 2 is the most important comparison; try 1 shows first-shot quality.</p>
+        <canvas id=\"passChart\"></canvas>
+      </div>
+      <div class=\"chart-box\">
+        <h2>Completion tok/s</h2>
+        <p class=\"chart-sub\">Higher is better. This is wall-clock throughput across the full run.</p>
+        <canvas id=\"speedChart\"></canvas>
+      </div>
+      <div class=\"chart-box\">
+        <h2>Seconds per case</h2>
+        <p class=\"chart-sub\">Lower is better. Useful for judging whether a profile still fits your 30–60 minute budget.</p>
+        <canvas id=\"timeChart\"></canvas>
+      </div>
+      <div class=\"chart-box\">
+        <h2>Quality vs speed</h2>
+        <p class=\"chart-sub\">Up and left is better: higher try 2 pass rate, lower seconds per case.</p>
+        <canvas id=\"scatterChart\"></canvas>
+      </div>
+      <div class=\"chart-box\">
+        <h2>Warning counters</h2>
+        <p class=\"chart-sub\">Shows context exhaustion, malformed responses, and timed-out test runs.</p>
+        <canvas id=\"warningChart\"></canvas>
+      </div>
+      <div class=\"chart-box\">
+        <h2>Try 2 history</h2>
+        <p class=\"chart-sub\">Use labels or max_tokens changes to compare repeated runs of the same model.</p>
+        <canvas id=\"historyChart\"></canvas>
+      </div>
+    </section>
+
+    <section class=\"table-box\">
+      <div class=\"table-scroll\">
+        <table>
+          <thead>
+            <tr>
+              <th>Model</th>
+              <th>Backend</th>
+              <th>Profile</th>
+              <th>Label</th>
+              <th>Max tokens</th>
+              <th>Try 1</th>
+              <th>Try 2</th>
+              <th>Cases</th>
+              <th>s/case</th>
+              <th>tok/s</th>
+              <th>Well formed</th>
+              <th>Ctx exhaust</th>
+              <th>Malformed</th>
+              <th>Syntax</th>
+              <th>Timeouts</th>
+              <th>Status</th>
+              <th>Timestamp</th>
+            </tr>
+          </thead>
+          <tbody>{table_rows_html}</tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+  <script>
+    const passLabels = {pass_labels_js};
+    const passTry1 = {pass_try1_js};
+    const passTry2 = {pass_try2_js};
+    const passColors = {pass_colors_js};
+    const speedLabels = {speed_labels_js};
+    const speedValues = {speed_values_js};
+    const speedColors = {speed_colors_js};
+    const timeLabels = {time_labels_js};
+    const timeValues = {time_values_js};
+    const timeColors = {time_colors_js};
+    const warningLabels = {warning_labels_js};
+    const exhaustedValues = {exhausted_js};
+    const malformedValues = {malformed_js};
+    const timeoutValues = {timeout_js};
+    const scatterPoints = {scatter_js};
+    const historyTimestamps = {timestamps_js};
+    const historyDatasets = {history_datasets_js};
+
+    const axisCommon = {{
+      ticks: {{ color: '#c9d1d9' }},
+      grid: {{ color: '#30363d' }},
+      border: {{ color: '#30363d' }},
+    }};
+    const pluginCommon = {{
+      legend: {{ labels: {{ color: '#c9d1d9', usePointStyle: true }} }},
+      tooltip: {{
+        backgroundColor: '#161b22',
+        borderColor: '#30363d',
+        borderWidth: 1,
+        titleColor: '#e6edf3',
+        bodyColor: '#c9d1d9',
+      }},
+    }};
+
+    new Chart(document.getElementById('passChart'), {{
+      type: 'bar',
+      data: {{
+        labels: passLabels,
+        datasets: [
+          {{
+            label: 'Try 1 (%)',
+            data: passTry1,
+            backgroundColor: passColors.map(color => color + '99'),
+            borderColor: passColors,
+            borderWidth: 1,
+            borderRadius: 5,
+          }},
+          {{
+            label: 'Try 2 (%)',
+            data: passTry2,
+            backgroundColor: passColors,
+            borderColor: passColors,
+            borderWidth: 1,
+            borderRadius: 5,
+          }},
+        ],
+      }},
+      options: {{
+        indexAxis: 'y',
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: pluginCommon,
+        scales: {{
+          x: {{ ...axisCommon, beginAtZero: true, max: 100, title: {{ display: true, text: 'Pass rate %', color: '#c9d1d9' }} }},
+          y: axisCommon,
+        }},
+      }},
+    }});
+
+    new Chart(document.getElementById('speedChart'), {{
+      type: 'bar',
+      data: {{
+        labels: speedLabels,
+        datasets: [{{
+          label: 'Completion tok/s',
+          data: speedValues,
+          backgroundColor: speedColors,
+          borderColor: speedColors,
+          borderWidth: 1,
+          borderRadius: 5,
+        }}],
+      }},
+      options: {{
+        indexAxis: 'y',
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: pluginCommon,
+        scales: {{
+          x: {{ ...axisCommon, beginAtZero: true, title: {{ display: true, text: 'tok/s', color: '#c9d1d9' }} }},
+          y: axisCommon,
+        }},
+      }},
+    }});
+
+    new Chart(document.getElementById('timeChart'), {{
+      type: 'bar',
+      data: {{
+        labels: timeLabels,
+        datasets: [{{
+          label: 'Seconds per case',
+          data: timeValues,
+          backgroundColor: timeColors,
+          borderColor: timeColors,
+          borderWidth: 1,
+          borderRadius: 5,
+        }}],
+      }},
+      options: {{
+        indexAxis: 'y',
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: pluginCommon,
+        scales: {{
+          x: {{ ...axisCommon, beginAtZero: true, title: {{ display: true, text: 'seconds', color: '#c9d1d9' }} }},
+          y: axisCommon,
+        }},
+      }},
+    }});
+
+    new Chart(document.getElementById('scatterChart'), {{
+      type: 'scatter',
+      data: {{
+        datasets: scatterPoints.map(point => ({{
+          label: point.label,
+          data: [{{ x: point.x, y: point.y }}],
+          pointRadius: 6,
+          pointHoverRadius: 8,
+          pointBackgroundColor: point.color,
+          pointBorderColor: point.color,
+        }})),
+      }},
+      options: {{
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {{
+          ...pluginCommon,
+          tooltip: {{
+            ...pluginCommon.tooltip,
+            callbacks: {{
+              label(context) {{
+                const dataset = scatterPoints[context.datasetIndex];
+                return `${{dataset.label}} | ${{dataset.x}}s/case | ${{dataset.y}}% try2 | ${{dataset.wellFormed}}% well formed`;
+              }},
+            }},
+          }},
+          legend: {{ display: false }},
+        }},
+        scales: {{
+          x: {{ ...axisCommon, beginAtZero: true, title: {{ display: true, text: 'Seconds per case', color: '#c9d1d9' }} }},
+          y: {{ ...axisCommon, beginAtZero: true, max: 100, title: {{ display: true, text: 'Try 2 pass rate %', color: '#c9d1d9' }} }},
+        }},
+      }},
+    }});
+
+    new Chart(document.getElementById('warningChart'), {{
+      type: 'bar',
+      data: {{
+        labels: warningLabels,
+        datasets: [
+          {{ label: 'Context exhaustion', data: exhaustedValues, backgroundColor: '#e63946', borderRadius: 5 }},
+          {{ label: 'Malformed responses', data: malformedValues, backgroundColor: '#f4a261', borderRadius: 5 }},
+          {{ label: 'Timed-out tests', data: timeoutValues, backgroundColor: '#457b9d', borderRadius: 5 }},
+        ],
+      }},
+      options: {{
+        indexAxis: 'y',
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: pluginCommon,
+        scales: {{
+          x: {{ ...axisCommon, beginAtZero: true, stacked: true, title: {{ display: true, text: 'count', color: '#c9d1d9' }} }},
+          y: {{ ...axisCommon, stacked: true }},
+        }},
+      }},
+    }});
+
+    new Chart(document.getElementById('historyChart'), {{
+      type: 'line',
+      data: {{
+        labels: historyTimestamps,
+        datasets: historyDatasets.map(dataset => ({{
+          ...dataset,
+          pointRadius: 4,
+          pointHoverRadius: 6,
+          borderWidth: 2,
+          tension: 0.2,
+          spanGaps: true,
+        }})),
+      }},
+      options: {{
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: pluginCommon,
+        scales: {{
+          x: axisCommon,
+          y: {{ ...axisCommon, beginAtZero: true, max: 100, title: {{ display: true, text: 'Try 2 pass rate %', color: '#c9d1d9' }} }},
+        }},
+      }},
+    }});
+  </script>
+</body>
+</html>
+"""
+
+
+def output_path_for(input_path: Path) -> Path:
+    try:
+        if input_path.resolve() == DEFAULT_FILE.resolve():
+            return DEFAULT_OUTPUT
+    except FileNotFoundError:
+        pass
+    return input_path.with_suffix(".html")
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    input_path = Path(args[0]).expanduser().resolve() if args else DEFAULT_FILE
+    output_path = output_path_for(input_path)
+
+    records = load_records(input_path)
     html = generate_html(records)
-    out = Path(path).parent / "eval_report.html"
-    out.write_text(html)
-    print(f"Generated: {out}")
-    print("Opening in browser ...")
-    webbrowser.open(f"file://{out.resolve()}")
+    output_path.write_text(html, encoding="utf-8")
+    print(output_path)
+    webbrowser.open(output_path.resolve().as_uri())
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
