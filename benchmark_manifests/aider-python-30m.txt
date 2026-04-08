@@ -1,0 +1,20 @@
+# Fixed 18-exercise Python subset for faster, reproducible local runs.
+# Intentionally mixes easier and harder tasks instead of taking a random slice.
+python/exercises/practice/affine-cipher
+python/exercises/practice/beer-song
+python/exercises/practice/book-store
+python/exercises/practice/bowling
+python/exercises/practice/connect
+python/exercises/practice/dominoes
+python/exercises/practice/dot-dsl
+python/exercises/practice/grep
+python/exercises/practice/hangman
+python/exercises/practice/phone-number
+python/exercises/practice/poker
+python/exercises/practice/rest-api
+python/exercises/practice/scale-generator
+python/exercises/practice/sgf-parsing
+python/exercises/practice/simple-linked-list
+python/exercises/practice/tree-building
+python/exercises/practice/two-bucket
+python/exercises/practice/wordy

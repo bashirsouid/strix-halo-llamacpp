@@ -335,7 +335,7 @@ MODELS: list[ModelConfig] = [
         repeat_penalty=1.0,
         spec=SpecConfig(strategy="ngram"),
         chat_template_kwargs={"enable_thinking": True},
-        reasoning_format="deepseek",
+        reasoning_format="auto",
         notes=(
             "Best for: code + chat at high speed, interleaved thinking. "
             "Thinking is forced on via chat_template_kwargs.enable_thinking. "
@@ -365,7 +365,7 @@ MODELS: list[ModelConfig] = [
         repeat_penalty=1.0,
         spec=SpecConfig(strategy="ngram"),
         chat_template_kwargs={"enable_thinking": True},
-        reasoning_format="deepseek",
+        reasoning_format="auto",
         notes=(
             "Best for: reasoning, summarization, general-purpose. "
             "MoE 35B (3B active). Thinking mode forced on via chat_template_kwargs.enable_thinking. "
@@ -393,7 +393,7 @@ MODELS: list[ModelConfig] = [
         top_k=64,
         spec=SpecConfig(strategy="ngram"),
         chat_template_kwargs={"enable_thinking": True},
-        reasoning_format="deepseek",
+        reasoning_format="auto",
         notes=(
             "Best for: code, tool calling, reasoning, vision (with mmproj). "
             "MoE 25.2B (3.8B active). 128 experts, 8 active + 1 shared. "
@@ -424,7 +424,7 @@ MODELS: list[ModelConfig] = [
         top_p=0.95,
         top_k=64,
         chat_template_kwargs={"enable_thinking": True},
-        reasoning_format="deepseek",
+        reasoning_format="auto",
         notes=(
             "Best for: maximum code quality, hard reasoning, vision. "
             "Dense 30.7B — all params active every token. SLOW (~6-8 tok/s). "
@@ -551,7 +551,7 @@ MODELS: list[ModelConfig] = [
         top_p=0.95,
         spec=SpecConfig(strategy="ngram"),
         chat_template_kwargs={"enable_thinking": True},
-        reasoning_format="deepseek",
+        reasoning_format="auto",
         notes=(
             "Best for: long-context reasoning, multi-agent workflows. "
             "Hybrid Mamba2-Transformer MoE 120B (12B active). "
@@ -579,7 +579,7 @@ MODELS: list[ModelConfig] = [
         top_p=0.95,
         spec=SpecConfig(strategy="ngram"),
         chat_template_kwargs={"enable_thinking": True},
-        reasoning_format="deepseek",
+        reasoning_format="auto",
         notes=(
             "Best for: speed, lightweight tasks, tool calling, quick iteration. "
             "MoE 30B (3B active). Fastest model in catalog (~60+ tok/s). "
@@ -605,7 +605,7 @@ MODELS: list[ModelConfig] = [
         top_p=0.95,
         spec=SpecConfig(strategy="ngram"),
         chat_template_kwargs={"enable_thinking": True},
-        reasoning_format="deepseek",
+        reasoning_format="auto",
         notes=(
             "Best for: speed/quality balance, lightweight tasks, tool calling. "
             "MoE 30B (3B active). ~45+ tok/s at Q8. "

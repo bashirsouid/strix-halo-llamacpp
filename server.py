@@ -26,7 +26,10 @@ Usage:
     python server.py bench   [MODEL] [--backend vulkan|radv|amdvlk|rocm|rocm6|rocm7|rocm7-nightly]
     python server.py bench-all [--backend vulkan|radv|amdvlk|rocm|rocm6|rocm7|rocm7-nightly]
     python server.py bench-parallel [MODEL] [--backend vulkan|radv|amdvlk|rocm|rocm6|rocm7|rocm7-nightly]
-python server.py download MODEL
+    python server.py aider-setup
+    python server.py aider-bench [MODEL] [--profile python-30m|python-all]
+    python server.py aider-bench-all [--profile python-30m|python-all]
+    python server.py download MODEL
     python server.py download-images
 """
 
@@ -51,6 +54,14 @@ from typing import Any
 
 from models import MODELS, get_model, ModelConfig
 from eval_profiles import EvalProfile, ensure_override_dataset, resolve_eval_profile
+from aider_benchmark import (
+    AIDER_PROFILE_NAMES,
+    BUILTIN_PROFILES as AIDER_PROFILES,
+    DEFAULT_AIDER_REF,
+    DEFAULT_POLYGLOT_REF,
+    ensure_aider_setup,
+    run_aider_benchmark,
+)
 from repo_cache import (
     DEFAULT_PROXY_HOST,
     DEFAULT_PROXY_PORT,
@@ -121,7 +132,7 @@ BENCH_PARALLEL_RESULTS_FILE = BENCH_RESULTS_DIR / "bench_parallel_results.jsonl"
 EVAL_RESULTS_FILE = EVAL_RESULTS_DIR / "eval_results.jsonl"
 EVAL_RAW_DIR = EVAL_RESULTS_DIR / "raw"
 
-LOCAL_API_HOST = "127.0.0.1"
+LOCAL_API_HOST = "0.0.0.0"
 
 
 def _eval_metadata_dir() -> Path:
@@ -863,6 +874,7 @@ def launch_server(cfg: ModelConfig, port: int = 8000, backend: str = "vulkan",
 
     if wait_for_server(port, verbose=verbose):
         ok(f"{backend.upper()} container running: {container_name} ({container_id})")
+        info(f"Web UI: http://localhost:{port}/")
     else:
         fail("Server failed to start in container.")
         if not verbose:
@@ -1936,6 +1948,169 @@ def run_evalplus(
 
     return record
 
+
+def aider_setup(
+    *,
+    update: bool = False,
+    aider_ref: str = DEFAULT_AIDER_REF,
+    polyglot_ref: str = DEFAULT_POLYGLOT_REF,
+) -> dict[str, Any]:
+    """Prepare the local Aider benchmark harness and fixed exercise subsets."""
+    info("Preparing Aider benchmark harness (Docker image + fixed exercise subsets)")
+    setup = ensure_aider_setup(update=update, aider_ref=aider_ref, polyglot_ref=polyglot_ref)
+    ok(f"Aider repo ready: {setup['aider_repo']}")
+    info(f"Aider commit: {setup['aider_head'][:12]}")
+    ok(f"Polyglot benchmark ready: {setup['polyglot_repo']}")
+    info(f"Polyglot commit: {setup['polyglot_head'][:12]}")
+    ok(f"Docker image ready: {setup['docker_image']}")
+    for profile_name in AIDER_PROFILE_NAMES:
+        profile = AIDER_PROFILES[profile_name]
+        curated_dir = setup['curated_dirs'].get(profile_name, '')
+        info(f"Profile {profile_name}: {curated_dir}")
+        info(f"  {profile.description}")
+    return setup
+
+
+def aider_bench_single(
+    model_alias: str | None,
+    *,
+    port: int = 8000,
+    backend: str = "radv",
+    profile_name: str = "python-30m",
+    manifest_path: str | None = None,
+    run_label: str | None = None,
+    max_tokens: int = 8192,
+    threads: int = 1,
+    tries: int | None = None,
+    edit_format: str = "whole",
+    update_harness: bool = False,
+    aider_ref: str = DEFAULT_AIDER_REF,
+    polyglot_ref: str = DEFAULT_POLYGLOT_REF,
+) -> dict[str, Any]:
+    """Start a model, run the Aider code-edit benchmark, then stop it."""
+    if model_alias is None:
+        cfg = resolve_model(None, prompt_text="Pick a model to benchmark with Aider")
+    else:
+        cfg = get_model(model_alias)
+
+    if not cfg.is_downloaded:
+        fail(f"Skipping {cfg.name} — not downloaded.")
+        return {
+            "ok": False,
+            "profile": profile_name,
+        }
+
+    profile_label = manifest_path or profile_name
+    label_suffix = f"  label={run_label}" if run_label else ""
+    info(
+        f"═══ Aider benchmark: {cfg.name} ({cfg.alias})  {backend}  "
+        f"profile={profile_label}  max_tokens={max_tokens}{label_suffix} ═══"
+    )
+
+    launch_server(cfg, port=port, backend=backend)
+
+    try:
+        result = run_aider_benchmark(
+            model_alias=cfg.alias,
+            backend=backend,
+            port=port,
+            profile_name=profile_name,
+            manifest_path=manifest_path,
+            run_label=run_label,
+            max_tokens=max_tokens,
+            threads=threads,
+            tries=tries,
+            edit_format=edit_format,
+            context_window=cfg.ctx_size,
+            api_key=_api_key_for_model(cfg.alias),
+            update_harness=update_harness,
+            aider_ref=aider_ref,
+            polyglot_ref=polyglot_ref,
+        )
+    finally:
+        stop_server()
+        time.sleep(2)
+
+    if result.get("pass_rate_1") is not None:
+        ok(f"Aider pass rate after try 1: {result['pass_rate_1']:.1f}%")
+    if result.get("pass_rate_2") is not None:
+        ok(f"Aider pass rate after try 2: {result['pass_rate_2']:.1f}%")
+    if result.get("completed_tests") is not None and result.get("total_tests") is not None:
+        info(f"Cases completed: {result['completed_tests']}/{result['total_tests']}")
+    if result.get("seconds_per_case_wall") is not None:
+        info(f"Wall time per case: {result['seconds_per_case_wall']:.2f}s")
+    if result.get("completion_tok_s_wall") is not None:
+        info(f"Completion tok/s (wall clock): {result['completion_tok_s_wall']:.2f}")
+    if result.get("metadata_file"):
+        info(f"Run metadata saved to {result['metadata_file']}")
+    if result.get("results_file"):
+        ok(f"Aider results appended to {result['results_file']}")
+
+    return result
+
+
+def aider_bench_all(
+    *,
+    port: int = 8000,
+    backend: str = "radv",
+    profile_name: str = "python-30m",
+    manifest_path: str | None = None,
+    run_label: str | None = None,
+    max_tokens: int = 8192,
+    threads: int = 1,
+    tries: int | None = None,
+    edit_format: str = "whole",
+    update_harness: bool = False,
+    aider_ref: str = DEFAULT_AIDER_REF,
+    polyglot_ref: str = DEFAULT_POLYGLOT_REF,
+) -> list[dict[str, Any]]:
+    """Run the fixed Aider benchmark for every downloaded model."""
+    downloaded = [m for m in MODELS if m.is_downloaded and not getattr(m, "hidden", False)]
+    if not downloaded:
+        fail("No models downloaded. Run 'python server.py download MODEL' first.")
+        sys.exit(1)
+
+    results: list[tuple[str, str, dict[str, Any]]] = []
+    for cfg in downloaded:
+        result = aider_bench_single(
+            cfg.alias,
+            port=port,
+            backend=backend,
+            profile_name=profile_name,
+            manifest_path=manifest_path,
+            run_label=run_label,
+            max_tokens=max_tokens,
+            threads=threads,
+            tries=tries,
+            edit_format=edit_format,
+            update_harness=update_harness,
+            aider_ref=aider_ref,
+            polyglot_ref=polyglot_ref,
+        )
+        results.append((cfg.alias, cfg.name, result))
+
+    print()
+    print("  ══════════════════════════════════════════════════════════════════════════════════════")
+    print(f"  {'Model':<28s} {'Try1':>6s} {'Try2':>6s} {'Cases':>9s} {'s/case':>8s} {'tok/s':>8s}")
+    print(f"  {'─'*28} {'─'*6} {'─'*6} {'─'*9} {'─'*8} {'─'*8}")
+    for _, name, result in results:
+        try1 = result.get('pass_rate_1')
+        try2 = result.get('pass_rate_2')
+        completed = result.get('completed_tests') or 0
+        total = result.get('total_tests') or 0
+        seconds = result.get('seconds_per_case_wall') or 0
+        tok_s = result.get('completion_tok_s_wall') or 0
+        try1_text = f"{try1:.1f}%" if isinstance(try1, (int, float)) else "—"
+        try2_text = f"{try2:.1f}%" if isinstance(try2, (int, float)) else "—"
+        print(
+            f"  {name:<28s} {try1_text:>6s} {try2_text:>6s} "
+            f"{f'{completed}/{total}':>9s} {seconds:>8.2f} {tok_s:>8.2f}"
+        )
+    print("  ══════════════════════════════════════════════════════════════════════════════════════")
+    print()
+
+    return [result for _, _, result in results]
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  LIST
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2160,6 +2335,14 @@ def main():
                          help="Directory used for llama.cpp slot save/restore snapshots")
     p_serve.add_argument("--disable-slot-persistence", action="store_true",
                          help="Disable llama.cpp slot save/restore endpoints for this launch")
+    p_serve.add_argument("--reasoning-format", choices=["auto", "deepseek", "deepseek-legacy", "none"], default=None,
+                         help="Override llama.cpp reasoning parser for this launch")
+    p_serve.add_argument("--reasoning-budget", type=int, default=None,
+                         help="Override llama.cpp reasoning budget for this launch")
+    p_serve.add_argument("--enable-reasoning", action="store_true",
+                         help="Force llama.cpp reasoning mode on for this launch")
+    p_serve.add_argument("--disable-reasoning", action="store_true",
+                         help="Force llama.cpp reasoning mode off for this launch")
     p_serve.add_argument("--extra", nargs=argparse.REMAINDER, default=[],
                          help="Extra args passed to llama-server")
 
@@ -2205,6 +2388,8 @@ def main():
                               help="Refresh the repo context before starting the proxy")
     p_repo_proxy.add_argument("--verbose", action="store_true",
                               help="Enable proxy request logging")
+    p_repo_proxy.add_argument("--no-metrics", action="store_true",
+                              help="Disable one-line per-request cache/timing metrics from the proxy")
 
     p_repo_warm = sub.add_parser("repo-warm",
         help="Prime llama.cpp prompt cache for a project repo")
@@ -2279,6 +2464,64 @@ def main():
 
     # download-images
     sub.add_parser("download-images", help="Download all container images")
+
+    # aider-setup
+    p_aider_setup = sub.add_parser("aider-setup",
+        help="Clone/build the Aider benchmark harness and create fixed exercise subsets")
+    p_aider_setup.add_argument("--update", action="store_true",
+                               help="Fetch the latest harness refs and rebuild the Docker image")
+    p_aider_setup.add_argument("--aider-ref", default=DEFAULT_AIDER_REF,
+                               help="Git ref for the aider harness checkout")
+    p_aider_setup.add_argument("--polyglot-ref", default=DEFAULT_POLYGLOT_REF,
+                               help="Git ref for the polyglot-benchmark checkout")
+
+    # aider-bench
+    p_aider = sub.add_parser("aider-bench",
+        help="Run the Aider code-edit benchmark against a fixed local subset")
+    p_aider.add_argument("model", nargs="?", default=None,
+                         help="Model to benchmark (omit for interactive picker)")
+    p_aider.add_argument("--profile", choices=AIDER_PROFILE_NAMES, default="python-30m",
+                         help="Fixed benchmark profile to run (default: python-30m)")
+    p_aider.add_argument("--manifest", default=None,
+                         help="Custom manifest file of exercises to benchmark instead of a built-in profile")
+    p_aider.add_argument("--label", default=None,
+                         help="Optional label to distinguish repeated aider runs")
+    p_aider.add_argument("--max-tokens", type=int, default=8192,
+                         help="Generation cap forwarded to the model via Aider/LiteLLM (default: 8192)")
+    p_aider.add_argument("--threads", type=int, default=1,
+                         help="Aider benchmark worker threads (default: 1)")
+    p_aider.add_argument("--tries", type=int, default=None,
+                         help="Number of repair attempts per exercise (default: profile default)")
+    p_aider.add_argument("--edit-format", default="whole",
+                         help="Aider edit format (default: whole)")
+    p_aider.add_argument("--port", type=int, default=8000)
+    p_aider.add_argument("--backend", choices=["vulkan", "radv", "amdvlk", "rocm", "rocm6", "rocm7", "rocm7-nightly"],
+                         default=None)
+    p_aider.add_argument("--update-harness", action="store_true",
+                         help="Fetch latest harness refs and rebuild the Aider Docker image before running")
+    p_aider.add_argument("--aider-ref", default=DEFAULT_AIDER_REF,
+                         help="Git ref for the aider harness checkout")
+    p_aider.add_argument("--polyglot-ref", default=DEFAULT_POLYGLOT_REF,
+                         help="Git ref for the polyglot-benchmark checkout")
+
+    # aider-bench-all
+    p_aider_all = sub.add_parser("aider-bench-all",
+        help="Run the Aider benchmark for all downloaded models")
+    p_aider_all.add_argument("--profile", choices=AIDER_PROFILE_NAMES, default="python-30m")
+    p_aider_all.add_argument("--manifest", default=None,
+                             help="Custom manifest file of exercises to benchmark instead of a built-in profile")
+    p_aider_all.add_argument("--label", default=None,
+                             help="Optional label to attach to every aider benchmark run")
+    p_aider_all.add_argument("--max-tokens", type=int, default=8192)
+    p_aider_all.add_argument("--threads", type=int, default=1)
+    p_aider_all.add_argument("--tries", type=int, default=None)
+    p_aider_all.add_argument("--edit-format", default="whole")
+    p_aider_all.add_argument("--port", type=int, default=8000)
+    p_aider_all.add_argument("--backend", choices=["vulkan", "radv", "amdvlk", "rocm", "rocm6", "rocm7", "rocm7-nightly"],
+                             default=None)
+    p_aider_all.add_argument("--update-harness", action="store_true")
+    p_aider_all.add_argument("--aider-ref", default=DEFAULT_AIDER_REF)
+    p_aider_all.add_argument("--polyglot-ref", default=DEFAULT_POLYGLOT_REF)
 
     # eval
     p_eval = sub.add_parser("eval",
@@ -2365,6 +2608,14 @@ def main():
             cfg.slot_save_path = None
         elif args.slot_save_path is not None:
             cfg.slot_save_path = args.slot_save_path
+        if args.reasoning_format is not None:
+            cfg.reasoning_format = args.reasoning_format
+        if args.reasoning_budget is not None:
+            cfg.reasoning_budget = args.reasoning_budget
+        if args.enable_reasoning:
+            cfg.reasoning = True
+        if args.disable_reasoning:
+            cfg.reasoning = False
 
         launch_server(cfg, port=args.port, backend=args.backend,
                       extra_args=args.extra, verbose=args.verbose,
@@ -2419,6 +2670,7 @@ def main():
             slot_id=args.slot_id,
             upstream_headers=upstream_headers,
             verbose=args.verbose,
+            metrics=not args.no_metrics,
         )
 
     elif args.command == "repo-warm":
@@ -2489,6 +2741,44 @@ def main():
 
     elif args.command == "download-images":
         download_container_images()
+
+    elif args.command == "aider-setup":
+        aider_setup(update=args.update, aider_ref=args.aider_ref, polyglot_ref=args.polyglot_ref)
+
+    elif args.command == "aider-bench":
+        backend = args.backend or _current_backend() or "radv"
+        aider_bench_single(
+            args.model,
+            port=args.port,
+            backend=backend,
+            profile_name=args.profile,
+            manifest_path=args.manifest,
+            run_label=args.label,
+            max_tokens=args.max_tokens,
+            threads=args.threads,
+            tries=args.tries,
+            edit_format=args.edit_format,
+            update_harness=args.update_harness,
+            aider_ref=args.aider_ref,
+            polyglot_ref=args.polyglot_ref,
+        )
+
+    elif args.command == "aider-bench-all":
+        backend = args.backend or _current_backend() or "radv"
+        aider_bench_all(
+            port=args.port,
+            backend=backend,
+            profile_name=args.profile,
+            manifest_path=args.manifest,
+            run_label=args.label,
+            max_tokens=args.max_tokens,
+            threads=args.threads,
+            tries=args.tries,
+            edit_format=args.edit_format,
+            update_harness=args.update_harness,
+            aider_ref=args.aider_ref,
+            polyglot_ref=args.polyglot_ref,
+        )
 
     elif args.command == "eval":
         # Use explicit backend if provided, otherwise try running backend, otherwise default to radv

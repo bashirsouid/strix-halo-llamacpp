@@ -10,7 +10,8 @@ The project pulls prebuilt `llama.cpp` container images from `kyuz0/amd-strix-ha
 - supports `radv`/`vulkan`, `amdvlk`, `rocm`, `rocm6`, `rocm7`, and `rocm7-nightly`
 - benchmarks single-request and concurrent throughput
 - sweeps `--parallel` values to find the best aggregate throughput
-- runs EvalPlus against the local server
+- runs Aider's Dockerized code-edit benchmark against the local server
+- keeps the older EvalPlus flow available as a legacy smoke test
 - exposes repo-aware caching helpers for local coding tools such as OpenCode
 - generates a stable per-repo architecture summary that can be reused across many requests
 - can warm, save, and restore llama.cpp slot state for one repo at a time
@@ -115,7 +116,18 @@ Sweep parallelism:
 python server.py bench-parallel MODEL --backend radv --max-np 8
 ```
 
-Run EvalPlus:
+Run the recommended Aider benchmark:
+
+```bash
+python server.py aider-setup
+python server.py aider-bench MODEL --backend radv --profile python-30m
+python server.py aider-bench MODEL --backend radv --profile python-all
+python server.py aider-bench-all --backend rocm --profile python-30m
+```
+
+The default `python-30m` profile is a fixed 18-exercise subset. `python-all` is the full 34-exercise Python set from Aider's polyglot benchmark.
+
+Legacy EvalPlus commands are still available, but the repo is now set up for Aider-style code editing benchmarks first:
 
 ```bash
 python server.py eval MODEL --suite humaneval --backend radv

@@ -188,6 +188,64 @@ install_pip_deps() {
 
 # ── Serve ────────────────────────────────────────────────────────────────────
 
+resolve_requested_port() {
+    local port="8000"
+    local i=0
+    local count=${#SERVE_ARGS[@]}
+
+    while [[ $i -lt $count ]]; do
+        if [[ "${SERVE_ARGS[$i]}" == "--port" && $((i + 1)) -lt $count ]]; then
+            port="${SERVE_ARGS[$((i + 1))]}"
+            break
+        fi
+        i=$((i + 1))
+    done
+
+    printf '%s
+' "$port"
+}
+
+read_server_state() {
+    local state_file="$SCRIPT_DIR/.server.json"
+    [[ -f "$state_file" ]] || return 1
+
+    python3 - "$state_file" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+state_path = Path(sys.argv[1])
+try:
+    payload = json.loads(state_path.read_text())
+except Exception:
+    raise SystemExit(1)
+
+model = str(payload.get("model", "")).strip()
+backend = str(payload.get("backend", "")).strip()
+port = str(payload.get("port", "8000")).strip() or "8000"
+print("".join([model, backend, port]))
+PY
+}
+
+show_post_start_info() {
+    local state_line
+    local active_model="$MODEL"
+    local active_backend="$BACKEND"
+    local active_port
+    active_port="$(resolve_requested_port)"
+
+    if state_line="$(read_server_state 2>/dev/null)"; then
+        IFS=$'' read -r active_model active_backend active_port <<< "$state_line"
+    fi
+
+    _ok "OpenAI-compatible API: http://localhost:${active_port}/v1"
+    _ok "Official llama.cpp Web UI: http://localhost:${active_port}/"
+
+    if [[ -n "$active_model" ]]; then
+        _info "Recommended 30m benchmark: python3 server.py aider-bench ${active_model} --backend ${active_backend:-radv} --profile python-30m"
+    fi
+}
+
 serve_model() {
     local serve_cmd=(python3 "$SCRIPT_DIR/server.py" serve)
 
@@ -207,7 +265,13 @@ serve_model() {
         _info "Ready to serve! (backend: ${BACKEND:-<default>}, model: $MODEL)"
     fi
     echo
-    exec "${serve_cmd[@]}"
+
+    if ! "${serve_cmd[@]}"; then
+        return $?
+    fi
+
+    echo
+    show_post_start_info
 }
 
 # ── Main ─────────────────────────────────────────────────────────────────────

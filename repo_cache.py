@@ -8,6 +8,7 @@ import os
 import re
 import socketserver
 import sys
+import time
 import tomllib
 import urllib.error
 import urllib.request
@@ -554,6 +555,160 @@ def make_warm_payload(context_text: str, model_alias: str | None = None, slot_id
     return payload
 
 
+def _as_int(value: Any) -> int | None:
+    try:
+        if value is None:
+            return None
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _as_float(value: Any) -> float | None:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def extract_completion_metrics(payload: dict[str, Any] | None) -> dict[str, float | int | None]:
+    if not isinstance(payload, dict):
+        return {}
+
+    usage = payload.get("usage")
+    if not isinstance(usage, dict):
+        usage = {}
+    timings = payload.get("timings")
+    if not isinstance(timings, dict):
+        timings = {}
+
+    cache_tokens = _as_int(timings.get("cache_n"))
+    prompt_eval_tokens = _as_int(timings.get("prompt_n"))
+    completion_tokens = (
+        _as_int(usage.get("completion_tokens"))
+        or _as_int(usage.get("output_tokens"))
+        or _as_int(timings.get("predicted_n"))
+    )
+    prompt_tokens = (
+        _as_int(usage.get("prompt_tokens"))
+        or _as_int(usage.get("input_tokens"))
+        or ((cache_tokens or 0) + (prompt_eval_tokens or 0) or None)
+    )
+
+    return {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "cache_tokens": cache_tokens,
+        "prompt_eval_tokens": prompt_eval_tokens,
+        "prompt_ms": _as_float(timings.get("prompt_ms")),
+        "prompt_tps": _as_float(timings.get("prompt_per_second")),
+        "completion_ms": _as_float(timings.get("predicted_ms")),
+        "completion_tps": _as_float(timings.get("predicted_per_second")),
+    }
+
+
+def _extract_error_message(payload: dict[str, Any] | None) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    error = payload.get("error")
+    if isinstance(error, dict):
+        message = error.get("message")
+        if isinstance(message, str) and message.strip():
+            return message.strip()
+    message = payload.get("message")
+    if isinstance(message, str) and message.strip():
+        return message.strip()
+    return None
+
+
+def format_proxy_metrics_line(
+    *,
+    path: str,
+    status: int,
+    elapsed_sec: float,
+    request_payload: dict[str, Any] | None = None,
+    response_payload: dict[str, Any] | None = None,
+    error: str | None = None,
+) -> str:
+    metrics = extract_completion_metrics(response_payload)
+    model = None
+    if isinstance(response_payload, dict):
+        model = response_payload.get("model")
+    if model is None and isinstance(request_payload, dict):
+        model = request_payload.get("model")
+    slot_id = request_payload.get("id_slot") if isinstance(request_payload, dict) else None
+
+    parts = ["[proxy]", f"status={status}", f"path={path}", f"time={elapsed_sec:.2f}s"]
+    if isinstance(model, str) and model:
+        parts.append(f"model={model}")
+    if isinstance(slot_id, int):
+        parts.append(f"slot={slot_id}")
+
+    prompt_eval_tokens = metrics.get("prompt_eval_tokens")
+    cache_tokens = metrics.get("cache_tokens")
+    ctx_tokens = None
+    if isinstance(prompt_eval_tokens, int) or isinstance(cache_tokens, int):
+        ctx_tokens = (prompt_eval_tokens or 0) + (cache_tokens or 0)
+        if ctx_tokens > 0:
+            parts.append(f"ctx={ctx_tokens}")
+    if isinstance(cache_tokens, int):
+        if ctx_tokens and ctx_tokens > 0:
+            cache_pct = 100.0 * cache_tokens / ctx_tokens
+            parts.append(f"cache={cache_tokens}/{ctx_tokens}({cache_pct:.1f}%)")
+        else:
+            parts.append(f"cache={cache_tokens}")
+
+    prompt_tps = metrics.get("prompt_tps")
+    if isinstance(prompt_tps, float):
+        parts.append(f"pp={prompt_tps:.0f}tok/s")
+
+    completion_tokens = metrics.get("completion_tokens")
+    if isinstance(completion_tokens, int):
+        parts.append(f"gen={completion_tokens}")
+
+    completion_tps = metrics.get("completion_tps")
+    if isinstance(completion_tps, float):
+        parts.append(f"gen_tps={completion_tps:.1f}")
+    elif isinstance(completion_tokens, int) and elapsed_sec > 0:
+        parts.append(f"gen_tps={completion_tokens / elapsed_sec:.1f}")
+
+    if isinstance(error, str) and error.strip():
+        clean_error = " ".join(error.strip().split())
+        if len(clean_error) > 160:
+            clean_error = clean_error[:157].rstrip() + "..."
+        parts.append(f"error={clean_error}")
+
+    return " ".join(parts)
+
+
+def _update_sse_metrics_buffer(
+    buffer: str,
+    chunk: bytes,
+    *,
+    latest_payload: dict[str, Any] | None = None,
+) -> tuple[str, dict[str, Any] | None]:
+    text = chunk.decode("utf-8", errors="replace").replace("\r\n", "\n")
+    buffer += text
+    while "\n\n" in buffer:
+        event, buffer = buffer.split("\n\n", 1)
+        for line in event.split("\n"):
+            if not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            if not data or data == "[DONE]":
+                continue
+            try:
+                payload = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                latest_payload = payload
+    return buffer, latest_payload
+
+
+
 class _ProxyHandler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -567,13 +722,42 @@ class _ProxyHandler(http.server.BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         self._forward()
 
+    def _metrics_enabled(self) -> bool:
+        return bool(getattr(self.server, "metrics_enabled", True))
+
+    def _log_proxy_summary(
+        self,
+        *,
+        status: int,
+        started_at: float,
+        request_payload: dict[str, Any] | None = None,
+        response_payload: dict[str, Any] | None = None,
+        error: str | None = None,
+    ) -> None:
+        if not self._metrics_enabled():
+            return
+        elapsed_sec = time.perf_counter() - started_at
+        print(
+            format_proxy_metrics_line(
+                path=self.path,
+                status=status,
+                elapsed_sec=elapsed_sec,
+                request_payload=request_payload,
+                response_payload=response_payload,
+                error=error,
+            ),
+            flush=True,
+        )
+
     def _forward(self) -> None:
         upstream_base: str = getattr(self.server, "upstream_base")
         upstream_headers: dict[str, str] = getattr(self.server, "upstream_headers")
         repo_context_file: Path = getattr(self.server, "repo_context_file")
         slot_id: int = getattr(self.server, "slot_id")
+        started_at = time.perf_counter()
 
         body = b""
+        request_payload: dict[str, Any] | None = None
         if self.command in {"POST", "PUT", "PATCH"}:
             raw_length = self.headers.get("Content-Length", "0")
             try:
@@ -581,15 +765,24 @@ class _ProxyHandler(http.server.BaseHTTPRequestHandler):
             except ValueError:
                 content_length = 0
             body = self.rfile.read(content_length) if content_length > 0 else b""
+            if body:
+                try:
+                    parsed_payload = json.loads(body.decode("utf-8"))
+                except Exception:
+                    parsed_payload = None
+                if isinstance(parsed_payload, dict):
+                    request_payload = parsed_payload
 
         if self.command == "POST" and self.path == "/v1/chat/completions":
             try:
-                payload = json.loads(body.decode("utf-8")) if body else {}
+                payload = request_payload or {}
                 context_text = repo_context_file.read_text(encoding="utf-8")
                 payload = inject_repo_context(payload, context_text, slot_id=slot_id)
+                request_payload = payload
                 body = json.dumps(payload).encode("utf-8")
             except Exception as exc:
                 self.send_error(400, f"Invalid chat payload: {exc}")
+                self._log_proxy_summary(status=400, started_at=started_at, request_payload=request_payload, error=str(exc))
                 return
 
         url = upstream_base + self.path
@@ -603,13 +796,20 @@ class _ProxyHandler(http.server.BaseHTTPRequestHandler):
         req = urllib.request.Request(url, data=body or None, headers=request_headers, method=self.command)
         try:
             with urllib.request.urlopen(req, timeout=600) as response:
-                self._relay_response(response)
+                self._relay_response(response, started_at=started_at, request_payload=request_payload)
         except urllib.error.HTTPError as exc:
-            self._relay_error(exc)
+            self._relay_error(exc, started_at=started_at, request_payload=request_payload)
         except urllib.error.URLError as exc:
             self.send_error(502, f"Upstream request failed: {exc}")
+            self._log_proxy_summary(status=502, started_at=started_at, request_payload=request_payload, error=str(exc))
 
-    def _relay_response(self, response: Any) -> None:
+    def _relay_response(
+        self,
+        response: Any,
+        *,
+        started_at: float,
+        request_payload: dict[str, Any] | None = None,
+    ) -> None:
         content_type = response.headers.get("Content-Type", "application/octet-stream")
         stream = "text/event-stream" in content_type
         self.send_response(response.status)
@@ -622,12 +822,25 @@ class _ProxyHandler(http.server.BaseHTTPRequestHandler):
         if stream:
             self.end_headers()
             reader = getattr(response, "read1", response.read)
+            sse_buffer = ""
+            latest_payload: dict[str, Any] | None = None
             while True:
                 chunk = reader(8192)
                 if not chunk:
                     break
                 self.wfile.write(chunk)
                 self.wfile.flush()
+                sse_buffer, latest_payload = _update_sse_metrics_buffer(
+                    sse_buffer,
+                    chunk,
+                    latest_payload=latest_payload,
+                )
+            self._log_proxy_summary(
+                status=response.status,
+                started_at=started_at,
+                request_payload=request_payload,
+                response_payload=latest_payload,
+            )
             return
 
         data = response.read()
@@ -635,7 +848,28 @@ class _ProxyHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def _relay_error(self, error: urllib.error.HTTPError) -> None:
+        response_payload = None
+        if data:
+            try:
+                parsed = json.loads(data.decode("utf-8"))
+            except Exception:
+                parsed = None
+            if isinstance(parsed, dict):
+                response_payload = parsed
+        self._log_proxy_summary(
+            status=response.status,
+            started_at=started_at,
+            request_payload=request_payload,
+            response_payload=response_payload,
+        )
+
+    def _relay_error(
+        self,
+        error: urllib.error.HTTPError,
+        *,
+        started_at: float,
+        request_payload: dict[str, Any] | None = None,
+    ) -> None:
         data = error.read()
         self.send_response(error.code)
         for key, value in error.headers.items():
@@ -648,6 +882,22 @@ class _ProxyHandler(http.server.BaseHTTPRequestHandler):
         if data:
             self.wfile.write(data)
 
+        response_payload = None
+        if data:
+            try:
+                parsed = json.loads(data.decode("utf-8"))
+            except Exception:
+                parsed = None
+            if isinstance(parsed, dict):
+                response_payload = parsed
+        self._log_proxy_summary(
+            status=error.code,
+            started_at=started_at,
+            request_payload=request_payload,
+            response_payload=response_payload,
+            error=_extract_error_message(response_payload) or str(error),
+        )
+
 
 def start_repo_proxy(
     repo_dir: str | Path,
@@ -659,6 +909,7 @@ def start_repo_proxy(
     slot_id: int = DEFAULT_SLOT_ID,
     upstream_headers: dict[str, str] | None = None,
     verbose: bool = False,
+    metrics: bool = True,
 ) -> None:
     paths = repo_paths(repo_dir)
     if not paths.context_file.exists():
@@ -670,6 +921,7 @@ def start_repo_proxy(
     server.repo_context_file = paths.context_file
     server.slot_id = slot_id
     server.verbose = verbose
+    server.metrics_enabled = metrics
 
     try:
         server.serve_forever()
