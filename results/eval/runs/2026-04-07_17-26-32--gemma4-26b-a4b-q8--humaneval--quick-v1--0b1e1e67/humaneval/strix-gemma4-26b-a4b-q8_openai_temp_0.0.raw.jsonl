@@ -1,0 +1,48 @@
+{"task_id": "HumanEval/10", "solution": ""}
+{"task_id": "HumanEval/20", "solution": ""}
+{"task_id": "HumanEval/38", "solution": ""}
+{"task_id": "HumanEval/75", "solution": ""}
+{"task_id": "HumanEval/109", "solution": ""}
+{"task_id": "HumanEval/41", "solution": ""}
+{"task_id": "HumanEval/50", "solution": ""}
+{"task_id": "HumanEval/100", "solution": ""}
+{"task_id": "HumanEval/125", "solution": ""}
+{"task_id": "HumanEval/140", "solution": ""}
+{"task_id": "HumanEval/21", "solution": ""}
+{"task_id": "HumanEval/57", "solution": ""}
+{"task_id": "HumanEval/67", "solution": ""}
+{"task_id": "HumanEval/94", "solution": ""}
+{"task_id": "HumanEval/120", "solution": ""}
+{"task_id": "HumanEval/146", "solution": ""}
+{"task_id": "HumanEval/46", "solution": ""}
+{"task_id": "HumanEval/89", "solution": ""}
+{"task_id": "HumanEval/105", "solution": ""}
+{"task_id": "HumanEval/142", "solution": ""}
+{"task_id": "HumanEval/154", "solution": ""}
+{"task_id": "HumanEval/158", "solution": ""}
+{"task_id": "HumanEval/55", "solution": ""}
+{"task_id": "HumanEval/160", "solution": ""}
+{"task_id": "HumanEval/8", "solution": "```python\nfrom typing import List, Tuple\n\n\ndef sum_product(numbers: List[int]) -> Tuple[int, int]:\n    "}
+{"task_id": "HumanEval/36", "solution": ""}
+{"task_id": "HumanEval/49", "solution": ""}
+{"task_id": "HumanEval/101", "solution": ""}
+{"task_id": "HumanEval/149", "solution": "```python\ndef sorted_"}
+{"task_id": "HumanEval/19", "solution": "```python\nfrom typing import List\n\n\ndef sort_numbers(numbers: str) -> str:\n    \"\"\" Input is a space-delimited string of numberals from 'zero' to 'nine'.\n    Valid choices are 'zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight' and 'nine'.\n    Return the string with numbers sorted from smallest to largest\n    >>> sort_numbers('three one five')\n    'one three five'\n    \"\"\"\n    # Mapping of word representations to their integer values\n    num_map = {\n        'zero': 0,\n        'one': 1,\n        'two': 2,\n        'three': 3,\n        'four':"}
+{"task_id": "HumanEval/90", "solution": ""}
+{"task_id": "HumanEval/62", "solution": ""}
+{"task_id": "HumanEval/0", "solution": "```python\nfrom typing import List\n\ndef has_close_elements(numbers: List[float], threshold: float) -> bool:\n    \"\"\" Check if in given list of numbers, are any two numbers closer to each other than\n    given threshold.\n    >>> has_close_elements([1.0, 2.0, 3.0], 0.5)\n    False\n    >>> has_close_elements([1.0, 2.8, 3.0, 4.0, 5.0, 2.0], 0.3)\n    True\n    \"\"\"\n    # Iterate through each pair of numbers in the list\n    for i in range(len(numbers)):\n        for j in range(i + 1, len(numbers)):\n"}
+{"task_id": "HumanEval/6", "solution": ""}
+{"task_id": "HumanEval/17", "solution": ""}
+{"task_id": "HumanEval/25", "solution": ""}
+{"task_id": "HumanEval/31", "solution": ""}
+{"task_id": "HumanEval/43", "solution": ""}
+{"task_id": "HumanEval/63", "solution": ""}
+{"task_id": "HumanEval/68", "solution": "```python\n"}
+{"task_id": "HumanEval/48", "solution": "```python\nimport doctest\n\ndef is_palindrome(text: str) -> bool:\n    \"\"\"\n    Checks if given string is a palindrome\n    >>> is_palindrome('')\n    True\n    >>> is_palindrome('aba')\n    True\n    >>> is_palindrome('aaaaa')\n    True\n    >>> is_palindrome('zbcd')\n    False\n    \"\"\"\n    # A string is a palindrome if it is equal to its reverse\n    return text == text[::-1]\n\nif __name__ == \"__main__\":\n    # The doctest module will automatically run the examples provided in the docstring\n    # and verify that the function returns the expected results.\n    result = doctest.testmod()\n    if result.failed == 0:\n        print(f\"All {result.attempted} tests passed successfully!\")\n    else:\n        print(f\"{result.failed} tests failed.\")\n```"}
+{"task_id": "HumanEval/1", "solution": ""}
+{"task_id": "HumanEval/4", "solution": "```python\nfrom typing import List\n\n\ndef mean_absolute_deviation(numbers: List[float]) -> float:\n    \"\"\" For a given list of input numbers, calculate Mean Absolute Deviation\n    around the mean of this dataset.\n    Mean Absolute Deviation is the average absolute difference between each\n    element and a centerpoint (mean in this case):\n    MAD = average | x - x_mean |\n    >>> mean_absolute_deviation([1.0, 2.0, 3.0, 4.0])\n    1.0\n    \"\"\"\n    if not numbers:\n        return 0.0\n\n    # Step "}
+{"task_id": "HumanEval/9", "solution": "```python\nfrom typing import List\n\n\ndef rolling_max(numbers: List[int]) -> List[int]:\n    \"\"\" From a given list of"}
+{"task_id": "HumanEval/22", "solution": ""}
+{"task_id": "HumanEval/44", "solution": ""}
+{"task_id": "HumanEval/56", "solution": ""}
+{"task_id": "HumanEval/69", "solution": ""}

@@ -477,7 +477,7 @@ class TestEvaluateEntrypoint:
             (
                 ["./evaluate.sh", "dummy-model", "--suite", "humaneval"],
                 [
-                    ["server.py", "eval", "dummy-model", "--suite", "humaneval"],
+                    ["server.py", "eval", "dummy-model", "--suite", "humaneval", "--profile", "quick"],
                     ["tools/eval_viewer.py", "results/eval/eval_results.jsonl"],
                 ],
             ),
@@ -485,6 +485,13 @@ class TestEvaluateEntrypoint:
                 ["./evaluate.sh", "--all", "--suite", "mbpp"],
                 [
                     ["server.py", "eval-all", "--suite", "mbpp"],
+                    ["tools/eval_viewer.py", "results/eval/eval_results.jsonl"],
+                ],
+            ),
+            (
+                ["./evaluate.sh", "--reanalyze"],
+                [
+                    ["server.py", "eval-reanalyze"],
                     ["tools/eval_viewer.py", "results/eval/eval_results.jsonl"],
                 ],
             ),

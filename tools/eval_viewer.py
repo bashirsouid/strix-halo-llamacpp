@@ -30,13 +30,31 @@ def load_records(path: Path) -> list[dict]:
     return records
 
 
+def _run_variant_key(r: dict) -> str:
+    label = (r.get("run_label") or "").strip()
+    if label:
+        return f"label={label}"
+    fingerprint = (r.get("config_fingerprint") or "").strip()
+    if fingerprint:
+        return f"cfg={fingerprint[:8]}"
+    return ""
+
+
 def _model_key(r: dict) -> str:
-    """Short label: model [quant] (backend, suite)"""
+    """Short label: model [quant] (backend, suite, profile, variant)"""
     quant = r.get("quant") or ""
     suite = r.get("suite", "")
     model = r["model"]
     backend = r["backend"]
-    base = f"{model} ({backend}, {suite})"
+    profile = r.get("eval_profile") or r.get("eval_profile_requested") or "full"
+    parts = [backend, suite, profile]
+    variant = _run_variant_key(r)
+    if variant:
+        parts.append(variant)
+    task_count = r.get("task_count")
+    if task_count:
+        parts.append(f"{task_count}t")
+    base = f"{model} ({', '.join(parts)})"
     return f"{base} [{quant}]" if quant else base
 
 
@@ -146,6 +164,11 @@ def generate_html(records: list[dict]) -> str:
         suite = r.get("suite", "—")
         quant = r.get("quant") or "—"
         backend = r.get("backend", "—")
+        profile = r.get("eval_profile") or r.get("eval_profile_requested") or "—"
+        task_count = r.get("task_count")
+        task_str = str(task_count) if task_count else "—"
+        run_label = r.get("run_label") or "—"
+        cfg = ((r.get("config_fingerprint") or "")[:8]) or "—"
         model = r["model"]
         ts = r["timestamp"]
         table_rows_html += f"""
@@ -154,6 +177,10 @@ def generate_html(records: list[dict]) -> str:
           <td class="mono">{quant}</td>
           <td class="mono">{backend}</td>
           <td class="mono">{suite}</td>
+          <td class="mono">{profile}</td>
+          <td class="mono">{task_str}</td>
+          <td>{run_label}</td>
+          <td class="mono">{cfg}</td>
           <td class="score {'good' if base and base >= 0.7 else 'mid' if base and base >= 0.5 else 'low' if base else ''}">{base_str}</td>
           <td class="score {'good' if plus and plus >= 0.7 else 'mid' if plus and plus >= 0.5 else 'low' if plus else ''}">{plus_str}</td>
           <td class="mono">{wall_str}</td>
@@ -421,6 +448,7 @@ new Chart(document.getElementById('historyChart'), {{
       <thead>
         <tr>
           <th>Model</th><th>Quant</th><th>Backend</th><th>Suite</th>
+          <th>Profile</th><th>Tasks</th><th>Label</th><th>Cfg</th>
           <th>Base pass@1</th><th>Plus pass@1</th>
           <th>Wall time</th><th>OK</th><th>Timestamp</th>
         </tr>

@@ -36,6 +36,7 @@ import argparse
 import copy
 import concurrent.futures
 import json
+import hashlib
 import os
 import shutil
 import subprocess
@@ -49,6 +50,7 @@ from pathlib import Path
 from typing import Any
 
 from models import MODELS, get_model, ModelConfig
+from eval_profiles import EvalProfile, ensure_override_dataset, resolve_eval_profile
 from repo_cache import (
     DEFAULT_PROXY_HOST,
     DEFAULT_PROXY_PORT,
@@ -121,10 +123,28 @@ EVAL_RAW_DIR = EVAL_RESULTS_DIR / "raw"
 
 LOCAL_API_HOST = "127.0.0.1"
 
+
+def _eval_metadata_dir() -> Path:
+    return EVAL_RESULTS_FILE.parent / "metadata"
+
+
+def _eval_profile_dataset_dir() -> Path:
+    return EVAL_RESULTS_FILE.parent / "profiles"
+
+
+
+def _eval_runs_dir() -> Path:
+    return EVAL_RESULTS_FILE.parent / "runs"
+
+
+
 def _ensure_results_dirs():
     BENCH_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    EVAL_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    EVAL_RESULTS_FILE.parent.mkdir(parents=True, exist_ok=True)
     EVAL_RAW_DIR.mkdir(parents=True, exist_ok=True)
+    _eval_metadata_dir().mkdir(parents=True, exist_ok=True)
+    _eval_profile_dataset_dir().mkdir(parents=True, exist_ok=True)
+    _eval_runs_dir().mkdir(parents=True, exist_ok=True)
 
 def _local_url(port: int, path: str) -> str:
     """Build a localhost URL for client-side health/API calls."""
@@ -146,6 +166,13 @@ def _current_model_alias() -> str | None:
     state = _load_state() or {}
     model = state.get("model")
     return model if isinstance(model, str) and model else None
+
+
+def _current_backend() -> str | None:
+    """Return the backend of the currently running server, if any."""
+    state = _load_state() or {}
+    backend = state.get("backend")
+    return backend if isinstance(backend, str) and backend else None
 
 
 def _api_key_for_model(model_alias: str | None = None) -> str | None:
@@ -1299,11 +1326,339 @@ def bench_single(model_alias: str, port: int = 8000, backend: str = "radv") -> d
 
     return result
 
-def eval_single(model_alias: str | None,
-                suite: str = "humaneval",
-                port: int = 8000,
-                backend: str = "radv") -> dict:
+def _slugify(value: str, *, max_len: int = 96) -> str:
+    cleaned = re.sub(r"[^a-zA-Z0-9._-]+", "-", value.strip()).strip("-._")
+    if not cleaned:
+        return "run"
+    return cleaned[:max_len]
+
+
+def _project_relpath(path: Path | None) -> str | None:
+    if path is None:
+        return None
+    try:
+        return str(path.relative_to(PROJECT_DIR))
+    except ValueError:
+        return str(path)
+
+
+def _resolve_project_path(path_value: str | None) -> Path | None:
+    if not path_value:
+        return None
+    path = Path(path_value)
+    if path.is_absolute():
+        return path
+    return PROJECT_DIR / path
+
+
+def _load_jsonl_records(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    records: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            records.append(payload)
+    return records
+
+
+def _write_jsonl_records(path: Path, records: list[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        for record in records:
+            handle.write(json.dumps(record, sort_keys=True) + "\n")
+
+
+
+def _upsert_eval_record(record: dict[str, Any]) -> None:
+    records = _load_jsonl_records(EVAL_RESULTS_FILE)
+    run_id = record.get("run_id")
+    if run_id:
+        for index, existing in enumerate(records):
+            if existing.get("run_id") == run_id:
+                records[index] = record
+                break
+        else:
+            records.append(record)
+    else:
+        records.append(record)
+    records.sort(key=lambda item: ((item.get("timestamp") or ""), (item.get("run_id") or "")))
+    _write_jsonl_records(EVAL_RESULTS_FILE, records)
+
+
+def _model_eval_config_snapshot(
+    model_alias: str,
+    backend: str,
+    suite: str,
+    profile: EvalProfile,
+) -> dict[str, Any]:
+    snapshot: dict[str, Any] = {
+        "model": model_alias,
+        "backend": backend,
+        "suite": suite,
+        "profile": profile.name,
+    }
+    try:
+        cfg = get_model(model_alias)
+    except ValueError:
+        return snapshot
+
+    snapshot.update(
+        {
+            "quant": cfg.quant,
+            "parallel_slots": cfg.parallel_slots,
+            "ctx_per_slot": cfg.ctx_per_slot,
+            "batch_size": cfg.batch_size,
+            "ubatch_size": cfg.ubatch_size,
+            "threads": cfg.threads,
+            "temperature": cfg.temperature,
+            "top_p": cfg.top_p,
+            "top_k": cfg.top_k,
+            "min_p": cfg.min_p,
+            "repeat_penalty": cfg.repeat_penalty,
+            "reasoning_format": cfg.reasoning_format,
+            "reasoning_budget": cfg.reasoning_budget,
+            "reasoning": cfg.reasoning,
+            "cache_prompt": cfg.cache_prompt,
+            "cache_reuse": cfg.cache_reuse,
+            "cache_ram": cfg.cache_ram,
+            "cache_type_k": cfg.cache_type_k,
+            "cache_type_v": cfg.cache_type_v,
+            "chat_template_file": cfg.chat_template_file,
+            "chat_template_kwargs": cfg.chat_template_kwargs,
+            "extra_args": cfg.extra_args,
+            "kv_unified": cfg.kv_unified,
+            "clear_idle": cfg.clear_idle,
+            "cpu_moe": cfg.cpu_moe,
+            "n_cpu_moe": cfg.n_cpu_moe,
+            "spec_strategy": cfg.spec.strategy if cfg.spec else None,
+            "spec_args": cfg.spec.server_args() if cfg.spec else [],
+        }
+    )
+    return snapshot
+
+
+def _model_eval_config_fingerprint(
+    model_alias: str,
+    backend: str,
+    suite: str,
+    profile: EvalProfile,
+) -> str:
+    snapshot = _model_eval_config_snapshot(model_alias, backend, suite, profile)
+    payload = json.dumps(snapshot, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:10]
+
+
+def _parse_evalplus_scores(stdout_text: str) -> dict[str, Any]:
+    matches = re.findall(r"pass@1:\s+([\d.]+)", stdout_text)
+    base_score = None
+    plus_score = None
+    if len(matches) >= 1:
+        base_score = float(matches[0])
+    if len(matches) >= 2:
+        plus_score = float(matches[1])
+    return {
+        "pass_at_1_base": base_score,
+        "pass_at_1_plus": plus_score,
+        "task_count": None,
+    }
+
+
+def _locate_evalplus_artifacts(run_root: Path, suite: str) -> dict[str, Path | None]:
+    dataset_dir = run_root / suite
+    if not dataset_dir.exists():
+        return {
+            "dataset_dir": None,
+            "samples": None,
+            "raw_samples": None,
+            "result": None,
+        }
+
+    samples = sorted(
+        path
+        for path in dataset_dir.glob("*.jsonl")
+        if not path.name.endswith(".raw.jsonl")
+    )
+    raw_samples = sorted(dataset_dir.glob("*.raw.jsonl"))
+    results = sorted(dataset_dir.glob("*eval_results.json"))
+    return {
+        "dataset_dir": dataset_dir,
+        "samples": samples[-1] if samples else None,
+        "raw_samples": raw_samples[-1] if raw_samples else None,
+        "result": results[-1] if results else None,
+    }
+
+
+def _evalplus_result_summary(result_path: Path | None) -> dict[str, Any]:
+    if result_path is None or not result_path.exists():
+        return {
+            "pass_at_1_base": None,
+            "pass_at_1_plus": None,
+            "task_count": None,
+        }
+    try:
+        payload = json.loads(result_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {
+            "pass_at_1_base": None,
+            "pass_at_1_plus": None,
+            "task_count": None,
+        }
+
+    pass_block = payload.get("pass_at_k") if isinstance(payload, dict) else {}
+    base_block = pass_block.get("base") if isinstance(pass_block, dict) else {}
+    plus_block = pass_block.get("plus") if isinstance(pass_block, dict) else {}
+    eval_block = payload.get("eval") if isinstance(payload, dict) else {}
+    return {
+        "pass_at_1_base": base_block.get("pass@1") if isinstance(base_block, dict) else None,
+        "pass_at_1_plus": plus_block.get("pass@1") if isinstance(plus_block, dict) else None,
+        "task_count": len(eval_block) if isinstance(eval_block, dict) else None,
+    }
+
+
+def _build_eval_record(metadata: dict[str, Any]) -> dict[str, Any]:
+    result_path = _resolve_project_path(metadata.get("evalplus_result"))
+    summary = _evalplus_result_summary(result_path)
+
+    pass_at_1_base = summary.get("pass_at_1_base")
+    if pass_at_1_base is None:
+        pass_at_1_base = metadata.get("pass_at_1_base")
+
+    pass_at_1_plus = summary.get("pass_at_1_plus")
+    if pass_at_1_plus is None:
+        pass_at_1_plus = metadata.get("pass_at_1_plus")
+
+    task_count = summary.get("task_count")
+    if task_count is None:
+        task_count = metadata.get("task_count")
+
+    return {
+        "timestamp": metadata.get("timestamp"),
+        "backend": metadata.get("backend"),
+        "model": metadata.get("model"),
+        "quant": metadata.get("quant") or "",
+        "suite": metadata.get("suite"),
+        "eval_tool": metadata.get("eval_tool", "evalplus"),
+        "eval_profile": metadata.get("eval_profile"),
+        "eval_profile_requested": metadata.get("eval_profile_requested"),
+        "task_count": task_count,
+        "run_label": metadata.get("run_label") or "",
+        "config_fingerprint": metadata.get("config_fingerprint") or "",
+        "run_id": metadata.get("run_id"),
+        "ok": bool(metadata.get("ok")),
+        "wall_time_sec": metadata.get("wall_time_sec"),
+        "raw_log": metadata.get("raw_log"),
+        "evalplus_root": metadata.get("evalplus_root"),
+        "evalplus_result": metadata.get("evalplus_result"),
+        "override_dataset": metadata.get("override_dataset"),
+        "pass_at_1_base": pass_at_1_base,
+        "pass_at_1_plus": pass_at_1_plus,
+    }
+
+
+def _metadata_matches(
+    metadata: dict[str, Any],
+    *,
+    model_alias: str | None = None,
+    suite: str | None = None,
+    backend: str | None = None,
+    profile_name: str | None = None,
+    run_label: str | None = None,
+) -> bool:
+    if model_alias and metadata.get("model") != model_alias:
+        return False
+    if suite and metadata.get("suite") != suite:
+        return False
+    if backend and metadata.get("backend") != backend:
+        return False
+    if profile_name:
+        profiles = {
+            metadata.get("eval_profile"),
+            metadata.get("eval_profile_requested"),
+        }
+        profiles.discard(None)
+        if profile_name not in profiles:
+            return False
+    if run_label and (metadata.get("run_label") or "") != run_label:
+        return False
+    return True
+
+
+def reanalyze_eval_results(
+    model_alias: str | None = None,
+    suite: str | None = None,
+    backend: str | None = None,
+    profile_name: str | None = None,
+    run_label: str | None = None,
+) -> list[dict[str, Any]]:
+    _ensure_results_dirs()
+
+    metadata_files = sorted(_eval_metadata_dir().glob("*.json"))
+    if not metadata_files:
+        warn(f"No EvalPlus metadata found under {_eval_metadata_dir()}")
+        return []
+
+    existing = _load_jsonl_records(EVAL_RESULTS_FILE)
+    legacy_records = [record for record in existing if not record.get("run_id")]
+    records_by_run = {
+        record["run_id"]: record
+        for record in existing
+        if isinstance(record, dict) and record.get("run_id")
+    }
+
+    matched_records: list[dict[str, Any]] = []
+    for metadata_path in metadata_files:
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            warn(f"Skipping unreadable eval metadata: {metadata_path}")
+            continue
+        if not isinstance(metadata, dict):
+            continue
+        if not _metadata_matches(
+            metadata,
+            model_alias=model_alias,
+            suite=suite,
+            backend=backend,
+            profile_name=profile_name,
+            run_label=run_label,
+        ):
+            continue
+        record = _build_eval_record(metadata)
+        run_id = record.get("run_id")
+        if run_id:
+            records_by_run[run_id] = record
+        matched_records.append(record)
+
+    merged_records = legacy_records + sorted(
+        records_by_run.values(),
+        key=lambda item: ((item.get("timestamp") or ""), (item.get("run_id") or "")),
+    )
+    _write_jsonl_records(EVAL_RESULTS_FILE, merged_records)
+
+    if matched_records:
+        ok(f"Re-analyzed {len(matched_records)} EvalPlus runs into {EVAL_RESULTS_FILE}")
+    else:
+        warn("No EvalPlus metadata matched the requested filters.")
+    return matched_records
+
+
+def eval_single(
+    model_alias: str | None,
+    suite: str = "humaneval",
+    port: int = 8000,
+    backend: str = "radv",
+    profile_name: str = "full",
+    run_label: str | None = None,
+) -> dict:
     """Start a model, run EvalPlus on it, stop it, return summary dict."""
+    profile = resolve_eval_profile(profile_name, suite)
     if model_alias is None:
         cfg = resolve_model(None, prompt_text="Pick a model to evaluate")
     else:
@@ -1311,62 +1666,95 @@ def eval_single(model_alias: str | None,
 
     if not cfg.is_downloaded:
         fail(f"Skipping {cfg.name} — not downloaded.")
-        return {"ok": False}
+        return {
+            "ok": False,
+            "eval_profile": profile.name,
+            "task_count": profile.task_count,
+        }
 
-    info(f"═══ Evaluating: {cfg.name} ({cfg.alias})  np={cfg.parallel_slots}  "
-         f"{backend}  suite={suite} ═══")
+    task_suffix = f"  tasks={profile.task_count}" if profile.task_count else ""
+    label_suffix = f"  label={run_label}" if run_label else ""
+    info(
+        f"═══ Evaluating: {cfg.name} ({cfg.alias})  np={cfg.parallel_slots}  "
+        f"{backend}  suite={suite}  profile={profile.name}{task_suffix}{label_suffix} ═══"
+    )
 
-    # Launch server with the model's preferred np (like bench_single)
     launch_server(cfg, port=port, backend=backend)
 
     try:
-        result = run_evalplus(port=port, suite=suite,
-                              model_alias=cfg.alias, backend=backend)
+        result = run_evalplus(
+            port=port,
+            suite=suite,
+            model_alias=cfg.alias,
+            backend=backend,
+            profile_name=profile_name,
+            run_label=run_label,
+        )
     finally:
         stop_server()
         time.sleep(2)
 
     return result
 
-def eval_all(suite: str = "humaneval",
-             port: int = 8000,
-             backend: str = "radv"):
+
+def eval_all(
+    suite: str = "humaneval",
+    port: int = 8000,
+    backend: str = "radv",
+    profile_name: str = "full",
+    run_label: str | None = None,
+):
     """Run EvalPlus for every downloaded model and print a summary."""
+    profile = resolve_eval_profile(profile_name, suite)
     downloaded = [m for m in MODELS if m.is_downloaded and not getattr(m, "hidden", False)]
     if not downloaded:
         fail("No models downloaded.  Run 'python server.py download MODEL' first.")
         sys.exit(1)
 
-    info(f"Found {len(downloaded)} downloaded models.  "
-         f"Running EvalPlus ({suite}, {backend}) ...")
+    task_suffix = f", {profile.task_count} tasks" if profile.task_count else ""
+    info(
+        f"Found {len(downloaded)} downloaded models.  "
+        f"Running EvalPlus ({suite}, {backend}, profile={profile.name}{task_suffix}) ..."
+    )
     print()
 
-    summary: list[tuple[str, str, dict]] = []
+    summary: list[tuple[str, str, dict[str, Any]]] = []
     for cfg in downloaded:
-        res = eval_single(cfg.alias, suite=suite, port=port, backend=backend)
+        res = eval_single(
+            cfg.alias,
+            suite=suite,
+            port=port,
+            backend=backend,
+            profile_name=profile_name,
+            run_label=run_label,
+        )
         summary.append((cfg.alias, cfg.name, res))
         print()
 
     timestamp = time.strftime("%Y-%m-%d %H:%M")
     print()
-    print(f"  ══════════════════════════════════════════════════════════════════════════")
+    print("  ═══════════════════════════════════════════════════════════════════════════════════════")
     print(f"  Eval Report — {timestamp}")
-    print(f"  Backend: {backend.upper()}   Suite: {suite}")
-    print(f"  ──────────────────────────────────────────────────────────────────────────")
-    print(f"  {'Model':<32s}  {'OK':>2s}  {'Wall (s)':>9s}")
-    print(f"  {'─'*32}  {'─'*2}  {'─'*9}")
+    print(f"  Backend: {backend.upper()}   Suite: {suite}   Profile: {profile.name}")
+    print("  ───────────────────────────────────────────────────────────────────────────────────────")
+    print(f"  {'Model':<30s} {'Profile':<10s} {'Tasks':>5s}  {'OK':>2s}  {'Wall (s)':>9s}")
+    print(f"  {'─'*30} {'─'*10} {'─'*5}  {'─'*2}  {'─'*9}")
 
     for alias, name, res in summary:
         ok_flag = "✓" if res.get("ok") else "✗"
         wall = res.get("wall_time_sec", 0.0)
-        print(f"  {name:<32s}  {ok_flag:>2s}  {wall:>9.1f}")
+        task_count = res.get("task_count")
+        tasks_str = str(task_count) if task_count else "—"
+        profile_str = str(res.get("eval_profile") or profile.name)
+        print(f"  {name:<30s} {profile_str:<10s} {tasks_str:>5s}  {ok_flag:>2s}  {wall:>9.1f}")
 
-    print(f"  ══════════════════════════════════════════════════════════════════════════")
+    print("  ═══════════════════════════════════════════════════════════════════════════════════════")
     print()
 
     if EVAL_RESULTS_FILE.exists():
         ok(f"All eval results logged to {EVAL_RESULTS_FILE}")
     info("Raw EvalPlus output logs are under ./results/eval/raw/")
+
 
 def bench_all(port: int = 8000, backend: str = "radv"):
     """Benchmark every downloaded model at all payload tiers."""
@@ -1418,32 +1806,60 @@ def bench_all(port: int = 8000, backend: str = "radv"):
     info("Run with --backend rocm to compare.")
 
 
-def run_evalplus(port: int, suite: str, model_alias: str,
-                 backend: str = "radv") -> dict:
-    """Run EvalPlus (HumanEval/MBPP) against the running server and log output.
 
-    Returns a dict with status + wall time. We don't try to parse pass@k yet;
-    instead we store raw stdout in a file and reference it from JSONL.
-    """
+def run_evalplus(
+    port: int,
+    suite: str,
+    model_alias: str,
+    backend: str = "radv",
+    profile_name: str = "full",
+    run_label: str | None = None,
+) -> dict:
+    """Run EvalPlus against the running server and log/store a distinct run."""
     _ensure_results_dirs()
 
-    timestamp = time.strftime("%Y-%m-%d_%H-%M-%S")
-    raw_fname = f"{timestamp}--{model_alias}--{suite}.log"
-    raw_path = EVAL_RAW_DIR / raw_fname
+    profile = resolve_eval_profile(profile_name, suite)
+    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    timestamp_slug = time.strftime("%Y-%m-%d_%H-%M-%S")
+    config_fingerprint = _model_eval_config_fingerprint(model_alias, backend, suite, profile)
+    run_id = (
+        f"{timestamp_slug}--{_slugify(model_alias)}--{suite}--"
+        f"{_slugify(profile.name)}--{config_fingerprint[:8]}"
+    )
+    run_root = _eval_runs_dir() / run_id
+    raw_path = EVAL_RAW_DIR / f"{run_id}.log"
 
-    # EvalPlus CLI; assumes evalplus.evaluate is on PATH.
-    # Uses llama.cpp's OpenAI-compatible API on localhost.
+    override_path = ensure_override_dataset(profile, _eval_profile_dataset_dir())
+
     cmd = [
         "evalplus.evaluate",
         "--model", f"strix-{model_alias}",
-        "--dataset", suite,              # "humaneval" or "mbpp"
+        "--dataset", suite,
         "--backend", "openai",
         "--base-url", _local_url(port, "/v1"),
+        "--root", str(run_root),
         "--greedy",
     ]
+    if profile.use_mini:
+        cmd.append("--mini")
 
-    info(f"Running EvalPlus for {model_alias} on {suite} "
-         f"(backend={backend}, port={port})")
+    env = os.environ.copy()
+    env.pop("HUMANEVAL_OVERRIDE_PATH", None)
+    env.pop("MBPP_OVERRIDE_PATH", None)
+    api_key = _api_key_for_model(model_alias)
+    if api_key:
+        env["OPENAI_API_KEY"] = api_key
+    if override_path is not None:
+        env["HUMANEVAL_OVERRIDE_PATH"] = str(override_path)
+
+    info(
+        f"Running EvalPlus for {model_alias} on {suite} "
+        f"(backend={backend}, port={port}, profile={profile.name})"
+    )
+    if profile.task_count:
+        info(f"Profile task count: {profile.task_count}")
+    if run_label:
+        info(f"Run label: {run_label}")
     info("Command: " + " ".join(cmd))
 
     t0 = time.perf_counter()
@@ -1452,56 +1868,71 @@ def run_evalplus(port: int, suite: str, model_alias: str,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        env=env,
     )
     elapsed = time.perf_counter() - t0
 
-    raw_path.write_text(proc.stdout)
+    stdout_text = proc.stdout if isinstance(proc.stdout, str) else ""
+    raw_path.write_text(stdout_text, encoding="utf-8")
     ok_str = "OK" if proc.returncode == 0 else f"FAIL ({proc.returncode})"
     info(f"EvalPlus finished in {elapsed:.1f}s — status: {ok_str}")
     info(f"Raw output saved to {raw_path}")
 
-    # Parse pass@1 from log output
-    pass_at_1_base = None
-    pass_at_1_plus = None
-    try:
-        matches = re.findall(r"pass@1:\s+([\d.]+)", proc.stdout)
-        if len(matches) >= 1:
-            pass_at_1_base = float(matches[0])
-        if len(matches) >= 2:
-            pass_at_1_plus = float(matches[1])
-        if pass_at_1_base is not None:
-            score_msg = f"Base pass@1: {pass_at_1_base:.1%}"
-            if pass_at_1_plus is not None:
-                score_msg += f"  Plus pass@1: {pass_at_1_plus:.1%}"
-            ok(score_msg)
-    except Exception as e:
-        warn(f"Could not parse EvalPlus scores: {e}")
+    artifacts = _locate_evalplus_artifacts(run_root, suite)
+    summary = _evalplus_result_summary(artifacts.get("result"))
+    if summary.get("pass_at_1_base") is None:
+        summary = _parse_evalplus_scores(stdout_text)
 
-    # Attach quant if we know this model
+    pass_at_1_base = summary.get("pass_at_1_base")
+    pass_at_1_plus = summary.get("pass_at_1_plus")
+    task_count = summary.get("task_count") or profile.task_count
+
+    if pass_at_1_base is not None:
+        score_msg = f"Base pass@1: {pass_at_1_base:.1%}"
+        if pass_at_1_plus is not None:
+            score_msg += f"  Plus pass@1: {pass_at_1_plus:.1%}"
+        ok(score_msg)
+
     quant = ""
     try:
         quant = get_model(model_alias).quant
     except ValueError:
         pass
 
-    record = {
-        "timestamp": time.strftime("%Y-%m-%d %H:%M"),
+    metadata = {
+        "run_id": run_id,
+        "timestamp": timestamp,
         "backend": backend,
         "model": model_alias,
         "quant": quant,
-        "suite": suite,                  # humaneval / mbpp / etc.
+        "suite": suite,
         "eval_tool": "evalplus",
+        "eval_profile": profile.name,
+        "eval_profile_requested": profile.requested,
+        "eval_profile_description": profile.description,
+        "task_count": task_count,
+        "run_label": run_label or "",
+        "config_fingerprint": config_fingerprint,
         "ok": (proc.returncode == 0),
         "wall_time_sec": round(elapsed, 1),
-        "raw_log": str(raw_path.relative_to(PROJECT_DIR)),
+        "raw_log": _project_relpath(raw_path),
+        "evalplus_root": _project_relpath(run_root),
+        "evalplus_samples": _project_relpath(artifacts.get("samples")),
+        "evalplus_raw_samples": _project_relpath(artifacts.get("raw_samples")),
+        "evalplus_result": _project_relpath(artifacts.get("result")),
+        "override_dataset": _project_relpath(override_path),
         "pass_at_1_base": pass_at_1_base,
         "pass_at_1_plus": pass_at_1_plus,
     }
 
-    with open(EVAL_RESULTS_FILE, "a") as f:
-        f.write(json.dumps(record) + "\n")
+    metadata_path = _eval_metadata_dir() / f"{run_id}.json"
+    metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
-    ok(f"Eval result appended to {EVAL_RESULTS_FILE}")
+    record = _build_eval_record(metadata)
+    _upsert_eval_record(record)
+
+    ok(f"Eval result stored in {EVAL_RESULTS_FILE}")
+    info(f"Run metadata saved to {metadata_path}")
 
     return record
 
@@ -1857,18 +2288,42 @@ def main():
     p_eval.add_argument("--suite", choices=["humaneval", "mbpp"],
                         default="humaneval",
                         help="EvalPlus suite (default: humaneval)")
+    p_eval.add_argument("--profile", choices=["quick", "mini", "full"],
+                        default="quick",
+                        help="Evaluation profile: quick (curated humaneval subset), mini, or full")
+    p_eval.add_argument("--label", default=None,
+                        help="Optional label to distinguish repeated eval runs")
     p_eval.add_argument("--port", type=int, default=8000)
     p_eval.add_argument("--backend", choices=["vulkan", "radv", "amdvlk", "rocm", "rocm6", "rocm7", "rocm7-nightly"],
-                        default="radv")
+                        default=None)
 
     # eval-all
     p_eval_all = sub.add_parser("eval-all",
         help="Run EvalPlus for all downloaded models")
     p_eval_all.add_argument("--suite", choices=["humaneval", "mbpp"],
                             default="humaneval")
+    p_eval_all.add_argument("--profile", choices=["quick", "mini", "full"],
+                            default="quick")
+    p_eval_all.add_argument("--label", default=None,
+                            help="Optional label to attach to every run in the sweep")
     p_eval_all.add_argument("--port", type=int, default=8000)
     p_eval_all.add_argument("--backend", choices=["vulkan", "radv", "amdvlk", "rocm", "rocm6", "rocm7", "rocm7-nightly"],
-                            default="radv")
+                            default=None)
+
+    # eval-reanalyze
+    p_eval_re = sub.add_parser("eval-reanalyze",
+        help="Rebuild eval summaries from stored EvalPlus artifacts")
+    p_eval_re.add_argument("--model", default=None,
+                           help="Only re-analyze runs for this model alias")
+    p_eval_re.add_argument("--suite", choices=["humaneval", "mbpp"],
+                           default=None)
+    p_eval_re.add_argument("--backend", choices=["vulkan", "radv", "amdvlk", "rocm", "rocm6", "rocm7", "rocm7-nightly"],
+                           default=None)
+    p_eval_re.add_argument("--profile", choices=["quick", "quick-v1", "mini", "full"],
+                           default=None,
+                           help="Only re-analyze runs for this eval profile")
+    p_eval_re.add_argument("--label", default=None,
+                           help="Only re-analyze runs with this label")
 
     load_env_file()
     
@@ -2036,12 +2491,24 @@ def main():
         download_container_images()
 
     elif args.command == "eval":
+        # Use explicit backend if provided, otherwise try running backend, otherwise default to radv
+        backend = args.backend or _current_backend() or "radv"
         eval_single(args.model, suite=args.suite,
-                    port=args.port, backend=args.backend)
+                    port=args.port, backend=backend,
+                    profile_name=args.profile, run_label=args.label)
     elif args.command == "eval-all":
+        # Use explicit backend if provided, otherwise try running backend, otherwise default to radv
+        backend = args.backend or _current_backend() or "radv"
         eval_all(suite=args.suite,
-                 port=args.port, backend=args.backend)
-    
+                 port=args.port, backend=backend,
+                 profile_name=args.profile, run_label=args.label)
+    elif args.command == "eval-reanalyze":
+        reanalyze_eval_results(model_alias=args.model,
+                               suite=args.suite,
+                               backend=args.backend,
+                               profile_name=args.profile,
+                               run_label=args.label)
+
     elif args.command == "test":
         run_test_suite(args)
 
