@@ -57,6 +57,7 @@ from eval_profiles import EvalProfile, ensure_override_dataset, resolve_eval_pro
 from aider_benchmark import (
     AIDER_PROFILE_NAMES,
     BUILTIN_PROFILES as AIDER_PROFILES,
+    DEFAULT_AIDER_MAX_TOKENS,
     DEFAULT_AIDER_REF,
     DEFAULT_POLYGLOT_REF,
     ensure_aider_setup,
@@ -1979,7 +1980,7 @@ def aider_bench_single(
     profile_name: str = "python-quick",
     manifest_path: str | None = None,
     run_label: str | None = None,
-    max_tokens: int = 8192,
+    max_tokens: int = DEFAULT_AIDER_MAX_TOKENS,
     threads: int = 1,
     tries: int | None = None,
     edit_format: str = "whole",
@@ -2061,6 +2062,9 @@ def aider_bench_single(
         warn(f"Syntax errors seen in generated code: {int(result['syntax_errors'])}")
     if result.get("test_timeouts"):
         warn(f"Timed out test runs: {int(result['test_timeouts'])}")
+    failed_exercises = result.get("failed_exercises") or []
+    if failed_exercises:
+        info("Failed exercises: " + ", ".join(failed_exercises[:8]))
     important_lines = result.get("important_log_lines") or []
     if important_lines:
         warn("Important benchmark warnings:")
@@ -2083,7 +2087,7 @@ def aider_bench_all(
     profile_name: str = "python-quick",
     manifest_path: str | None = None,
     run_label: str | None = None,
-    max_tokens: int = 8192,
+    max_tokens: int = DEFAULT_AIDER_MAX_TOKENS,
     threads: int = 1,
     tries: int | None = None,
     edit_format: str = "whole",
@@ -2513,8 +2517,8 @@ def main():
                          help="Custom manifest file of exercises to benchmark instead of a built-in profile")
     p_aider.add_argument("--label", default=None,
                          help="Optional label to distinguish repeated aider runs")
-    p_aider.add_argument("--max-tokens", type=int, default=8192,
-                         help="Generation cap forwarded to the model via Aider/LiteLLM (default: 8192)")
+    p_aider.add_argument("--max-tokens", type=int, default=DEFAULT_AIDER_MAX_TOKENS,
+                         help=f"Generation cap forwarded to the model via Aider/LiteLLM (default: {DEFAULT_AIDER_MAX_TOKENS})")
     p_aider.add_argument("--threads", type=int, default=1,
                          help="Aider benchmark worker threads (default: 1)")
     p_aider.add_argument("--tries", type=int, default=None,
@@ -2540,7 +2544,7 @@ def main():
                              help="Custom manifest file of exercises to benchmark instead of a built-in profile")
     p_aider_all.add_argument("--label", default=None,
                              help="Optional label to attach to every aider benchmark run")
-    p_aider_all.add_argument("--max-tokens", type=int, default=8192)
+    p_aider_all.add_argument("--max-tokens", type=int, default=DEFAULT_AIDER_MAX_TOKENS)
     p_aider_all.add_argument("--threads", type=int, default=1)
     p_aider_all.add_argument("--tries", type=int, default=None)
     p_aider_all.add_argument("--edit-format", default="whole")

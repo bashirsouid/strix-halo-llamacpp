@@ -33,6 +33,8 @@ POLYGLOT_REPO_URL = os.environ.get(
 )
 DEFAULT_AIDER_REF = os.environ.get("STRIX_AIDER_REF", "main")
 DEFAULT_POLYGLOT_REF = os.environ.get("STRIX_POLYGLOT_REF", "main")
+DEFAULT_AIDER_MAX_TOKENS = int(os.environ.get("STRIX_AIDER_MAX_TOKENS", "24576"))
+DEFAULT_AIDER_RANDOM_SEED = os.environ.get("STRIX_AIDER_RANDOM_SEED", "0")
 
 
 @dataclass(frozen=True)
@@ -50,9 +52,9 @@ BUILTIN_PROFILES: dict[str, AiderProfile] = {
         name="python-quick",
         manifest_path=MANIFEST_DIR / "aider-python-quick.txt",
         description=(
-            "Fixed 18-exercise Python subset intended to finish in roughly 30 minutes "
-            "on local reasoning models, while still covering parsing, data structures, "
-            "stateful logic, and multi-step edits."
+            "Fixed harder 9-exercise Python subset intended to finish in roughly 30 "
+            "minutes on local reasoning models, while still separating models on parsing, "
+            "stateful logic, graph/tree handling, and API-style edits."
         ),
     ),
     "python-all": AiderProfile(
@@ -97,21 +99,15 @@ NOISY_LINE_PREFIXES = (
     "Search/replace",
     "Undoing",
     "Edit format:",
+    "Warning: Input is not a terminal",
 )
-IMPORTANT_LINE_KEYWORDS = (
-    "warning",
-    "error",
-    "exception",
-    "traceback",
-    "timed out",
-    "timeout",
-    "failed to parse",
-    "tests failed",
-    "syntaxerror",
-    "indentationerror",
-    "malformed",
-    "context window",
-    "exhausted context",
+DIAGNOSTIC_LINE_RE = re.compile(
+    r"^(?:Warning:|Tests failed:|Error loading model settings:|Traceback \(most recent call last\):|"
+    r"Input tokens:|Total tokens:|Loaded model settings from:|No exercise directories found)"
+)
+DIAGNOSTIC_SUBSTRINGS = (
+    "possibly exhausted context window",
+    "context window exhausted",
     "token budget",
     "max token",
     "max_tokens",
@@ -119,8 +115,54 @@ IMPORTANT_LINE_KEYWORDS = (
     "too many tokens",
     "truncated",
     "truncate",
+    "timed out",
+    "timeout",
     "rate limit",
+    "failed to parse",
+    "malformed response",
 )
+NOISY_TRACE_RE = re.compile(
+    r"^(?:E\s+|>\s+|/usr/(?:lib|local/lib)/|[A-Za-z0-9_.-]+_test\.py:\d+:|[+]{1}\s|[-]{1}\s)"
+)
+AIDER_SITECUSTOMIZE = """
+from __future__ import annotations
+
+import os
+import random
+from pathlib import Path
+
+try:
+    from aider import models as _aider_models
+except Exception:  # pragma: no cover
+    _aider_models = None
+
+if _aider_models is not None:
+    _orig_register_litellm_models = _aider_models.register_litellm_models
+
+    def _register_with_local_metadata(files):
+        merged = list(files or [])
+        seen = {str(item) for item in merged}
+        for candidate in (
+            Path.cwd() / ".aider.model.metadata.json",
+            Path.home() / ".aider.model.metadata.json",
+            Path("/aider/.aider.model.metadata.json"),
+        ):
+            candidate_str = str(candidate)
+            if candidate.exists() and candidate_str not in seen:
+                merged.append(candidate_str)
+                seen.add(candidate_str)
+        return _orig_register_litellm_models(merged)
+
+    if getattr(_aider_models.register_litellm_models, "__module__", "") != __name__:
+        _aider_models.register_litellm_models = _register_with_local_metadata
+
+_seed = os.environ.get("STRIX_AIDER_RANDOM_SEED")
+if _seed not in (None, ""):
+    try:
+        random.seed(int(_seed))
+    except ValueError:  # pragma: no cover
+        random.seed(_seed)
+"""
 
 
 def _slugify(text: str) -> str:
@@ -194,7 +236,7 @@ def _looks_like_summary_line(line: str) -> bool:
     return bool(SUMMARY_LINE_RE.match(line.strip()))
 
 
-def _should_echo_aider_line(line: str) -> bool:
+def _is_diagnostic_line(line: str) -> bool:
     stripped = line.strip()
     if not stripped:
         return False
@@ -204,12 +246,29 @@ def _should_echo_aider_line(line: str) -> bool:
         return True
     if stripped.startswith("Not a dir:") or stripped.startswith("No exercise directories found"):
         return True
-    lowered = stripped.lower()
-    if any(keyword in lowered for keyword in IMPORTANT_LINE_KEYWORDS):
-        if stripped.startswith(("```", "diff --git", "@@", "+++", "---")):
-            return False
+    if NOISY_TRACE_RE.match(stripped) and not _looks_like_summary_line(stripped):
+        return False
+    if DIAGNOSTIC_LINE_RE.match(stripped):
         return True
-    return False
+    lowered = stripped.lower()
+    return any(fragment in lowered for fragment in DIAGNOSTIC_SUBSTRINGS)
+
+
+def _condense_aider_line(line: str) -> str | None:
+    stripped = line.strip()
+    if not stripped:
+        return None
+    if stripped.startswith("Tests failed:"):
+        _, _, rhs = stripped.partition(":")
+        exercise_path = rhs.strip()
+        if exercise_path:
+            return f"Tests failed: {Path(exercise_path).name}"
+        return "Tests failed"
+    return stripped
+
+
+def _should_echo_aider_line(line: str) -> bool:
+    return _is_diagnostic_line(line)
 
 
 def _collect_log_highlights(log_path: Path, *, limit: int = 20) -> list[str]:
@@ -218,22 +277,41 @@ def _collect_log_highlights(log_path: Path, *, limit: int = 20) -> list[str]:
     highlights: list[str] = []
     seen: set[str] = set()
     for raw_line in log_path.read_text(encoding="utf-8", errors="replace").splitlines():
-        stripped = raw_line.strip()
-        if not stripped:
+        if not _is_diagnostic_line(raw_line):
             continue
-        if _looks_like_summary_line(stripped):
+        condensed = _condense_aider_line(raw_line)
+        if not condensed or condensed in seen or _looks_like_summary_line(condensed):
             continue
-        if any(stripped.startswith(prefix) for prefix in NOISY_LINE_PREFIXES):
-            continue
-        lowered = stripped.lower()
-        if not any(keyword in lowered for keyword in IMPORTANT_LINE_KEYWORDS):
-            continue
-        if stripped not in seen:
-            seen.add(stripped)
-            highlights.append(stripped)
+        seen.add(condensed)
+        highlights.append(condensed)
         if len(highlights) >= limit:
             break
     return highlights
+
+
+def _collect_failed_exercises(log_path: Path, *, limit: int | None = None) -> list[str]:
+    if not log_path.exists():
+        return []
+    failed: list[str] = []
+    seen: set[str] = set()
+    for raw_line in log_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        stripped = raw_line.strip()
+        if not stripped.startswith("Tests failed:"):
+            continue
+        _, _, rhs = stripped.partition(":")
+        exercise = Path(rhs.strip()).name.strip()
+        if not exercise or exercise in seen:
+            continue
+        seen.add(exercise)
+        failed.append(exercise)
+        if limit is not None and len(failed) >= limit:
+            break
+    return failed
+
+
+def _write_sitecustomize(path: Path) -> Path:
+    path.write_text(AIDER_SITECUSTOMIZE, encoding="utf-8")
+    return path
 
 
 def _tail_lines(path: Path, *, count: int = 40) -> list[str]:
@@ -268,7 +346,9 @@ def _run_filtered(
         for raw_line in process.stdout:
             handle.write(raw_line)
             if _should_echo_aider_line(raw_line):
-                print(raw_line.rstrip("\n"), flush=True)
+                condensed = _condense_aider_line(raw_line)
+                if condensed:
+                    print(condensed, flush=True)
         process.stdout.close()
         returncode = process.wait()
 
@@ -573,6 +653,8 @@ def ensure_aider_setup(
     aider_head = _ensure_checkout(AIDER_REPO_URL, AIDER_REPO_DIR, aider_ref, update=update)
     polyglot_head = _ensure_checkout(POLYGLOT_REPO_URL, POLYGLOT_REPO_DIR, polyglot_ref, update=update)
 
+    sitecustomize_path = _write_sitecustomize(AIDER_REPO_DIR / "sitecustomize.py")
+
     if update or not _docker_image_exists(AIDER_IMAGE):
         _run(["docker", "build", "--file", "benchmark/Dockerfile", "-t", AIDER_IMAGE, "."], cwd=AIDER_REPO_DIR)
 
@@ -588,6 +670,7 @@ def ensure_aider_setup(
         "benchmark_root": str(AIDER_BENCHMARK_ROOT),
         "curated_dirs": curated_dirs,
         "docker_image": AIDER_IMAGE,
+        "sitecustomize": str(sitecustomize_path),
     }
 
 
@@ -614,7 +697,7 @@ def run_aider_benchmark(
     profile_name: str = "python-quick",
     manifest_path: str | Path | None = None,
     run_label: str | None = None,
-    max_tokens: int = 16384,
+    max_tokens: int = DEFAULT_AIDER_MAX_TOKENS,
     threads: int = 1,
     tries: int | None = None,
     edit_format: str = "whole",
@@ -699,6 +782,8 @@ def run_aider_benchmark(
         "-e",
         f"OPENAI_API_BASE={base_url}",
         "-e",
+        f"STRIX_AIDER_RANDOM_SEED={DEFAULT_AIDER_RANDOM_SEED}",
+        "-e",
         "AIDER_DOCKER=1",
         "-e",
         "AIDER_BENCHMARK_DIR=/benchmarks",
@@ -718,6 +803,7 @@ def run_aider_benchmark(
 
     summary = summarize_run_dir(run_dir, wall_time_sec=wall_time_sec)
     important_log_lines = _collect_log_highlights(log_path)
+    failed_exercises = _collect_failed_exercises(log_path)
     summary.update(
         {
             "ok": run_proc.returncode == 0,
@@ -751,6 +837,10 @@ def run_aider_benchmark(
             "log_file": str(log_path),
             "important_log_lines": important_log_lines,
             "important_log_line_count": len(important_log_lines),
+            "failed_exercises": failed_exercises,
+            "failed_exercise_count": len(failed_exercises),
+            "random_seed": DEFAULT_AIDER_RANDOM_SEED,
+            "sitecustomize": setup.get("sitecustomize"),
         }
     )
     if run_proc.returncode != 0:

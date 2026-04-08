@@ -125,7 +125,7 @@ python server.py aider-bench MODEL --backend radv --profile python-all
 python server.py aider-bench-all --backend rocm --profile python-quick
 ```
 
-The default `python-quick` profile is a fixed 18-exercise subset. `python-all` is the full 34-exercise Python set from Aider's polyglot benchmark. Every Aider run now uses a fresh benchmark directory and forces a clean rerun so repeated invocations always produce a new score. Terminal output is filtered to progress plus warning lines only, and the full raw log is saved under `results/aider/logs/`.
+The default `python-quick` profile is a fixed harder 9-exercise subset chosen to keep local runs near ~30 minutes while still separating models on parsing, stateful logic, tree/graph handling, and API-style edits. `python-all` is the full 34-exercise Python set from Aider's polyglot benchmark. Every Aider run now uses a fresh benchmark directory, forces a clean rerun, fixes the exercise order with a deterministic seed, injects local model metadata so token-limit warnings stop falling back to `0`, and filters terminal output down to progress plus actionable warnings. The full raw log is saved under `results/aider/logs/`.
 
 Visualize the Aider results:
 

@@ -140,5 +140,27 @@ def test_resolve_profile_accepts_python_quick_and_legacy_alias() -> None:
 
 def test_should_echo_aider_line_keeps_warnings_but_hides_chatter() -> None:
     assert not aider_benchmark._should_echo_aider_line("fnames: beer_song.py")
+    assert not aider_benchmark._should_echo_aider_line("E       AssertionError: 8.0 != 800")
+    assert not aider_benchmark._should_echo_aider_line("grep_test.py:55: AssertionError")
     assert aider_benchmark._should_echo_aider_line("  exhausted_context_windows: 2")
     assert aider_benchmark._should_echo_aider_line("Warning: context window exhausted")
+    assert aider_benchmark._condense_aider_line(
+        "Tests failed: /benchmarks/run/python/exercises/practice/book-store"
+    ) == "Tests failed: book-store"
+
+
+def test_collect_failed_exercises_and_write_sitecustomize(tmp_path: Path) -> None:
+    log_path = tmp_path / "run.log"
+    log_path.write_text(
+        "Tests failed: /benchmarks/run/python/exercises/practice/book-store\n"
+        "Tests failed: /benchmarks/run/python/exercises/practice/grep\n"
+        "Tests failed: /benchmarks/run/python/exercises/practice/book-store\n"
+    )
+
+    assert aider_benchmark._collect_failed_exercises(log_path) == ["book-store", "grep"]
+
+    sitecustomize = tmp_path / "sitecustomize.py"
+    aider_benchmark._write_sitecustomize(sitecustomize)
+    contents = sitecustomize.read_text()
+    assert "register_litellm_models" in contents
+    assert "STRIX_AIDER_RANDOM_SEED" in contents
