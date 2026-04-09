@@ -1,12 +1,30 @@
-# Fixed harder 9-exercise Python subset for faster, reproducible local runs.
-# Chosen to keep runs near ~30 minutes locally while preserving model spread.
+# Fixed harder Python exercise subset for faster, reproducible local runs.
+# Chosen to keep runs near ~80 minutes locally while preserving model spread.
 # Focuses on heavier parsing, stateful logic, tree/graph handling, and API-style tasks.
+
+# 12min
 python/exercises/practice/book-store
+
+# 23min
 python/exercises/practice/bowling
+
+# 1min
 python/exercises/practice/connect
+
+# 25min
 python/exercises/practice/dominoes
+
+# 7min
 python/exercises/practice/grep
+
+# 2min
 python/exercises/practice/poker
+
+# 7min
 python/exercises/practice/rest-api
+
+# 9min
 python/exercises/practice/sgf-parsing
+
+# 20min
 python/exercises/practice/tree-building

@@ -142,11 +142,58 @@ def test_should_echo_aider_line_keeps_warnings_but_hides_chatter() -> None:
     assert not aider_benchmark._should_echo_aider_line("fnames: beer_song.py")
     assert not aider_benchmark._should_echo_aider_line("E       AssertionError: 8.0 != 800")
     assert not aider_benchmark._should_echo_aider_line("grep_test.py:55: AssertionError")
-    assert aider_benchmark._should_echo_aider_line("  exhausted_context_windows: 2")
+    assert not aider_benchmark._should_echo_aider_line("- dirname: run-id")
+    assert not aider_benchmark._should_echo_aider_line("  test_cases: 4")
     assert aider_benchmark._should_echo_aider_line("Warning: context window exhausted")
+    assert aider_benchmark._should_echo_aider_line("Tests failed: /benchmarks/run/python/exercises/practice/book-store")
     assert aider_benchmark._condense_aider_line(
         "Tests failed: /benchmarks/run/python/exercises/practice/book-store"
     ) == "Tests failed: book-store"
+
+
+def test_format_progress_summary_and_heartbeat() -> None:
+    summary = {
+        "run_dir": "/tmp/2026-04-08-run",
+        "completed_tests": 4,
+        "pass_rate_1": 0.0,
+        "pass_rate_2": 75.0,
+        "percent_cases_well_formed": 100.0,
+        "error_outputs": 0,
+        "num_malformed_responses": 0,
+        "num_with_malformed_responses": 0,
+        "syntax_errors": 0,
+        "indentation_errors": 0,
+        "exhausted_context_windows": 0,
+        "test_timeouts": 0,
+        "seconds_per_case_wall": 223.67,
+    }
+
+    formatted = aider_benchmark._format_progress_summary(summary, expected_total_tests=9)
+
+    assert formatted is not None
+    assert formatted.splitlines() == [
+        "- dirname: 2026-04-08-run",
+        "  test_cases: 4",
+        "  pass_rate_1: 0.0",
+        "  pass_rate_2: 75.0",
+        "  percent_cases_well_formed: 100.0",
+        "  error_outputs: 0",
+        "  num_malformed_responses: 0",
+        "  num_with_malformed_responses: 0",
+        "  syntax_errors: 0",
+        "  indentation_errors: 0",
+        "  exhausted_context_windows: 0",
+        "  test_timeouts: 0",
+        "  total_tests: 9",
+        "  seconds_per_case: 223.7",
+    ]
+
+    assert aider_benchmark._format_progress_heartbeat(
+        completed_tests=4,
+        total_tests=9,
+        elapsed_sec=3600.0,
+    ) == "Progress: 4/9 completed after 60.0m"
+
 
 
 def test_collect_failed_exercises_and_write_sitecustomize(tmp_path: Path) -> None:

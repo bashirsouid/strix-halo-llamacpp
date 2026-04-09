@@ -4,10 +4,12 @@ import datetime
 import hashlib
 import json
 import os
+import queue
 import re
 import shlex
 import shutil
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,6 +37,23 @@ DEFAULT_AIDER_REF = os.environ.get("STRIX_AIDER_REF", "main")
 DEFAULT_POLYGLOT_REF = os.environ.get("STRIX_POLYGLOT_REF", "main")
 DEFAULT_AIDER_MAX_TOKENS = int(os.environ.get("STRIX_AIDER_MAX_TOKENS", "24576"))
 DEFAULT_AIDER_RANDOM_SEED = os.environ.get("STRIX_AIDER_RANDOM_SEED", "0")
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw in (None, ""):
+        return float(default)
+    try:
+        return float(raw)
+    except ValueError:
+        return float(default)
+
+
+DEFAULT_AIDER_PROGRESS_POLL_SECONDS = max(0.25, _env_float("STRIX_AIDER_PROGRESS_POLL_SECONDS", 5.0))
+DEFAULT_AIDER_PROGRESS_HEARTBEAT_SECONDS = max(
+    0.0,
+    _env_float("STRIX_AIDER_PROGRESS_HEARTBEAT_SECONDS", 60.0),
+)
 
 
 @dataclass(frozen=True)
@@ -268,7 +287,10 @@ def _condense_aider_line(line: str) -> str | None:
 
 
 def _should_echo_aider_line(line: str) -> bool:
-    return _is_diagnostic_line(line)
+    stripped = line.strip()
+    if not stripped or _looks_like_summary_line(stripped):
+        return False
+    return _is_diagnostic_line(stripped)
 
 
 def _collect_log_highlights(log_path: Path, *, limit: int = 20) -> list[str]:
@@ -328,8 +350,26 @@ def _run_filtered(
     env: dict[str, str] | None = None,
     log_path: Path,
     check: bool = True,
+    progress_run_dir: Path | None = None,
+    expected_total_tests: int | None = None,
+    progress_poll_seconds: float = DEFAULT_AIDER_PROGRESS_POLL_SECONDS,
+    progress_heartbeat_seconds: float = DEFAULT_AIDER_PROGRESS_HEARTBEAT_SECONDS,
 ) -> subprocess.CompletedProcess[str]:
+    def _reader_thread(stdout: Any, lines: "queue.Queue[str | None]") -> None:
+        try:
+            for raw_line in stdout:
+                lines.put(raw_line)
+        finally:
+            try:
+                stdout.close()
+            finally:
+                lines.put(None)
+
     log_path.parent.mkdir(parents=True, exist_ok=True)
+    started_at = time.perf_counter()
+    poll_seconds = max(0.25, float(progress_poll_seconds or DEFAULT_AIDER_PROGRESS_POLL_SECONDS))
+    heartbeat_seconds = max(0.0, float(progress_heartbeat_seconds or 0.0))
+
     with log_path.open("w", encoding="utf-8") as handle:
         process = subprocess.Popen(
             cmd,
@@ -343,14 +383,75 @@ def _run_filtered(
             bufsize=1,
         )
         assert process.stdout is not None
-        for raw_line in process.stdout:
-            handle.write(raw_line)
-            if _should_echo_aider_line(raw_line):
-                condensed = _condense_aider_line(raw_line)
-                if condensed:
-                    print(condensed, flush=True)
-        process.stdout.close()
+
+        line_queue: queue.Queue[str | None] = queue.Queue()
+        reader = threading.Thread(
+            target=_reader_thread,
+            args=(process.stdout, line_queue),
+            name="aider-benchmark-log-reader",
+            daemon=True,
+        )
+        reader.start()
+
+        stdout_done = False
+        last_completed = 0
+        last_heartbeat_at = started_at
+
+        while True:
+            try:
+                raw_line = line_queue.get(timeout=poll_seconds)
+            except queue.Empty:
+                if progress_run_dir is not None:
+                    last_completed, last_heartbeat_at = _maybe_emit_progress_update(
+                        run_dir=progress_run_dir,
+                        expected_total_tests=expected_total_tests,
+                        started_at=started_at,
+                        last_completed=last_completed,
+                        last_heartbeat_at=last_heartbeat_at,
+                        heartbeat_seconds=heartbeat_seconds,
+                    )
+                if stdout_done and process.poll() is not None and line_queue.empty():
+                    break
+                continue
+
+            if raw_line is None:
+                stdout_done = True
+            else:
+                handle.write(raw_line)
+                handle.flush()
+                if _should_echo_aider_line(raw_line):
+                    condensed = _condense_aider_line(raw_line)
+                    if condensed:
+                        print(condensed, flush=True)
+
+            if progress_run_dir is not None:
+                last_completed, last_heartbeat_at = _maybe_emit_progress_update(
+                    run_dir=progress_run_dir,
+                    expected_total_tests=expected_total_tests,
+                    started_at=started_at,
+                    last_completed=last_completed,
+                    last_heartbeat_at=last_heartbeat_at,
+                    heartbeat_seconds=heartbeat_seconds,
+                )
+
+            if stdout_done and process.poll() is not None and line_queue.empty():
+                break
+
+        reader.join(timeout=1.0)
         returncode = process.wait()
+
+    if progress_run_dir is not None:
+        _completed, _heartbeat = _maybe_emit_progress_update(
+            run_dir=progress_run_dir,
+            expected_total_tests=expected_total_tests,
+            started_at=started_at,
+            last_completed=last_completed,
+            last_heartbeat_at=last_heartbeat_at,
+            heartbeat_seconds=0.0,
+            force_summary=True,
+        )
+        last_completed = _completed
+        last_heartbeat_at = _heartbeat
 
     result = subprocess.CompletedProcess(cmd, returncode)
     if check and returncode != 0:
@@ -634,6 +735,108 @@ def summarize_run_dir(run_dir: str | Path, *, wall_time_sec: float | None = None
     return summary
 
 
+def _format_progress_summary(
+    summary: dict[str, Any],
+    *,
+    expected_total_tests: int | None = None,
+) -> str | None:
+    completed_tests = int(summary.get("completed_tests", 0) or 0)
+    if completed_tests <= 0:
+        return None
+
+    run_dir = summary.get("run_dir")
+    dirname = Path(str(run_dir)).name if run_dir else "run"
+    total_tests = int(summary.get("total_tests", 0) or 0) or int(expected_total_tests or 0)
+
+    lines = [
+        f"- dirname: {dirname}",
+        f"  test_cases: {completed_tests}",
+    ]
+
+    pass_rate_keys = sorted(
+        (key for key in summary if key.startswith("pass_rate_")),
+        key=lambda value: int(value.rsplit("_", 1)[-1]),
+    )
+    for key in pass_rate_keys:
+        value = summary.get(key)
+        if value is None:
+            continue
+        lines.append(f"  {key}: {float(value):.1f}")
+
+    ordered_metrics = [
+        "percent_cases_well_formed",
+        "error_outputs",
+        "num_malformed_responses",
+        "num_with_malformed_responses",
+        "syntax_errors",
+        "indentation_errors",
+        "exhausted_context_windows",
+        "test_timeouts",
+    ]
+    for key in ordered_metrics:
+        value = summary.get(key)
+        if value is None:
+            value = 0
+        lines.append(f"  {key}: {value}")
+
+    lines.append(f"  total_tests: {total_tests}")
+
+    seconds_per_case = summary.get("seconds_per_case_wall")
+    if seconds_per_case is None:
+        seconds_per_case = summary.get("seconds_per_case_model")
+    if seconds_per_case is not None:
+        lines.append(f"  seconds_per_case: {float(seconds_per_case):.1f}")
+
+    return "\n".join(lines)
+
+
+def _format_progress_heartbeat(
+    *,
+    completed_tests: int,
+    total_tests: int | None,
+    elapsed_sec: float,
+) -> str:
+    total_text = str(int(total_tests)) if total_tests else "?"
+    elapsed_min = elapsed_sec / 60.0
+    return f"Progress: {completed_tests}/{total_text} completed after {elapsed_min:.1f}m"
+
+
+def _maybe_emit_progress_update(
+    *,
+    run_dir: Path,
+    expected_total_tests: int | None,
+    started_at: float,
+    last_completed: int,
+    last_heartbeat_at: float,
+    heartbeat_seconds: float,
+    force_summary: bool = False,
+) -> tuple[int, float]:
+    now = time.perf_counter()
+    wall_time_sec = now - started_at
+    summary = summarize_run_dir(run_dir, wall_time_sec=wall_time_sec)
+    completed_tests = int(summary.get("completed_tests", 0) or 0)
+    total_tests = int(summary.get("total_tests", 0) or 0) or int(expected_total_tests or 0)
+
+    if completed_tests > last_completed or (force_summary and completed_tests > 0 and completed_tests != last_completed):
+        formatted = _format_progress_summary(summary, expected_total_tests=total_tests)
+        if formatted:
+            print(formatted, flush=True)
+        return completed_tests, now
+
+    if heartbeat_seconds > 0 and (now - last_heartbeat_at) >= heartbeat_seconds:
+        print(
+            _format_progress_heartbeat(
+                completed_tests=completed_tests,
+                total_tests=total_tests,
+                elapsed_sec=wall_time_sec,
+            ),
+            flush=True,
+        )
+        return last_completed, now
+
+    return last_completed, last_heartbeat_at
+
+
 def _append_jsonl(path: Path, record: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
@@ -713,6 +916,7 @@ def run_aider_benchmark(
     setup = ensure_aider_setup(update=update_harness, aider_ref=aider_ref, polyglot_ref=polyglot_ref)
     profile = resolve_profile(profile_name, manifest_path)
     curated_dir = _materialize_manifest(POLYGLOT_REPO_DIR, profile)
+    manifest_entries = read_manifest_entries(profile.manifest_path)
 
     model_name = f"openai/{model_alias}"
     settings_path = _write_model_settings(
@@ -798,7 +1002,13 @@ def run_aider_benchmark(
     ]
 
     started_at = time.perf_counter()
-    run_proc = _run_filtered(docker_cmd, log_path=log_path, check=False)
+    run_proc = _run_filtered(
+        docker_cmd,
+        log_path=log_path,
+        check=False,
+        progress_run_dir=run_dir,
+        expected_total_tests=len(manifest_entries),
+    )
     wall_time_sec = time.perf_counter() - started_at
 
     summary = summarize_run_dir(run_dir, wall_time_sec=wall_time_sec)
@@ -816,7 +1026,7 @@ def run_aider_benchmark(
             "profile": profile.name,
             "profile_description": profile.description,
             "manifest": str(profile.manifest_path),
-            "manifest_entries": read_manifest_entries(profile.manifest_path),
+            "manifest_entries": manifest_entries,
             "max_tokens": int(max_tokens),
             "threads": int(threads),
             "tries": int(tries if tries is not None else profile.tries),
@@ -841,6 +1051,8 @@ def run_aider_benchmark(
             "failed_exercise_count": len(failed_exercises),
             "random_seed": DEFAULT_AIDER_RANDOM_SEED,
             "sitecustomize": setup.get("sitecustomize"),
+            "progress_poll_seconds": DEFAULT_AIDER_PROGRESS_POLL_SECONDS,
+            "progress_heartbeat_seconds": DEFAULT_AIDER_PROGRESS_HEARTBEAT_SECONDS,
         }
     )
     if run_proc.returncode != 0:
