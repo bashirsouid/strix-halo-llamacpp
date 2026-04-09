@@ -319,13 +319,20 @@ def generate_html(records: list[dict]) -> str:
     scatter_js = json.dumps(scatter_points)
     history_datasets_js = json.dumps(history_datasets)
 
+    pass_chart_height = max(360, 84 + 28 * len(pass_labels))
+    speed_chart_height = max(360, 84 + 28 * len(speed_labels))
+    time_chart_height = max(360, 84 + 28 * len(time_labels))
+    warning_chart_height = max(360, 84 + 28 * len(warning_labels))
+    scatter_chart_height = 360
+    history_chart_height = 360
+
     return f"""<!doctype html>
 <html lang=\"en\">
 <head>
   <meta charset=\"utf-8\">
   <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
   <title>Strix Halo Aider Results</title>
-  <script src=\"https://cdn.jsdelivr.net/npm/chart.js\"></script>
+  <script src=\"https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.min.js\"></script>
   <style>
     :root {{
       color-scheme: dark;
@@ -340,7 +347,7 @@ def generate_html(records: list[dict]) -> str:
       --accent: #58a6ff;
     }}
     * {{ box-sizing: border-box; }}
-    body {{ margin: 0; background: var(--bg); color: var(--text); font-family: Inter, system-ui, sans-serif; }}
+    body {{ margin: 0; background: var(--bg); color: var(--text); font-family: Inter, system-ui, sans-serif; overflow-x: hidden; }}
     main {{ max-width: 1600px; margin: 0 auto; padding: 28px; }}
     h1 {{ margin: 0 0 8px; font-size: 34px; }}
     h2 {{ margin: 0 0 10px; font-size: 18px; }}
@@ -353,9 +360,10 @@ def generate_html(records: list[dict]) -> str:
     .stat-label {{ font-size: 13px; color: var(--muted); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.04em; }}
     .stat-model {{ font-size: 13px; line-height: 1.45; color: var(--text); }}
     .chart-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(520px, 1fr)); gap: 18px; }}
-    .chart-box {{ padding: 18px; }}
+    .chart-box {{ padding: 18px; min-width: 0; }}
     .chart-sub {{ color: var(--muted); font-size: 13px; margin-bottom: 12px; }}
-    .chart-box canvas {{ width: 100%; max-width: 100%; height: 360px; }}
+    .chart-frame {{ position: relative; width: 100%; min-height: 240px; }}
+    .chart-frame canvas {{ display: block; width: 100% !important; height: 100% !important; }}
     .table-box {{ margin-top: 22px; overflow: hidden; }}
     .table-scroll {{ overflow-x: auto; }}
     table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
@@ -370,7 +378,7 @@ def generate_html(records: list[dict]) -> str:
     @media (max-width: 900px) {{
       main {{ padding: 18px; }}
       .chart-grid {{ grid-template-columns: 1fr; }}
-      .chart-box canvas {{ height: 320px; }}
+      .chart-frame {{ min-height: 220px; }}
     }}
   </style>
 </head>
@@ -385,32 +393,32 @@ def generate_html(records: list[dict]) -> str:
       <div class=\"chart-box\">
         <h2>Pass rate by model</h2>
         <p class=\"chart-sub\">Try 2 is the most important comparison; try 1 shows first-shot quality.</p>
-        <canvas id=\"passChart\"></canvas>
+        <div class=\"chart-frame\" style=\"height: {pass_chart_height}px\"><canvas id=\"passChart\"></canvas></div>
       </div>
       <div class=\"chart-box\">
         <h2>Completion tok/s</h2>
         <p class=\"chart-sub\">Higher is better. This is wall-clock throughput across the full run.</p>
-        <canvas id=\"speedChart\"></canvas>
+        <div class=\"chart-frame\" style=\"height: {speed_chart_height}px\"><canvas id=\"speedChart\"></canvas></div>
       </div>
       <div class=\"chart-box\">
         <h2>Seconds per case</h2>
         <p class=\"chart-sub\">Lower is better. Useful for judging whether a profile still fits your 30–60 minute budget.</p>
-        <canvas id=\"timeChart\"></canvas>
+        <div class=\"chart-frame\" style=\"height: {time_chart_height}px\"><canvas id=\"timeChart\"></canvas></div>
       </div>
       <div class=\"chart-box\">
         <h2>Quality vs speed</h2>
         <p class=\"chart-sub\">Up and left is better: higher try 2 pass rate, lower seconds per case.</p>
-        <canvas id=\"scatterChart\"></canvas>
+        <div class=\"chart-frame\" style=\"height: {scatter_chart_height}px\"><canvas id=\"scatterChart\"></canvas></div>
       </div>
       <div class=\"chart-box\">
         <h2>Warning counters</h2>
         <p class=\"chart-sub\">Shows context exhaustion, malformed responses, and timed-out test runs.</p>
-        <canvas id=\"warningChart\"></canvas>
+        <div class=\"chart-frame\" style=\"height: {warning_chart_height}px\"><canvas id=\"warningChart\"></canvas></div>
       </div>
       <div class=\"chart-box\">
         <h2>Try 2 history</h2>
         <p class=\"chart-sub\">Use labels or max_tokens changes to compare repeated runs of the same model.</p>
-        <canvas id=\"historyChart\"></canvas>
+        <div class=\"chart-frame\" style=\"height: {history_chart_height}px\"><canvas id=\"historyChart\"></canvas></div>
       </div>
     </section>
 
@@ -477,6 +485,12 @@ def generate_html(records: list[dict]) -> str:
         bodyColor: '#c9d1d9',
       }},
     }};
+    const responsiveCommon = {{
+      responsive: true,
+      maintainAspectRatio: false,
+      resizeDelay: 150,
+      animation: false,
+    }};
 
     new Chart(document.getElementById('passChart'), {{
       type: 'bar',
@@ -503,8 +517,7 @@ def generate_html(records: list[dict]) -> str:
       }},
       options: {{
         indexAxis: 'y',
-        responsive: true,
-        maintainAspectRatio: false,
+        ...responsiveCommon,
         plugins: pluginCommon,
         scales: {{
           x: {{ ...axisCommon, beginAtZero: true, max: 100, title: {{ display: true, text: 'Pass rate %', color: '#c9d1d9' }} }},
@@ -528,8 +541,7 @@ def generate_html(records: list[dict]) -> str:
       }},
       options: {{
         indexAxis: 'y',
-        responsive: true,
-        maintainAspectRatio: false,
+        ...responsiveCommon,
         plugins: pluginCommon,
         scales: {{
           x: {{ ...axisCommon, beginAtZero: true, title: {{ display: true, text: 'tok/s', color: '#c9d1d9' }} }},
@@ -553,8 +565,7 @@ def generate_html(records: list[dict]) -> str:
       }},
       options: {{
         indexAxis: 'y',
-        responsive: true,
-        maintainAspectRatio: false,
+        ...responsiveCommon,
         plugins: pluginCommon,
         scales: {{
           x: {{ ...axisCommon, beginAtZero: true, title: {{ display: true, text: 'seconds', color: '#c9d1d9' }} }},
@@ -576,8 +587,7 @@ def generate_html(records: list[dict]) -> str:
         }})),
       }},
       options: {{
-        responsive: true,
-        maintainAspectRatio: false,
+        ...responsiveCommon,
         plugins: {{
           ...pluginCommon,
           tooltip: {{
@@ -610,8 +620,7 @@ def generate_html(records: list[dict]) -> str:
       }},
       options: {{
         indexAxis: 'y',
-        responsive: true,
-        maintainAspectRatio: false,
+        ...responsiveCommon,
         plugins: pluginCommon,
         scales: {{
           x: {{ ...axisCommon, beginAtZero: true, stacked: true, title: {{ display: true, text: 'count', color: '#c9d1d9' }} }},
@@ -634,8 +643,7 @@ def generate_html(records: list[dict]) -> str:
         }})),
       }},
       options: {{
-        responsive: true,
-        maintainAspectRatio: false,
+        ...responsiveCommon,
         plugins: pluginCommon,
         scales: {{
           x: axisCommon,
