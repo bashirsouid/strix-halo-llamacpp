@@ -7,6 +7,7 @@ import types
 from pathlib import Path
 
 import aider_benchmark
+from tools import eval_viewer
 
 
 def _import_server_for_tests(monkeypatch):
@@ -413,3 +414,88 @@ def test_aider_bench_single_uses_effective_threads_for_server_and_metadata(monke
     assert calls["launch"]["parallel_override"] == 2
     assert calls["run"]["threads"] == 2
     assert calls["run"]["context_window"] == 4096
+
+
+def test_eval_viewer_build_report_writes_html(tmp_path: Path) -> None:
+    input_path = tmp_path / "aider_results.jsonl"
+    output_path = tmp_path / "report.html"
+    input_path.write_text(json.dumps({"model": "demo", "pass_rate_2": 50.0}) + "\n")
+
+    written = eval_viewer.build_report(input_path=input_path, output_path=output_path, open_browser=False)
+
+    assert written == output_path.resolve()
+    contents = output_path.read_text(encoding="utf-8")
+    assert "Strix Halo Aider Results" in contents
+    assert "demo" in contents
+
+
+def test_server_refreshes_aider_html_report_after_single_run(monkeypatch) -> None:
+    server = _import_server_for_tests(monkeypatch)
+    calls: dict[str, object] = {}
+    cfg = _FakeCfg(parallel_slots=2, ctx_per_slot=2048)
+    cfg.is_downloaded = True
+    cfg.name = "Fake Model"
+    cfg.alias = "fake-model"
+    cfg.quant = "Q8_0"
+
+    monkeypatch.setattr(server, "get_model", lambda alias: cfg)
+    monkeypatch.setattr(server, "stop_server", lambda: None)
+    monkeypatch.setattr(server.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(server, "info", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "ok", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "warn", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "fail", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "_api_key_for_model", lambda _alias: "local")
+
+    def fake_launch(model_cfg, **kwargs):
+        calls["launch"] = {"cfg": model_cfg, **kwargs}
+
+    def fake_run(**kwargs):
+        calls["run"] = kwargs
+        return {"ok": True, "threads": kwargs["threads"], "results_file": "/tmp/aider_results.jsonl"}
+
+    monkeypatch.setattr(server, "launch_server", fake_launch)
+    monkeypatch.setattr(server, "run_aider_benchmark", fake_run)
+    monkeypatch.setattr(server, "_refresh_aider_html_report", lambda: Path("/tmp/eval_report.html"))
+
+    result = server.aider_bench_single("fake-model", backend="radv")
+
+    assert result["threads"] == 2
+    assert calls["launch"]["parallel_override"] == 2
+    assert calls["run"]["threads"] == 2
+
+
+def test_server_refreshes_aider_html_report_once_after_all_runs(monkeypatch) -> None:
+    server = _import_server_for_tests(monkeypatch)
+
+    cfg_one = types.SimpleNamespace(alias="m1", name="Model One", is_downloaded=True, hidden=False)
+    cfg_two = types.SimpleNamespace(alias="m2", name="Model Two", is_downloaded=True, hidden=False)
+    monkeypatch.setattr(server, "MODELS", [cfg_one, cfg_two])
+
+    calls: dict[str, object] = {"single": [], "refresh": 0}
+
+    def fake_single(model_alias, **kwargs):
+        calls["single"].append((model_alias, kwargs))
+        return {
+            "threads": kwargs.get("threads") or 1,
+            "pass_rate_1": 10.0,
+            "pass_rate_2": 20.0,
+            "completed_tests": 1,
+            "total_tests": 1,
+            "seconds_per_case_wall": 12.0,
+            "completion_tok_s_wall": 3.0,
+        }
+
+    def fake_refresh():
+        calls["refresh"] += 1
+        return Path("/tmp/eval_report.html")
+
+    monkeypatch.setattr(server, "aider_bench_single", fake_single)
+    monkeypatch.setattr(server, "_refresh_aider_html_report", fake_refresh)
+    monkeypatch.setattr(server, "ok", lambda *args, **kwargs: None)
+
+    results = server.aider_bench_all(backend="radv")
+
+    assert len(results) == 2
+    assert calls["refresh"] == 1
+    assert all(kwargs["refresh_report"] is False for _, kwargs in calls["single"])

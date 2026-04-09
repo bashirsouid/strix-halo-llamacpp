@@ -658,16 +658,28 @@ def output_path_for(input_path: Path) -> Path:
     return input_path.with_suffix(".html")
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = list(sys.argv[1:] if argv is None else argv)
-    input_path = Path(args[0]).expanduser().resolve() if args else DEFAULT_FILE
-    output_path = output_path_for(input_path)
+def build_report(
+    input_path: Path | None = None,
+    output_path: Path | None = None,
+    *,
+    open_browser: bool = False,
+) -> Path:
+    input_path = (input_path or DEFAULT_FILE).expanduser().resolve()
+    output_path = (output_path or output_path_for(input_path)).expanduser().resolve()
 
     records = load_records(input_path)
     html = generate_html(records)
     output_path.write_text(html, encoding="utf-8")
+    if open_browser:
+        webbrowser.open(output_path.as_uri())
+    return output_path
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    input_path = Path(args[0]).expanduser().resolve() if args else DEFAULT_FILE
+    output_path = build_report(input_path, open_browser=True)
     print(output_path)
-    webbrowser.open(output_path.resolve().as_uri())
     return 0
 
 

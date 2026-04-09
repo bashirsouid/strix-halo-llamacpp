@@ -153,7 +153,9 @@ python server.py aider-bench-all --backend rocm7 --profile python-quick --thread
 
 When `--threads` is provided, the launcher starts `llama-server` with matching `--parallel` so the benchmark worker count and server slot count stay aligned. Context still scales as `ctx_per_slot × threads`, just like the rest of the launcher.
 
-Visualize the Aider results:
+Aider runs now refresh `eval_report.html` automatically after `aider-bench` and `aider-bench-all`, so the dashboard stays current as new JSONL rows land in `results/aider/aider_results.jsonl`. The viewer keeps `python-quick` and `python-all` variants separate in the charts because the profile is part of each run's series key.
+
+You can still regenerate or open the report manually at any time:
 
 ```bash
 python tools/eval_viewer.py

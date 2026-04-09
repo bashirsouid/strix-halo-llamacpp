@@ -1988,6 +1988,20 @@ def _resolve_aider_context_window(cfg: ModelConfig, threads: int) -> int:
     return ctx_per_slot * max(1, int(threads))
 
 
+def _refresh_aider_html_report() -> Path | None:
+    try:
+        from tools import eval_viewer
+    except Exception as exc:
+        warn(f"Could not import Aider result viewer: {exc}")
+        return None
+
+    try:
+        return eval_viewer.build_report(open_browser=False)
+    except Exception as exc:
+        warn(f"Could not refresh Aider HTML report: {exc}")
+        return None
+
+
 def aider_bench_single(
     model_alias: str | None,
     *,
@@ -2003,6 +2017,7 @@ def aider_bench_single(
     update_harness: bool = False,
     aider_ref: str = DEFAULT_AIDER_REF,
     polyglot_ref: str = DEFAULT_POLYGLOT_REF,
+    refresh_report: bool = True,
 ) -> dict[str, Any]:
     """Start a model, run the Aider code-edit benchmark, then stop it."""
     if model_alias is None:
@@ -2098,6 +2113,10 @@ def aider_bench_single(
         info(f"Run metadata saved to {result['metadata_file']}")
     if result.get("results_file"):
         ok(f"Aider results appended to {result['results_file']}")
+    if refresh_report:
+        report_path = _refresh_aider_html_report()
+        if report_path is not None:
+            ok(f"Updated Aider HTML report: {report_path}")
 
     return result
 
@@ -2139,6 +2158,7 @@ def aider_bench_all(
             update_harness=update_harness,
             aider_ref=aider_ref,
             polyglot_ref=polyglot_ref,
+            refresh_report=False,
         )
         results.append((cfg.alias, cfg.name, result))
 
@@ -2162,6 +2182,10 @@ def aider_bench_all(
         )
     print("  ═══════════════════════════════════════════════════════════════════════════════════════════════")
     print()
+
+    report_path = _refresh_aider_html_report()
+    if report_path is not None:
+        ok(f"Updated Aider HTML report: {report_path}")
 
     return [result for _, _, result in results]
 
