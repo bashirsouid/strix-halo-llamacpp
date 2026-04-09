@@ -66,6 +66,25 @@ class AiderProfile:
     edit_format: str = "whole"
 
 
+@dataclass
+class _ProgressState:
+    last_completed: int
+    last_heartbeat_at: float
+    completion_announced: bool = False
+    completion_announced_at: float | None = None
+    completion_completed_tests: int = 0
+    completion_total_tests: int = 0
+    last_log_size: int = 0
+
+
+@dataclass(frozen=True)
+class FilteredRunResult:
+    returncode: int
+    all_results_written: bool = False
+    all_results_written_at_sec: float | None = None
+    post_completion_wait_sec: float | None = None
+
+
 BUILTIN_PROFILES: dict[str, AiderProfile] = {
     "python-quick": AiderProfile(
         name="python-quick",
@@ -343,6 +362,13 @@ def _tail_lines(path: Path, *, count: int = 40) -> list[str]:
     return lines[-count:]
 
 
+def _file_size_bytes(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
 def _run_filtered(
     cmd: list[str],
     *,
@@ -354,7 +380,7 @@ def _run_filtered(
     expected_total_tests: int | None = None,
     progress_poll_seconds: float = DEFAULT_AIDER_PROGRESS_POLL_SECONDS,
     progress_heartbeat_seconds: float = DEFAULT_AIDER_PROGRESS_HEARTBEAT_SECONDS,
-) -> subprocess.CompletedProcess[str]:
+) -> FilteredRunResult:
     def _reader_thread(stdout: Any, lines: "queue.Queue[str | None]") -> None:
         try:
             for raw_line in stdout:
@@ -369,6 +395,7 @@ def _run_filtered(
     started_at = time.perf_counter()
     poll_seconds = max(0.25, float(progress_poll_seconds or DEFAULT_AIDER_PROGRESS_POLL_SECONDS))
     heartbeat_seconds = max(0.0, float(progress_heartbeat_seconds or 0.0))
+    progress_state = _ProgressState(last_completed=0, last_heartbeat_at=started_at)
 
     with log_path.open("w", encoding="utf-8") as handle:
         process = subprocess.Popen(
@@ -394,21 +421,19 @@ def _run_filtered(
         reader.start()
 
         stdout_done = False
-        last_completed = 0
-        last_heartbeat_at = started_at
 
         while True:
             try:
                 raw_line = line_queue.get(timeout=poll_seconds)
             except queue.Empty:
                 if progress_run_dir is not None:
-                    last_completed, last_heartbeat_at = _maybe_emit_progress_update(
+                    _maybe_emit_progress_update(
                         run_dir=progress_run_dir,
                         expected_total_tests=expected_total_tests,
                         started_at=started_at,
-                        last_completed=last_completed,
-                        last_heartbeat_at=last_heartbeat_at,
+                        state=progress_state,
                         heartbeat_seconds=heartbeat_seconds,
+                        log_path=log_path,
                     )
                 if stdout_done and process.poll() is not None and line_queue.empty():
                     break
@@ -425,13 +450,13 @@ def _run_filtered(
                         print(condensed, flush=True)
 
             if progress_run_dir is not None:
-                last_completed, last_heartbeat_at = _maybe_emit_progress_update(
+                _maybe_emit_progress_update(
                     run_dir=progress_run_dir,
                     expected_total_tests=expected_total_tests,
                     started_at=started_at,
-                    last_completed=last_completed,
-                    last_heartbeat_at=last_heartbeat_at,
+                    state=progress_state,
                     heartbeat_seconds=heartbeat_seconds,
+                    log_path=log_path,
                 )
 
             if stdout_done and process.poll() is not None and line_queue.empty():
@@ -441,23 +466,37 @@ def _run_filtered(
         returncode = process.wait()
 
     if progress_run_dir is not None:
-        _completed, _heartbeat = _maybe_emit_progress_update(
+        _maybe_emit_progress_update(
             run_dir=progress_run_dir,
             expected_total_tests=expected_total_tests,
             started_at=started_at,
-            last_completed=last_completed,
-            last_heartbeat_at=last_heartbeat_at,
+            state=progress_state,
             heartbeat_seconds=0.0,
+            log_path=log_path,
             force_summary=True,
         )
-        last_completed = _completed
-        last_heartbeat_at = _heartbeat
 
-    result = subprocess.CompletedProcess(cmd, returncode)
+    post_completion_wait_sec: float | None = None
+    if progress_state.completion_announced_at is not None:
+        post_completion_wait_sec = max(0.0, time.perf_counter() - progress_state.completion_announced_at)
+        if post_completion_wait_sec >= max(1.0, poll_seconds):
+            print(_format_post_completion_wait(wait_sec=post_completion_wait_sec), flush=True)
+
+    result = FilteredRunResult(
+        returncode=returncode,
+        all_results_written=progress_state.completion_announced,
+        all_results_written_at_sec=(
+            round(progress_state.completion_announced_at - started_at, 2)
+            if progress_state.completion_announced_at is not None
+            else None
+        ),
+        post_completion_wait_sec=(
+            round(post_completion_wait_sec, 2) if post_completion_wait_sec is not None else None
+        ),
+    )
     if check and returncode != 0:
         raise subprocess.CalledProcessError(returncode, cmd)
     return result
-
 
 def _git_head(repo_dir: Path) -> str:
     result = _run(["git", "rev-parse", "HEAD"], cwd=repo_dir, capture_output=True)
@@ -801,29 +840,91 @@ def _format_progress_heartbeat(
     return f"Progress: {completed_tests}/{total_text} completed after {elapsed_min:.1f}m"
 
 
+def _format_results_written_notice(*, completed_tests: int, total_tests: int | None) -> str:
+    total_text = str(int(total_tests)) if total_tests else "?"
+    return (
+        f"All exercise result files written ({completed_tests}/{total_text}); "
+        f"waiting for benchmark process to exit..."
+    )
+
+
+def _format_finalizing_heartbeat(
+    *,
+    completed_tests: int,
+    total_tests: int | None,
+    elapsed_since_completion_sec: float,
+    saw_new_log_output: bool,
+) -> str:
+    total_text = str(int(total_tests)) if total_tests else "?"
+    elapsed_min = elapsed_since_completion_sec / 60.0
+    log_status = "new log output seen" if saw_new_log_output else "no new log output"
+    return (
+        f"Finalizing: {completed_tests}/{total_text} result files exist; "
+        f"benchmark process still alive {elapsed_min:.1f}m later ({log_status})."
+    )
+
+
+def _format_post_completion_wait(*, wait_sec: float) -> str:
+    return f"Benchmark process exited {wait_sec / 60.0:.1f}m after all exercise result files were written."
+
+
 def _maybe_emit_progress_update(
     *,
     run_dir: Path,
     expected_total_tests: int | None,
     started_at: float,
-    last_completed: int,
-    last_heartbeat_at: float,
+    state: _ProgressState,
     heartbeat_seconds: float,
+    log_path: Path,
     force_summary: bool = False,
-) -> tuple[int, float]:
+) -> None:
     now = time.perf_counter()
     wall_time_sec = now - started_at
     summary = summarize_run_dir(run_dir, wall_time_sec=wall_time_sec)
     completed_tests = int(summary.get("completed_tests", 0) or 0)
     total_tests = int(summary.get("total_tests", 0) or 0) or int(expected_total_tests or 0)
 
-    if completed_tests > last_completed or (force_summary and completed_tests > 0 and completed_tests != last_completed):
+    if completed_tests > state.last_completed or (force_summary and completed_tests > 0 and completed_tests != state.last_completed):
         formatted = _format_progress_summary(summary, expected_total_tests=total_tests)
         if formatted:
             print(formatted, flush=True)
-        return completed_tests, now
+        state.last_completed = completed_tests
+        state.last_heartbeat_at = now
 
-    if heartbeat_seconds > 0 and (now - last_heartbeat_at) >= heartbeat_seconds:
+    all_results_written = total_tests > 0 and completed_tests >= total_tests
+    if all_results_written and not state.completion_announced:
+        print(
+            _format_results_written_notice(
+                completed_tests=completed_tests,
+                total_tests=total_tests,
+            ),
+            flush=True,
+        )
+        state.completion_announced = True
+        state.completion_announced_at = now
+        state.completion_completed_tests = completed_tests
+        state.completion_total_tests = total_tests
+        state.last_log_size = _file_size_bytes(log_path)
+        state.last_heartbeat_at = now
+        return
+
+    if state.completion_announced:
+        if heartbeat_seconds > 0 and (now - state.last_heartbeat_at) >= heartbeat_seconds:
+            current_log_size = _file_size_bytes(log_path)
+            print(
+                _format_finalizing_heartbeat(
+                    completed_tests=state.completion_completed_tests or completed_tests,
+                    total_tests=state.completion_total_tests or total_tests,
+                    elapsed_since_completion_sec=max(0.0, now - (state.completion_announced_at or now)),
+                    saw_new_log_output=current_log_size > state.last_log_size,
+                ),
+                flush=True,
+            )
+            state.last_log_size = current_log_size
+            state.last_heartbeat_at = now
+        return
+
+    if heartbeat_seconds > 0 and (now - state.last_heartbeat_at) >= heartbeat_seconds:
         print(
             _format_progress_heartbeat(
                 completed_tests=completed_tests,
@@ -832,10 +933,7 @@ def _maybe_emit_progress_update(
             ),
             flush=True,
         )
-        return last_completed, now
-
-    return last_completed, last_heartbeat_at
-
+        state.last_heartbeat_at = now
 
 def _append_jsonl(path: Path, record: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -964,11 +1062,9 @@ def run_aider_benchmark(
         "/aider/.aider.model.settings.yml",
         "--clean",
     ]
-    inner_stats = ["python3", "./benchmark/benchmark.py", run_id, "--stats"]
     shell_command = (
-        f"git config --global --add safe.directory /aider && "
-        f"cd /aider && {shlex.join(inner_main)}; "
-        f"status=$?; {shlex.join(inner_stats)} || true; exit $status"
+        "git config --global --add safe.directory /aider && "
+        f"cd /aider && exec {shlex.join(inner_main)}"
     )
 
     docker_cmd = [
@@ -1044,6 +1140,9 @@ def run_aider_benchmark(
             "model_metadata_file": str(metadata_path),
             "returncode": run_proc.returncode,
             "force_rerun": True,
+            "all_results_written_before_exit": run_proc.all_results_written,
+            "all_results_written_at_sec": run_proc.all_results_written_at_sec,
+            "post_completion_wait_sec": run_proc.post_completion_wait_sec,
             "log_file": str(log_path),
             "important_log_lines": important_log_lines,
             "important_log_line_count": len(important_log_lines),

@@ -227,6 +227,19 @@ def test_format_progress_summary_and_heartbeat() -> None:
         total_tests=9,
         elapsed_sec=3600.0,
     ) == "Progress: 4/9 completed after 60.0m"
+    assert aider_benchmark._format_results_written_notice(
+        completed_tests=5,
+        total_tests=5,
+    ) == "All exercise result files written (5/5); waiting for benchmark process to exit..."
+    assert aider_benchmark._format_finalizing_heartbeat(
+        completed_tests=5,
+        total_tests=5,
+        elapsed_since_completion_sec=360.0,
+        saw_new_log_output=False,
+    ) == "Finalizing: 5/5 result files exist; benchmark process still alive 6.0m later (no new log output)."
+    assert aider_benchmark._format_post_completion_wait(wait_sec=360.0) == (
+        "Benchmark process exited 6.0m after all exercise result files were written."
+    )
 
 
 
@@ -245,6 +258,97 @@ def test_collect_failed_exercises_and_write_sitecustomize(tmp_path: Path) -> Non
     contents = sitecustomize.read_text()
     assert "register_litellm_models" in contents
     assert "STRIX_AIDER_RANDOM_SEED" in contents
+
+
+def test_run_aider_benchmark_uses_exec_and_host_side_stats(monkeypatch, tmp_path: Path) -> None:
+    aider_repo = tmp_path / "aider"
+    benchmark_root = tmp_path / "benchmarks"
+    curated_dir = benchmark_root / "curated" / "python-quick"
+    results_dir = tmp_path / "results" / "aider"
+    metadata_dir = results_dir / "metadata"
+    log_dir = results_dir / "logs"
+    manifest = tmp_path / "aider-python-quick.txt"
+
+    aider_repo.mkdir(parents=True)
+    curated_dir.mkdir(parents=True)
+    results_dir.mkdir(parents=True)
+    metadata_dir.mkdir(parents=True)
+    log_dir.mkdir(parents=True)
+    manifest.write_text("python/exercises/practice/book-store\n")
+
+    monkeypatch.setattr(aider_benchmark, "AIDER_REPO_DIR", aider_repo)
+    monkeypatch.setattr(aider_benchmark, "AIDER_BENCHMARK_ROOT", benchmark_root)
+    monkeypatch.setattr(aider_benchmark, "RESULTS_DIR", results_dir)
+    monkeypatch.setattr(aider_benchmark, "RESULTS_FILE", results_dir / "aider_results.jsonl")
+    monkeypatch.setattr(aider_benchmark, "METADATA_DIR", metadata_dir)
+    monkeypatch.setattr(aider_benchmark, "LOG_DIR", log_dir)
+    monkeypatch.setattr(aider_benchmark, "_ensure_dirs", lambda: None)
+    monkeypatch.setattr(
+        aider_benchmark,
+        "ensure_aider_setup",
+        lambda **kwargs: {
+            "aider_repo": str(aider_repo),
+            "aider_head": "a" * 40,
+            "polyglot_repo": str(tmp_path / "polyglot-benchmark"),
+            "polyglot_head": "b" * 40,
+            "docker_image": "strix-aider-benchmark",
+            "sitecustomize": str(aider_repo / "sitecustomize.py"),
+        },
+    )
+    monkeypatch.setattr(
+        aider_benchmark,
+        "resolve_profile",
+        lambda profile_name, manifest_path=None: aider_benchmark.AiderProfile(
+            name="python-quick",
+            manifest_path=manifest,
+            description="quick",
+        ),
+    )
+    monkeypatch.setattr(aider_benchmark, "_materialize_manifest", lambda polyglot_root, profile: curated_dir)
+
+    captured: dict[str, object] = {}
+
+    def fake_run_filtered(cmd, **kwargs):
+        captured["cmd"] = cmd
+        log_path = kwargs["log_path"]
+        log_path.write_text("Tests failed: /benchmarks/run/python/exercises/practice/book-store\n")
+        return aider_benchmark.FilteredRunResult(
+            returncode=0,
+            all_results_written=True,
+            all_results_written_at_sec=123.0,
+            post_completion_wait_sec=45.5,
+        )
+
+    monkeypatch.setattr(aider_benchmark, "_run_filtered", fake_run_filtered)
+    monkeypatch.setattr(
+        aider_benchmark,
+        "summarize_run_dir",
+        lambda run_dir, wall_time_sec=None: {
+            "run_dir": str(run_dir),
+            "completed_tests": 1,
+            "total_tests": 1,
+            "pass_rate_1": 100.0,
+            "pass_rate_2": 100.0,
+        },
+    )
+
+    result = aider_benchmark.run_aider_benchmark(
+        model_alias="fake-model",
+        backend="rocm7",
+        port=8000,
+        profile_name="python-quick",
+        context_window=8192,
+    )
+
+    docker_cmd = captured["cmd"]
+    assert docker_cmd[-2:] == ["-lc", docker_cmd[-1]]
+    shell_command = docker_cmd[-1]
+    assert "exec python3 ./benchmark/benchmark.py" in shell_command
+    assert "--stats" not in shell_command
+    assert "status=$?" not in shell_command
+    assert result["all_results_written_before_exit"] is True
+    assert result["all_results_written_at_sec"] == 123.0
+    assert result["post_completion_wait_sec"] == 45.5
 
 
 class _FakeCfg:

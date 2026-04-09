@@ -2069,6 +2069,8 @@ def aider_bench_single(
         info(f"Cases completed: {result['completed_tests']}/{result['total_tests']}")
     if result.get("seconds_per_case_wall") is not None:
         info(f"Wall time per case: {result['seconds_per_case_wall']:.2f}s")
+    if result.get("post_completion_wait_sec") is not None:
+        info(f"Post-results finalization: {float(result['post_completion_wait_sec']):.2f}s")
     if result.get("completion_tok_s_wall") is not None:
         info(f"Completion tok/s (wall clock): {result['completion_tok_s_wall']:.2f}")
     if result.get("exhausted_context_windows"):
