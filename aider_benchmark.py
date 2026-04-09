@@ -1,19 +1,26 @@
 from __future__ import annotations
 
+import contextlib
 import datetime
 import hashlib
+import http.server
+import itertools
 import json
 import os
 import queue
 import re
 import shlex
 import shutil
+import socketserver
 import subprocess
 import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 PROJECT_DIR = Path(__file__).resolve().parent
 CACHE_ROOT = Path.home() / ".cache" / "strix-halo-llamacpp"
@@ -37,6 +44,9 @@ DEFAULT_AIDER_REF = os.environ.get("STRIX_AIDER_REF", "main")
 DEFAULT_POLYGLOT_REF = os.environ.get("STRIX_POLYGLOT_REF", "main")
 DEFAULT_AIDER_MAX_TOKENS = int(os.environ.get("STRIX_AIDER_MAX_TOKENS", "24576"))
 DEFAULT_AIDER_RANDOM_SEED = os.environ.get("STRIX_AIDER_RANDOM_SEED", "0")
+DEFAULT_AIDER_PROXY_TIMEOUT_SECONDS = int(
+    os.environ.get("STRIX_AIDER_PROXY_TIMEOUT_SECONDS", str(24 * 60 * 60))
+)
 
 
 def _env_float(name: str, default: float) -> float:
@@ -83,6 +93,275 @@ class FilteredRunResult:
     all_results_written: bool = False
     all_results_written_at_sec: float | None = None
     post_completion_wait_sec: float | None = None
+
+
+class _NoopRequestMonitor:
+    def __init__(self, base_url: str) -> None:
+        self.base_url = base_url
+        self.log_path: Path | None = None
+
+    def active_request_count(self) -> int | None:
+        return None
+
+    def close(self) -> None:
+        return None
+
+
+class _VerboseOpenAIProxy:
+    def __init__(
+        self,
+        *,
+        upstream_root_url: str,
+        log_path: Path,
+        echo_to_terminal: bool = False,
+        request_timeout: int = DEFAULT_AIDER_PROXY_TIMEOUT_SECONDS,
+    ) -> None:
+        self.upstream_root_url = upstream_root_url.rstrip("/")
+        self.log_path = log_path
+        self.echo_to_terminal = bool(echo_to_terminal)
+        self.request_timeout = max(30, int(request_timeout))
+        self.base_url = ""
+        self._lock = threading.Lock()
+        self._request_counter = itertools.count(1)
+        self._active_requests = 0
+        self._server: http.server.ThreadingHTTPServer | None = None
+        self._thread: threading.Thread | None = None
+
+    def _write_log_line(self, line: str) -> None:
+        stamped = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {line}"
+        self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.log_path.open("a", encoding="utf-8") as handle:
+            handle.write(stamped + "\n")
+        if self.echo_to_terminal:
+            print(stamped, flush=True)
+
+    def active_request_count(self) -> int:
+        with self._lock:
+            return int(self._active_requests)
+
+    def _request_started(self, *, method: str, path: str, body: bytes) -> int:
+        model = ""
+        if body:
+            try:
+                payload = json.loads(body.decode("utf-8"))
+            except Exception:
+                payload = None
+            if isinstance(payload, dict):
+                model_name = payload.get("model")
+                if isinstance(model_name, str) and model_name:
+                    model = model_name
+        with self._lock:
+            req_id = next(self._request_counter)
+            self._active_requests += 1
+            active = self._active_requests
+        model_part = f" model={model}" if model else ""
+        self._write_log_line(
+            f"proxy start req={req_id} active={active} method={method} path={path}{model_part} bytes={len(body)}"
+        )
+        return req_id
+
+    def _request_finished(
+        self,
+        *,
+        req_id: int,
+        method: str,
+        path: str,
+        started_at: float,
+        status: int,
+        response_bytes: bytes,
+        response_headers: dict[str, str] | None = None,
+        error_text: str | None = None,
+    ) -> None:
+        prompt_tokens = None
+        completion_tokens = None
+        total_tokens = None
+        response_kind = None
+        if response_bytes:
+            content_type = str((response_headers or {}).get("Content-Type") or "")
+            if "json" in content_type.lower() or response_bytes[:1] in (b"{", b"["):
+                try:
+                    payload = json.loads(response_bytes.decode("utf-8"))
+                except Exception:
+                    payload = None
+                if isinstance(payload, dict):
+                    usage = payload.get("usage")
+                    if isinstance(usage, dict):
+                        prompt_tokens = usage.get("prompt_tokens")
+                        completion_tokens = usage.get("completion_tokens")
+                        total_tokens = usage.get("total_tokens")
+                    if "choices" in payload:
+                        response_kind = "chat"
+                    elif "data" in payload:
+                        response_kind = "models"
+        elapsed = max(0.001, time.perf_counter() - started_at)
+        tok_s = None
+        try:
+            completion_value = int(completion_tokens) if completion_tokens is not None else None
+        except (TypeError, ValueError):
+            completion_value = None
+        if completion_value is not None:
+            tok_s = completion_value / elapsed
+        with self._lock:
+            self._active_requests = max(0, self._active_requests - 1)
+            active = self._active_requests
+        parts = [
+            f"proxy done req={req_id}",
+            f"active={active}",
+            f"method={method}",
+            f"path={path}",
+            f"status={status}",
+            f"elapsed={elapsed:.2f}s",
+            f"bytes={len(response_bytes)}",
+        ]
+        if response_kind:
+            parts.append(f"kind={response_kind}")
+        if prompt_tokens is not None:
+            parts.append(f"prompt={prompt_tokens}")
+        if completion_tokens is not None:
+            parts.append(f"completion={completion_tokens}")
+        if total_tokens is not None:
+            parts.append(f"total={total_tokens}")
+        if tok_s is not None:
+            parts.append(f"tok_s={tok_s:.2f}")
+        if error_text:
+            parts.append(f"error={error_text}")
+        self._write_log_line(" ".join(parts))
+
+    def start(self) -> "_VerboseOpenAIProxy":
+        self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        self.log_path.write_text("", encoding="utf-8")
+        manager = self
+
+        class ProxyServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
+            daemon_threads = True
+            allow_reuse_address = True
+
+        class ProxyHandler(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, format: str, *args: Any) -> None:
+                return None
+
+            def do_GET(self) -> None:
+                self._proxy_request()
+
+            def do_POST(self) -> None:
+                self._proxy_request()
+
+            def do_HEAD(self) -> None:
+                self._proxy_request()
+
+            def do_OPTIONS(self) -> None:
+                self._proxy_request()
+
+            def _proxy_request(self) -> None:
+                length = int(self.headers.get("Content-Length") or 0)
+                body = self.rfile.read(length) if length > 0 else b""
+                request_id = manager._request_started(method=self.command, path=self.path, body=body)
+                started = time.perf_counter()
+                status = 502
+                response_bytes = b""
+                response_headers: dict[str, str] = {}
+                error_text: str | None = None
+                try:
+                    upstream_url = manager.upstream_root_url + self.path
+                    headers = {
+                        key: value
+                        for key, value in self.headers.items()
+                        if key.lower() not in {"host", "content-length", "connection"}
+                    }
+                    headers["Connection"] = "close"
+                    data = body if self.command in {"POST", "PUT", "PATCH"} else None
+                    request = urllib.request.Request(
+                        upstream_url,
+                        data=data,
+                        headers=headers,
+                        method=self.command,
+                    )
+                    with urllib.request.urlopen(request, timeout=manager.request_timeout) as response:
+                        status = int(getattr(response, "status", response.getcode()))
+                        response_bytes = response.read()
+                        response_headers = dict(response.headers.items())
+                except urllib.error.HTTPError as exc:
+                    status = int(exc.code)
+                    response_bytes = exc.read()
+                    response_headers = dict(exc.headers.items()) if exc.headers else {}
+                    error_text = f"HTTPError:{exc.code}"
+                except Exception as exc:  # pragma: no cover - network failures are hard to unit test precisely
+                    status = 502
+                    response_headers = {"Content-Type": "application/json; charset=utf-8"}
+                    error_text = f"ProxyError:{exc}"
+                    response_bytes = json.dumps(
+                        {"error": {"message": str(exc), "type": "strix_proxy_error"}}
+                    ).encode("utf-8")
+
+                self.send_response(status)
+                for key, value in response_headers.items():
+                    lowered = key.lower()
+                    if lowered in {
+                        "connection",
+                        "content-length",
+                        "keep-alive",
+                        "proxy-authenticate",
+                        "proxy-authorization",
+                        "te",
+                        "trailers",
+                        "transfer-encoding",
+                        "upgrade",
+                    }:
+                        continue
+                    self.send_header(key, value)
+                self.send_header("Content-Length", str(len(response_bytes)))
+                self.end_headers()
+                if self.command != "HEAD":
+                    self.wfile.write(response_bytes)
+
+                manager._request_finished(
+                    req_id=request_id,
+                    method=self.command,
+                    path=self.path,
+                    started_at=started,
+                    status=status,
+                    response_bytes=response_bytes,
+                    response_headers=response_headers,
+                    error_text=error_text,
+                )
+
+        server = ProxyServer(("0.0.0.0", 0), ProxyHandler)
+        self._server = server
+        port = int(server.server_address[1])
+        self.base_url = f"http://host.docker.internal:{port}/v1"
+        self._thread = threading.Thread(
+            target=server.serve_forever,
+            kwargs={"poll_interval": 0.25},
+            name="strix-aider-openai-proxy",
+            daemon=True,
+        )
+        self._thread.start()
+        self._write_log_line(
+            f"proxy listening base_url={self.base_url} upstream_root={self.upstream_root_url} timeout={self.request_timeout}s"
+        )
+        return self
+
+    def close(self) -> None:
+        server = self._server
+        if server is None:
+            return
+        self._write_log_line("proxy shutting down")
+        server.shutdown()
+        server.server_close()
+        thread = self._thread
+        if thread is not None:
+            thread.join(timeout=2.0)
+        self._server = None
+        self._thread = None
+
+    def __enter__(self) -> "_VerboseOpenAIProxy":
+        return self.start()
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        self.close()
+        return False
 
 
 BUILTIN_PROFILES: dict[str, AiderProfile] = {
@@ -369,6 +648,48 @@ def _file_size_bytes(path: Path) -> int:
         return 0
 
 
+def _request_monitor_active_requests(request_monitor: Any | None) -> int | None:
+    if request_monitor is None:
+        return None
+    getter = getattr(request_monitor, "active_request_count", None)
+    if getter is None:
+        return None
+    try:
+        value = getter()
+    except Exception:
+        return None
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _build_verbose_proxy(upstream_port: int, *, log_path: Path, echo_to_terminal: bool) -> _VerboseOpenAIProxy:
+    upstream_root = f"http://127.0.0.1:{int(upstream_port)}"
+    return _VerboseOpenAIProxy(
+        upstream_root_url=upstream_root,
+        log_path=log_path,
+        echo_to_terminal=echo_to_terminal,
+    )
+
+
+def _maybe_start_request_monitor(
+    *,
+    verbose: bool,
+    upstream_port: int,
+    proxy_log_path: Path,
+) -> contextlib.AbstractContextManager[_VerboseOpenAIProxy | _NoopRequestMonitor]:
+    if not verbose:
+        return contextlib.nullcontext(_NoopRequestMonitor(base_url=f"http://host.docker.internal:{int(upstream_port)}/v1"))
+    return _build_verbose_proxy(
+        upstream_port,
+        log_path=proxy_log_path,
+        echo_to_terminal=True,
+    )
+
+
 def _run_filtered(
     cmd: list[str],
     *,
@@ -380,6 +701,8 @@ def _run_filtered(
     expected_total_tests: int | None = None,
     progress_poll_seconds: float = DEFAULT_AIDER_PROGRESS_POLL_SECONDS,
     progress_heartbeat_seconds: float = DEFAULT_AIDER_PROGRESS_HEARTBEAT_SECONDS,
+    request_monitor: Any | None = None,
+    verbose: bool = False,
 ) -> FilteredRunResult:
     def _reader_thread(stdout: Any, lines: "queue.Queue[str | None]") -> None:
         try:
@@ -434,6 +757,7 @@ def _run_filtered(
                         state=progress_state,
                         heartbeat_seconds=heartbeat_seconds,
                         log_path=log_path,
+                        request_monitor=request_monitor,
                     )
                 if stdout_done and process.poll() is not None and line_queue.empty():
                     break
@@ -444,7 +768,9 @@ def _run_filtered(
             else:
                 handle.write(raw_line)
                 handle.flush()
-                if _should_echo_aider_line(raw_line):
+                if verbose:
+                    print(raw_line.rstrip("\n"), flush=True)
+                elif _should_echo_aider_line(raw_line):
                     condensed = _condense_aider_line(raw_line)
                     if condensed:
                         print(condensed, flush=True)
@@ -457,6 +783,7 @@ def _run_filtered(
                     state=progress_state,
                     heartbeat_seconds=heartbeat_seconds,
                     log_path=log_path,
+                    request_monitor=request_monitor,
                 )
 
             if stdout_done and process.poll() is not None and line_queue.empty():
@@ -474,6 +801,7 @@ def _run_filtered(
             heartbeat_seconds=0.0,
             log_path=log_path,
             force_summary=True,
+            request_monitor=request_monitor,
         )
 
     post_completion_wait_sec: float | None = None
@@ -840,11 +1168,17 @@ def _format_progress_heartbeat(
     return f"Progress: {completed_tests}/{total_text} completed after {elapsed_min:.1f}m"
 
 
-def _format_results_written_notice(*, completed_tests: int, total_tests: int | None) -> str:
+def _format_results_written_notice(
+    *,
+    completed_tests: int,
+    total_tests: int | None,
+    active_requests: int | None = None,
+) -> str:
     total_text = str(int(total_tests)) if total_tests else "?"
+    suffix = f" active_llm_requests={active_requests}" if active_requests is not None else ""
     return (
         f"All exercise result files written ({completed_tests}/{total_text}); "
-        f"waiting for benchmark process to exit..."
+        f"waiting for benchmark process to exit...{suffix}"
     )
 
 
@@ -854,13 +1188,15 @@ def _format_finalizing_heartbeat(
     total_tests: int | None,
     elapsed_since_completion_sec: float,
     saw_new_log_output: bool,
+    active_requests: int | None = None,
 ) -> str:
     total_text = str(int(total_tests)) if total_tests else "?"
     elapsed_min = elapsed_since_completion_sec / 60.0
     log_status = "new log output seen" if saw_new_log_output else "no new log output"
+    active_text = f", active_llm_requests={active_requests}" if active_requests is not None else ""
     return (
         f"Finalizing: {completed_tests}/{total_text} result files exist; "
-        f"benchmark process still alive {elapsed_min:.1f}m later ({log_status})."
+        f"benchmark process still alive {elapsed_min:.1f}m later ({log_status}{active_text})."
     )
 
 
@@ -876,6 +1212,7 @@ def _maybe_emit_progress_update(
     state: _ProgressState,
     heartbeat_seconds: float,
     log_path: Path,
+    request_monitor: Any | None = None,
     force_summary: bool = False,
 ) -> None:
     now = time.perf_counter()
@@ -891,12 +1228,14 @@ def _maybe_emit_progress_update(
         state.last_completed = completed_tests
         state.last_heartbeat_at = now
 
+    active_requests = _request_monitor_active_requests(request_monitor)
     all_results_written = total_tests > 0 and completed_tests >= total_tests
     if all_results_written and not state.completion_announced:
         print(
             _format_results_written_notice(
                 completed_tests=completed_tests,
                 total_tests=total_tests,
+                active_requests=active_requests,
             ),
             flush=True,
         )
@@ -917,6 +1256,7 @@ def _maybe_emit_progress_update(
                     total_tests=state.completion_total_tests or total_tests,
                     elapsed_since_completion_sec=max(0.0, now - (state.completion_announced_at or now)),
                     saw_new_log_output=current_log_size > state.last_log_size,
+                    active_requests=active_requests,
                 ),
                 flush=True,
             )
@@ -1009,6 +1349,7 @@ def run_aider_benchmark(
     polyglot_ref: str = DEFAULT_POLYGLOT_REF,
     model_display_name: str | None = None,
     quant: str | None = None,
+    verbose: bool = False,
 ) -> dict[str, Any]:
     _ensure_dirs()
     setup = ensure_aider_setup(update=update_harness, aider_ref=aider_ref, polyglot_ref=polyglot_ref)
@@ -1042,7 +1383,7 @@ def run_aider_benchmark(
     log_path = LOG_DIR / f"{run_id}.log"
 
     relative_exercises_dir = curated_dir.relative_to(AIDER_BENCHMARK_ROOT).as_posix()
-    base_url = f"http://host.docker.internal:{port}/v1"
+    proxy_log_path = LOG_DIR / f"{run_id}.proxy.log"
 
     inner_main = [
         "python3",
@@ -1067,44 +1408,53 @@ def run_aider_benchmark(
         f"cd /aider && exec {shlex.join(inner_main)}"
     )
 
-    docker_cmd = [
-        "docker",
-        "run",
-        "--rm",
-        "--add-host",
-        "host.docker.internal:host-gateway",
-        "-v",
-        f"{AIDER_REPO_DIR}:/aider",
-        "-v",
-        f"{AIDER_BENCHMARK_ROOT}:/benchmarks",
-        "-e",
-        f"OPENAI_API_KEY={api_key or 'local'}",
-        "-e",
-        f"OPENAI_API_BASE={base_url}",
-        "-e",
-        f"STRIX_AIDER_RANDOM_SEED={DEFAULT_AIDER_RANDOM_SEED}",
-        "-e",
-        "AIDER_DOCKER=1",
-        "-e",
-        "AIDER_BENCHMARK_DIR=/benchmarks",
-        "-e",
-        "PYTHONPATH=/aider",
-        "-e",
-        "HOME=/aider",
-        setup["docker_image"],
-        "bash",
-        "-lc",
-        shell_command,
-    ]
-
     started_at = time.perf_counter()
-    run_proc = _run_filtered(
-        docker_cmd,
-        log_path=log_path,
-        check=False,
-        progress_run_dir=run_dir,
-        expected_total_tests=len(manifest_entries),
-    )
+    with _maybe_start_request_monitor(
+        verbose=verbose,
+        upstream_port=port,
+        proxy_log_path=proxy_log_path,
+    ) as request_monitor:
+        base_url = getattr(request_monitor, "base_url", f"http://host.docker.internal:{port}/v1")
+        docker_cmd = [
+            "docker",
+            "run",
+            "--rm",
+            "--add-host",
+            "host.docker.internal:host-gateway",
+            "-v",
+            f"{AIDER_REPO_DIR}:/aider",
+            "-v",
+            f"{AIDER_BENCHMARK_ROOT}:/benchmarks",
+            "-e",
+            f"OPENAI_API_KEY={api_key or 'local'}",
+            "-e",
+            f"OPENAI_API_BASE={base_url}",
+            "-e",
+            f"STRIX_AIDER_RANDOM_SEED={DEFAULT_AIDER_RANDOM_SEED}",
+            "-e",
+            "AIDER_DOCKER=1",
+            "-e",
+            "AIDER_BENCHMARK_DIR=/benchmarks",
+            "-e",
+            "PYTHONPATH=/aider",
+            "-e",
+            "HOME=/aider",
+            setup["docker_image"],
+            "bash",
+            "-lc",
+            shell_command,
+        ]
+
+        run_proc = _run_filtered(
+            docker_cmd,
+            log_path=log_path,
+            check=False,
+            progress_run_dir=run_dir,
+            expected_total_tests=len(manifest_entries),
+            request_monitor=request_monitor,
+            verbose=verbose,
+        )
+        remaining_active_requests = _request_monitor_active_requests(request_monitor)
     wall_time_sec = time.perf_counter() - started_at
 
     summary = summarize_run_dir(run_dir, wall_time_sec=wall_time_sec)
@@ -1136,6 +1486,10 @@ def run_aider_benchmark(
             "polyglot_head": setup["polyglot_head"],
             "docker_image": setup["docker_image"],
             "openai_base_url": base_url,
+            "verbose": bool(verbose),
+            "proxy_enabled": bool(verbose),
+            "proxy_log_file": str(proxy_log_path) if verbose else None,
+            "remaining_active_requests_after_exit": remaining_active_requests,
             "settings_file": str(settings_path),
             "model_metadata_file": str(metadata_path),
             "returncode": run_proc.returncode,

@@ -1972,11 +1972,17 @@ def aider_setup(
     return setup
 
 
+MAX_DEFAULT_AIDER_THREADS = 3
+
+
 def _resolve_aider_threads(cfg: ModelConfig, threads: int | None) -> tuple[int, str]:
     """Return the effective Aider worker count and where it came from."""
     if threads is None:
-        resolved = int(getattr(cfg, "parallel_slots", 1) or 1)
-        return max(1, resolved), "models.py parallel_slots"
+        resolved = max(1, int(getattr(cfg, "parallel_slots", 1) or 1))
+        capped = min(resolved, MAX_DEFAULT_AIDER_THREADS)
+        if capped != resolved:
+            return capped, f"models.py parallel_slots capped at {MAX_DEFAULT_AIDER_THREADS} for eval"
+        return capped, "models.py parallel_slots"
     return max(1, int(threads)), "--threads"
 
 
@@ -2018,6 +2024,7 @@ def aider_bench_single(
     aider_ref: str = DEFAULT_AIDER_REF,
     polyglot_ref: str = DEFAULT_POLYGLOT_REF,
     refresh_report: bool = True,
+    verbose: bool = False,
 ) -> dict[str, Any]:
     """Start a model, run the Aider code-edit benchmark, then stop it."""
     if model_alias is None:
@@ -2037,10 +2044,11 @@ def aider_bench_single(
 
     profile_label = manifest_path or profile_name
     label_suffix = f"  label={run_label}" if run_label else ""
+    verbose_suffix = "  verbose" if verbose else ""
     info(
         f"═══ Aider benchmark: {cfg.name} ({cfg.alias})  {backend}  "
         f"profile={profile_label}  max_tokens={max_tokens}  "
-        f"threads={effective_threads} ({threads_source}){label_suffix} ═══"
+        f"threads={effective_threads} ({threads_source}){label_suffix}{verbose_suffix} ═══"
     )
 
     launch_server(cfg, port=port, backend=backend, parallel_override=effective_threads)
@@ -2064,6 +2072,7 @@ def aider_bench_single(
             polyglot_ref=polyglot_ref,
             model_display_name=cfg.name,
             quant=cfg.quant,
+            verbose=verbose,
         )
     finally:
         stop_server()
@@ -2109,6 +2118,8 @@ def aider_bench_single(
             print(f"    {line}")
     if result.get("log_file"):
         info(f"Full benchmark log saved to {result['log_file']}")
+    if result.get("proxy_log_file"):
+        info(f"Verbose request log saved to {result['proxy_log_file']}")
     if result.get("metadata_file"):
         info(f"Run metadata saved to {result['metadata_file']}")
     if result.get("results_file"):
@@ -2135,6 +2146,7 @@ def aider_bench_all(
     update_harness: bool = False,
     aider_ref: str = DEFAULT_AIDER_REF,
     polyglot_ref: str = DEFAULT_POLYGLOT_REF,
+    verbose: bool = False,
 ) -> list[dict[str, Any]]:
     """Run the fixed Aider benchmark for every downloaded model."""
     downloaded = [m for m in MODELS if m.is_downloaded and not getattr(m, "hidden", False)]
@@ -2159,6 +2171,7 @@ def aider_bench_all(
             aider_ref=aider_ref,
             polyglot_ref=polyglot_ref,
             refresh_report=False,
+            verbose=verbose,
         )
         results.append((cfg.alias, cfg.name, result))
 
@@ -2567,7 +2580,7 @@ def main():
     p_aider.add_argument("--max-tokens", type=int, default=DEFAULT_AIDER_MAX_TOKENS,
                          help=f"Generation cap forwarded to the model via Aider/LiteLLM (default: {DEFAULT_AIDER_MAX_TOKENS})")
     p_aider.add_argument("--threads", type=int, default=None,
-                         help="Aider benchmark worker threads (default: model's parallel_slots from models.py)")
+                         help="Aider benchmark worker threads (default: min(model parallel_slots, 3); override to force another value)")
     p_aider.add_argument("--tries", type=int, default=None,
                          help="Number of repair attempts per exercise (default: profile default)")
     p_aider.add_argument("--edit-format", default="whole",
@@ -2581,6 +2594,8 @@ def main():
                          help="Git ref for the aider harness checkout")
     p_aider.add_argument("--polyglot-ref", default=DEFAULT_POLYGLOT_REF,
                          help="Git ref for the polyglot-benchmark checkout")
+    p_aider.add_argument("--verbose", action="store_true",
+                         help="Stream full Aider output to the terminal and write a per-request proxy log for debugging")
 
     # aider-bench-all
     p_aider_all = sub.add_parser("aider-bench-all",
@@ -2593,7 +2608,7 @@ def main():
                              help="Optional label to attach to every aider benchmark run")
     p_aider_all.add_argument("--max-tokens", type=int, default=DEFAULT_AIDER_MAX_TOKENS)
     p_aider_all.add_argument("--threads", type=int, default=None,
-                             help="Aider benchmark worker threads (default: each model's parallel_slots from models.py)")
+                             help="Aider benchmark worker threads (default: min(each model parallel_slots, 3); override to force another value)")
     p_aider_all.add_argument("--tries", type=int, default=None)
     p_aider_all.add_argument("--edit-format", default="whole")
     p_aider_all.add_argument("--port", type=int, default=8000)
@@ -2602,6 +2617,8 @@ def main():
     p_aider_all.add_argument("--update-harness", action="store_true")
     p_aider_all.add_argument("--aider-ref", default=DEFAULT_AIDER_REF)
     p_aider_all.add_argument("--polyglot-ref", default=DEFAULT_POLYGLOT_REF)
+    p_aider_all.add_argument("--verbose", action="store_true",
+                             help="Stream full Aider output to the terminal and write a per-request proxy log for debugging")
 
     # eval
     p_eval = sub.add_parser("eval",
@@ -2841,6 +2858,7 @@ def main():
             update_harness=args.update_harness,
             aider_ref=args.aider_ref,
             polyglot_ref=args.polyglot_ref,
+            verbose=args.verbose,
         )
 
     elif args.command == "aider-bench-all":
@@ -2858,6 +2876,7 @@ def main():
             update_harness=args.update_harness,
             aider_ref=args.aider_ref,
             polyglot_ref=args.polyglot_ref,
+            verbose=args.verbose,
         )
 
     elif args.command == "eval":

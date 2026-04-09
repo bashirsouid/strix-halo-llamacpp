@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import importlib
 import json
 import sys
@@ -232,12 +233,24 @@ def test_format_progress_summary_and_heartbeat() -> None:
         completed_tests=5,
         total_tests=5,
     ) == "All exercise result files written (5/5); waiting for benchmark process to exit..."
+    assert aider_benchmark._format_results_written_notice(
+        completed_tests=5,
+        total_tests=5,
+        active_requests=2,
+    ) == "All exercise result files written (5/5); waiting for benchmark process to exit... active_llm_requests=2"
     assert aider_benchmark._format_finalizing_heartbeat(
         completed_tests=5,
         total_tests=5,
         elapsed_since_completion_sec=360.0,
         saw_new_log_output=False,
     ) == "Finalizing: 5/5 result files exist; benchmark process still alive 6.0m later (no new log output)."
+    assert aider_benchmark._format_finalizing_heartbeat(
+        completed_tests=5,
+        total_tests=5,
+        elapsed_since_completion_sec=360.0,
+        saw_new_log_output=False,
+        active_requests=1,
+    ) == "Finalizing: 5/5 result files exist; benchmark process still alive 6.0m later (no new log output, active_llm_requests=1)."
     assert aider_benchmark._format_post_completion_wait(wait_sec=360.0) == (
         "Benchmark process exited 6.0m after all exercise result files were written."
     )
@@ -309,6 +322,23 @@ def test_run_aider_benchmark_uses_exec_and_host_side_stats(monkeypatch, tmp_path
 
     captured: dict[str, object] = {}
 
+    class FakeRequestMonitor:
+        def __init__(self, base_url: str, log_path: Path | None = None) -> None:
+            self.base_url = base_url
+            self.log_path = log_path
+
+        def active_request_count(self) -> int:
+            return 0
+
+    @contextlib.contextmanager
+    def fake_request_monitor(*, verbose: bool, upstream_port: int, proxy_log_path: Path):
+        captured["request_monitor"] = {
+            "verbose": verbose,
+            "upstream_port": upstream_port,
+            "proxy_log_path": proxy_log_path,
+        }
+        yield FakeRequestMonitor(base_url=f"http://host.docker.internal:{upstream_port + 1}/v1", log_path=proxy_log_path)
+
     def fake_run_filtered(cmd, **kwargs):
         captured["cmd"] = cmd
         log_path = kwargs["log_path"]
@@ -320,6 +350,7 @@ def test_run_aider_benchmark_uses_exec_and_host_side_stats(monkeypatch, tmp_path
             post_completion_wait_sec=45.5,
         )
 
+    monkeypatch.setattr(aider_benchmark, "_maybe_start_request_monitor", fake_request_monitor)
     monkeypatch.setattr(aider_benchmark, "_run_filtered", fake_run_filtered)
     monkeypatch.setattr(
         aider_benchmark,
@@ -339,6 +370,7 @@ def test_run_aider_benchmark_uses_exec_and_host_side_stats(monkeypatch, tmp_path
         port=8000,
         profile_name="python-quick",
         context_window=8192,
+        verbose=True,
     )
 
     docker_cmd = captured["cmd"]
@@ -350,6 +382,9 @@ def test_run_aider_benchmark_uses_exec_and_host_side_stats(monkeypatch, tmp_path
     assert result["all_results_written_before_exit"] is True
     assert result["all_results_written_at_sec"] == 123.0
     assert result["post_completion_wait_sec"] == 45.5
+    assert result["proxy_enabled"] is True
+    assert result["proxy_log_file"].endswith(".proxy.log")
+    assert result["openai_base_url"] == "http://host.docker.internal:8001/v1"
 
 
 class _FakeCfg:
@@ -362,9 +397,9 @@ class _FakeCfg:
 def test_server_resolve_aider_threads_and_context_defaults(monkeypatch) -> None:
     server = _import_server_for_tests(monkeypatch)
 
-    cfg = _FakeCfg(parallel_slots=3, ctx_per_slot=4096)
+    cfg = _FakeCfg(parallel_slots=5, ctx_per_slot=4096)
 
-    assert server._resolve_aider_threads(cfg, None) == (3, "models.py parallel_slots")
+    assert server._resolve_aider_threads(cfg, None) == (3, "models.py parallel_slots capped at 3 for eval")
     assert server._resolve_aider_threads(cfg, 2) == (2, "--threads")
     assert server._resolve_aider_context_window(cfg, 3) == 12288
     assert server._resolve_aider_context_window(cfg, 2) == 8192
@@ -402,18 +437,20 @@ def test_aider_bench_single_uses_effective_threads_for_server_and_metadata(monke
 
     result = server.aider_bench_single("fake-model", backend="radv")
 
-    assert result["threads"] == 4
-    assert calls["launch"]["parallel_override"] == 4
-    assert calls["run"]["threads"] == 4
-    assert calls["run"]["context_window"] == 8192
+    assert result["threads"] == 3
+    assert calls["launch"]["parallel_override"] == 3
+    assert calls["run"]["threads"] == 3
+    assert calls["run"]["context_window"] == 6144
+    assert calls["run"]["verbose"] is False
 
     calls.clear()
-    result = server.aider_bench_single("fake-model", backend="radv", threads=2)
+    result = server.aider_bench_single("fake-model", backend="radv", threads=2, verbose=True)
 
     assert result["threads"] == 2
     assert calls["launch"]["parallel_override"] == 2
     assert calls["run"]["threads"] == 2
     assert calls["run"]["context_window"] == 4096
+    assert calls["run"]["verbose"] is True
 
 
 def test_eval_viewer_build_report_writes_html(tmp_path: Path) -> None:
@@ -494,8 +531,9 @@ def test_server_refreshes_aider_html_report_once_after_all_runs(monkeypatch) -> 
     monkeypatch.setattr(server, "_refresh_aider_html_report", fake_refresh)
     monkeypatch.setattr(server, "ok", lambda *args, **kwargs: None)
 
-    results = server.aider_bench_all(backend="radv")
+    results = server.aider_bench_all(backend="radv", verbose=True)
 
     assert len(results) == 2
     assert calls["refresh"] == 1
     assert all(kwargs["refresh_report"] is False for _, kwargs in calls["single"])
+    assert all(kwargs["verbose"] is True for _, kwargs in calls["single"])

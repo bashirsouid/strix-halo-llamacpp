@@ -1,0 +1,431 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Strix Halo Aider Results</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0d1117;
+      --panel: #161b22;
+      --panel-2: #11161d;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --border: #30363d;
+      --ok: #3fb950;
+      --fail: #f85149;
+      --accent: #58a6ff;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font-family: Inter, system-ui, sans-serif; }
+    main { max-width: 1600px; margin: 0 auto; padding: 28px; }
+    h1 { margin: 0 0 8px; font-size: 34px; }
+    h2 { margin: 0 0 10px; font-size: 18px; }
+    p { margin: 0; }
+    .lead { color: var(--muted); margin-bottom: 22px; }
+    .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin: 18px 0 24px; }
+    .stat-card, .chart-box, .table-box { background: var(--panel); border: 1px solid var(--border); border-radius: 16px; box-shadow: 0 12px 32px rgba(0,0,0,0.20); }
+    .stat-card { padding: 18px 18px 16px; }
+    .stat-value { font-size: 28px; font-weight: 700; margin-bottom: 6px; }
+    .stat-label { font-size: 13px; color: var(--muted); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.04em; }
+    .stat-model { font-size: 13px; line-height: 1.45; color: var(--text); }
+    .chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(520px, 1fr)); gap: 18px; }
+    .chart-box { padding: 18px; }
+    .chart-sub { color: var(--muted); font-size: 13px; margin-bottom: 12px; }
+    .chart-box canvas { width: 100%; max-width: 100%; height: 360px; }
+    .table-box { margin-top: 22px; overflow: hidden; }
+    .table-scroll { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { padding: 10px 12px; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap; }
+    th { background: var(--panel-2); position: sticky; top: 0; z-index: 1; }
+    tr:hover td { background: #1d2530; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .dim { color: var(--muted); }
+    .score { font-weight: 600; }
+    .status.ok { color: var(--ok); font-weight: 700; }
+    .status.fail { color: var(--fail); font-weight: 700; }
+    @media (max-width: 900px) {
+      main { padding: 18px; }
+      .chart-grid { grid-template-columns: 1fr; }
+      .chart-box canvas { height: 320px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Strix Halo — Aider benchmark results</h1>
+    <p class="lead">10 total records · 4 latest comparison rows · input file: /home/bashirs/src/strix-llamacpp/results/aider/aider_results.jsonl</p>
+
+    <section class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-value">66.7%</div>
+        <div class="stat-label">Best try 2</div>
+        <div class="stat-model">Qwen3 Coder Next (Q6_K) (rocm7, python-quick, max=24576, tries=2)</div>
+      </div>
+
+      <div class="stat-card">
+        <div class="stat-value">151.32s</div>
+        <div class="stat-label">Fastest case</div>
+        <div class="stat-model">Qwen3 Coder Next (Q6_K) (rocm7, python-quick, max=24576, tries=2)</div>
+      </div>
+
+      <div class="stat-card">
+        <div class="stat-value">39.65</div>
+        <div class="stat-label">Best tok/s</div>
+        <div class="stat-model">Nemotron Nano (Q4_K_M) (rocm7, python-quick, max=24576, tries=2)</div>
+      </div>
+
+      <div class="stat-card">
+        <div class="stat-value">100.0%</div>
+        <div class="stat-label">Cleanest output</div>
+        <div class="stat-model">Qwen3 Coder Next (Q6_K) (rocm7, python-quick, max=24576, tries=2)</div>
+      </div>
+</section>
+
+    <section class="chart-grid">
+      <div class="chart-box">
+        <h2>Pass rate by model</h2>
+        <p class="chart-sub">Try 2 is the most important comparison; try 1 shows first-shot quality.</p>
+        <canvas id="passChart"></canvas>
+      </div>
+      <div class="chart-box">
+        <h2>Completion tok/s</h2>
+        <p class="chart-sub">Higher is better. This is wall-clock throughput across the full run.</p>
+        <canvas id="speedChart"></canvas>
+      </div>
+      <div class="chart-box">
+        <h2>Seconds per case</h2>
+        <p class="chart-sub">Lower is better. Useful for judging whether a profile still fits your 30–60 minute budget.</p>
+        <canvas id="timeChart"></canvas>
+      </div>
+      <div class="chart-box">
+        <h2>Quality vs speed</h2>
+        <p class="chart-sub">Up and left is better: higher try 2 pass rate, lower seconds per case.</p>
+        <canvas id="scatterChart"></canvas>
+      </div>
+      <div class="chart-box">
+        <h2>Warning counters</h2>
+        <p class="chart-sub">Shows context exhaustion, malformed responses, and timed-out test runs.</p>
+        <canvas id="warningChart"></canvas>
+      </div>
+      <div class="chart-box">
+        <h2>Try 2 history</h2>
+        <p class="chart-sub">Use labels or max_tokens changes to compare repeated runs of the same model.</p>
+        <canvas id="historyChart"></canvas>
+      </div>
+    </section>
+
+    <section class="table-box">
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Model</th>
+              <th>Backend</th>
+              <th>Profile</th>
+              <th>Label</th>
+              <th>Max tokens</th>
+              <th>Try 1</th>
+              <th>Try 2</th>
+              <th>Cases</th>
+              <th>s/case</th>
+              <th>tok/s</th>
+              <th>Well formed</th>
+              <th>Ctx exhaust</th>
+              <th>Malformed</th>
+              <th>Syntax</th>
+              <th>Timeouts</th>
+              <th>Status</th>
+              <th>Timestamp</th>
+            </tr>
+          </thead>
+          <tbody>
+        <tr>
+          <td>Qwen3 Coder Next (Q6_K)</td>
+          <td class="mono">rocm7</td>
+          <td class="mono">python-quick</td>
+          <td class="mono">—</td>
+          <td class="mono">24576</td>
+          <td class="score">44.4%</td>
+          <td class="score">66.7%</td>
+          <td class="mono">9/9</td>
+          <td class="mono">151.32</td>
+          <td class="mono">21.31</td>
+          <td class="mono">100.0%</td>
+          <td class="mono">0</td>
+          <td class="mono">0</td>
+          <td class="mono">0</td>
+          <td class="mono">0</td>
+          <td class="status ok">✓</td>
+          <td class="mono dim">2026-04-09 10:25:03</td>
+        </tr>
+
+        <tr>
+          <td>Gemma 4 26B A4B (Q8_0)</td>
+          <td class="mono">rocm7</td>
+          <td class="mono">python-quick</td>
+          <td class="mono">—</td>
+          <td class="mono">24576</td>
+          <td class="score">0.0%</td>
+          <td class="score">50.0%</td>
+          <td class="mono">4/4</td>
+          <td class="mono">899.41</td>
+          <td class="mono">7.04</td>
+          <td class="mono">100.0%</td>
+          <td class="mono">1</td>
+          <td class="mono">0</td>
+          <td class="mono">0</td>
+          <td class="mono">0</td>
+          <td class="status ok">✓</td>
+          <td class="mono dim">2026-04-08 18:18:20</td>
+        </tr>
+
+        <tr>
+          <td>Nemotron Nano (Q4_K_M)</td>
+          <td class="mono">rocm7</td>
+          <td class="mono">python-quick</td>
+          <td class="mono">—</td>
+          <td class="mono">24576</td>
+          <td class="score">0.0%</td>
+          <td class="score">44.4%</td>
+          <td class="mono">9/9</td>
+          <td class="mono">219.70</td>
+          <td class="mono">39.65</td>
+          <td class="mono">100.0%</td>
+          <td class="mono">0</td>
+          <td class="mono">0</td>
+          <td class="mono">0</td>
+          <td class="mono">0</td>
+          <td class="status ok">✓</td>
+          <td class="mono dim">2026-04-09 09:24:05</td>
+        </tr>
+
+        <tr>
+          <td>gemma4-26b-a4b-q8</td>
+          <td class="mono">rocm7</td>
+          <td class="mono">python-30m</td>
+          <td class="mono">—</td>
+          <td class="mono">8192</td>
+          <td class="score">0.0%</td>
+          <td class="score">0.0%</td>
+          <td class="mono">0/0</td>
+          <td class="mono">0.00</td>
+          <td class="mono">0.00</td>
+          <td class="mono">0.0%</td>
+          <td class="mono">0</td>
+          <td class="mono">0</td>
+          <td class="mono">0</td>
+          <td class="mono">0</td>
+          <td class="status fail">✗</td>
+          <td class="mono dim">2026-04-07 22:05:37</td>
+        </tr>
+</tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+  <script>
+    const passLabels = ["Qwen3 Coder Next (Q6_K) (rocm7, python-quick, max=24576, tries=2)", "Gemma 4 26B A4B (Q8_0) (rocm7, python-quick, max=24576, tries=2)", "Nemotron Nano (Q4_K_M) (rocm7, python-quick, max=24576, tries=2)", "gemma4-26b-a4b-q8 (rocm7, python-30m, max=8192, tries=2)"];
+    const passTry1 = [44.4, 0.0, 0.0, 0.0];
+    const passTry2 = [66.7, 50.0, 44.4, 0.0];
+    const passColors = ["#e63946", "#457b9d", "#2a9d8f", "#e9c46a"];
+    const speedLabels = ["Nemotron Nano (Q4_K_M) (rocm7, python-quick, max=24576, tries=2)", "Qwen3 Coder Next (Q6_K) (rocm7, python-quick, max=24576, tries=2)", "Gemma 4 26B A4B (Q8_0) (rocm7, python-quick, max=24576, tries=2)", "gemma4-26b-a4b-q8 (rocm7, python-30m, max=8192, tries=2)"];
+    const speedValues = [39.65, 21.31, 7.04, 0.0];
+    const speedColors = ["#e63946", "#457b9d", "#2a9d8f", "#e9c46a"];
+    const timeLabels = ["Qwen3 Coder Next (Q6_K) (rocm7, python-quick, max=24576, tries=2)", "Nemotron Nano (Q4_K_M) (rocm7, python-quick, max=24576, tries=2)", "Gemma 4 26B A4B (Q8_0) (rocm7, python-quick, max=24576, tries=2)", "gemma4-26b-a4b-q8 (rocm7, python-30m, max=8192, tries=2)"];
+    const timeValues = [151.32, 219.7, 899.41, 0.0];
+    const timeColors = ["#e63946", "#457b9d", "#2a9d8f", "#e9c46a"];
+    const warningLabels = ["Qwen3 Coder Next (Q6_K) (rocm7, python-quick, max=24576, tries=2)", "Gemma 4 26B A4B (Q8_0) (rocm7, python-quick, max=24576, tries=2)", "Nemotron Nano (Q4_K_M) (rocm7, python-quick, max=24576, tries=2)", "gemma4-26b-a4b-q8 (rocm7, python-30m, max=8192, tries=2)"];
+    const exhaustedValues = [0, 1, 0, 0];
+    const malformedValues = [0, 0, 0, 0];
+    const timeoutValues = [0, 0, 0, 0];
+    const scatterPoints = [{"x": 151.32, "y": 66.7, "label": "Qwen3 Coder Next (Q6_K) (rocm7, python-quick, max=24576, tries=2)", "color": "#e63946", "wellFormed": 100.0}, {"x": 899.41, "y": 50.0, "label": "Gemma 4 26B A4B (Q8_0) (rocm7, python-quick, max=24576, tries=2)", "color": "#457b9d", "wellFormed": 100.0}, {"x": 219.7, "y": 44.4, "label": "Nemotron Nano (Q4_K_M) (rocm7, python-quick, max=24576, tries=2)", "color": "#2a9d8f", "wellFormed": 100.0}];
+    const historyTimestamps = ["2026-04-07 22:00:24", "2026-04-07 22:03:06", "2026-04-07 22:05:37", "2026-04-08 15:40:29", "2026-04-08 17:11:30", "2026-04-08 18:18:20", "2026-04-08 20:50:12", "2026-04-09 08:48:37", "2026-04-09 09:24:05", "2026-04-09 10:25:03"];
+    const historyDatasets = [{"label": "Gemma 4 26B A4B (Q8_0) (rocm7, python-quick, max=24576, tries=2)", "data": [null, null, null, 100.0, 60.0, 50.0, null, null, null, null], "borderColor": "#e63946", "backgroundColor": "#e6394633"}, {"label": "Nemotron Nano (Q4_K_M) (rocm7, python-quick, max=24576, tries=2)", "data": [null, null, null, null, null, null, 50.0, 0.0, 44.4, null], "borderColor": "#457b9d", "backgroundColor": "#457b9d33"}];
+
+    const axisCommon = {
+      ticks: { color: '#c9d1d9' },
+      grid: { color: '#30363d' },
+      border: { color: '#30363d' },
+    };
+    const pluginCommon = {
+      legend: { labels: { color: '#c9d1d9', usePointStyle: true } },
+      tooltip: {
+        backgroundColor: '#161b22',
+        borderColor: '#30363d',
+        borderWidth: 1,
+        titleColor: '#e6edf3',
+        bodyColor: '#c9d1d9',
+      },
+    };
+
+    new Chart(document.getElementById('passChart'), {
+      type: 'bar',
+      data: {
+        labels: passLabels,
+        datasets: [
+          {
+            label: 'Try 1 (%)',
+            data: passTry1,
+            backgroundColor: passColors.map(color => color + '99'),
+            borderColor: passColors,
+            borderWidth: 1,
+            borderRadius: 5,
+          },
+          {
+            label: 'Try 2 (%)',
+            data: passTry2,
+            backgroundColor: passColors,
+            borderColor: passColors,
+            borderWidth: 1,
+            borderRadius: 5,
+          },
+        ],
+      },
+      options: {
+        indexAxis: 'y',
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: pluginCommon,
+        scales: {
+          x: { ...axisCommon, beginAtZero: true, max: 100, title: { display: true, text: 'Pass rate %', color: '#c9d1d9' } },
+          y: axisCommon,
+        },
+      },
+    });
+
+    new Chart(document.getElementById('speedChart'), {
+      type: 'bar',
+      data: {
+        labels: speedLabels,
+        datasets: [{
+          label: 'Completion tok/s',
+          data: speedValues,
+          backgroundColor: speedColors,
+          borderColor: speedColors,
+          borderWidth: 1,
+          borderRadius: 5,
+        }],
+      },
+      options: {
+        indexAxis: 'y',
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: pluginCommon,
+        scales: {
+          x: { ...axisCommon, beginAtZero: true, title: { display: true, text: 'tok/s', color: '#c9d1d9' } },
+          y: axisCommon,
+        },
+      },
+    });
+
+    new Chart(document.getElementById('timeChart'), {
+      type: 'bar',
+      data: {
+        labels: timeLabels,
+        datasets: [{
+          label: 'Seconds per case',
+          data: timeValues,
+          backgroundColor: timeColors,
+          borderColor: timeColors,
+          borderWidth: 1,
+          borderRadius: 5,
+        }],
+      },
+      options: {
+        indexAxis: 'y',
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: pluginCommon,
+        scales: {
+          x: { ...axisCommon, beginAtZero: true, title: { display: true, text: 'seconds', color: '#c9d1d9' } },
+          y: axisCommon,
+        },
+      },
+    });
+
+    new Chart(document.getElementById('scatterChart'), {
+      type: 'scatter',
+      data: {
+        datasets: scatterPoints.map(point => ({
+          label: point.label,
+          data: [{ x: point.x, y: point.y }],
+          pointRadius: 6,
+          pointHoverRadius: 8,
+          pointBackgroundColor: point.color,
+          pointBorderColor: point.color,
+        })),
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          ...pluginCommon,
+          tooltip: {
+            ...pluginCommon.tooltip,
+            callbacks: {
+              label(context) {
+                const dataset = scatterPoints[context.datasetIndex];
+                return `${dataset.label} | ${dataset.x}s/case | ${dataset.y}% try2 | ${dataset.wellFormed}% well formed`;
+              },
+            },
+          },
+          legend: { display: false },
+        },
+        scales: {
+          x: { ...axisCommon, beginAtZero: true, title: { display: true, text: 'Seconds per case', color: '#c9d1d9' } },
+          y: { ...axisCommon, beginAtZero: true, max: 100, title: { display: true, text: 'Try 2 pass rate %', color: '#c9d1d9' } },
+        },
+      },
+    });
+
+    new Chart(document.getElementById('warningChart'), {
+      type: 'bar',
+      data: {
+        labels: warningLabels,
+        datasets: [
+          { label: 'Context exhaustion', data: exhaustedValues, backgroundColor: '#e63946', borderRadius: 5 },
+          { label: 'Malformed responses', data: malformedValues, backgroundColor: '#f4a261', borderRadius: 5 },
+          { label: 'Timed-out tests', data: timeoutValues, backgroundColor: '#457b9d', borderRadius: 5 },
+        ],
+      },
+      options: {
+        indexAxis: 'y',
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: pluginCommon,
+        scales: {
+          x: { ...axisCommon, beginAtZero: true, stacked: true, title: { display: true, text: 'count', color: '#c9d1d9' } },
+          y: { ...axisCommon, stacked: true },
+        },
+      },
+    });
+
+    new Chart(document.getElementById('historyChart'), {
+      type: 'line',
+      data: {
+        labels: historyTimestamps,
+        datasets: historyDatasets.map(dataset => ({
+          ...dataset,
+          pointRadius: 4,
+          pointHoverRadius: 6,
+          borderWidth: 2,
+          tension: 0.2,
+          spanGaps: true,
+        })),
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: pluginCommon,
+        scales: {
+          x: axisCommon,
+          y: { ...axisCommon, beginAtZero: true, max: 100, title: { display: true, text: 'Try 2 pass rate %', color: '#c9d1d9' } },
+        },
+      },
+    });
+  </script>
+</body>
+</html>

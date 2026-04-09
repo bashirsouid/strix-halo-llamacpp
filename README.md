@@ -130,12 +130,12 @@ The default `python-quick` profile is a fixed harder 9-exercise subset chosen to
 
 ### Aider parallelism
 
-By default, `python server.py aider-bench ...` now uses the model's `parallel_slots` value from `models.py`. That means the worker count you tune with `python server.py bench-parallel MODEL ...` becomes the default quality-eval parallelism for that specific model.
+By default, `python server.py aider-bench ...` now starts from the model's `parallel_slots` value in `models.py`, but it caps the **default eval worker count at 3**. That keeps quality runs from blindly inheriting very high throughput-tuning values that can create long tail latencies or harder-to-debug hangs. If you want another value, pass `--threads` explicitly.
 
 Examples:
 
 ```bash
-# Use the model's tuned default from models.py
+# Use the model's tuned default from models.py, capped at 3 for evals
 python server.py aider-bench qwen3-coder-next-q6 --backend radv --profile python-quick
 
 # Force a strict serial run for apples-to-apples comparisons
@@ -144,7 +144,7 @@ python server.py aider-bench qwen3-coder-next-q6 --backend radv --profile python
 # Try a higher-concurrency screen run
 python server.py aider-bench qwen3-coder-next-q6 --backend radv --profile python-quick --threads 3
 
-# Let each downloaded model use its own tuned parallel_slots value
+# Let each downloaded model use its own tuned parallel_slots value, capped at 3
 python server.py aider-bench-all --backend rocm7 --profile python-quick
 
 # Force the same parallelism across every model in aider-bench-all
@@ -152,6 +152,20 @@ python server.py aider-bench-all --backend rocm7 --profile python-quick --thread
 ```
 
 When `--threads` is provided, the launcher starts `llama-server` with matching `--parallel` so the benchmark worker count and server slot count stay aligned. Context still scales as `ctx_per_slot × threads`, just like the rest of the launcher.
+
+### Aider verbose diagnostics
+
+Use `--verbose` when you want to debug a noisy or suspicious run. In verbose mode the wrapper:
+
+- streams the full raw Aider subprocess output back to the terminal,
+- keeps writing the normal benchmark log under `results/aider/logs/`, and
+- routes requests through a tiny local OpenAI-compatible proxy that writes a second text log with one line per request completion.
+
+That proxy log is especially useful for finalization stalls because it shows when `/v1` requests start and finish, the active request count, and token usage from the upstream response when available.
+
+```bash
+python server.py aider-bench MODEL --backend rocm7 --profile python-quick --verbose
+```
 
 Aider runs now refresh `eval_report.html` automatically after `aider-bench` and `aider-bench-all`, so the dashboard stays current as new JSONL rows land in `results/aider/aider_results.jsonl`. The viewer keeps `python-quick` and `python-all` variants separate in the charts because the profile is part of each run's series key.
 
