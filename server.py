@@ -1972,6 +1972,22 @@ def aider_setup(
     return setup
 
 
+def _resolve_aider_threads(cfg: ModelConfig, threads: int | None) -> tuple[int, str]:
+    """Return the effective Aider worker count and where it came from."""
+    if threads is None:
+        resolved = int(getattr(cfg, "parallel_slots", 1) or 1)
+        return max(1, resolved), "models.py parallel_slots"
+    return max(1, int(threads)), "--threads"
+
+
+def _resolve_aider_context_window(cfg: ModelConfig, threads: int) -> int:
+    """Match benchmark metadata to the actual llama-server parallel/context settings."""
+    ctx_per_slot = int(getattr(cfg, "ctx_per_slot", 0) or 0)
+    if ctx_per_slot <= 0:
+        return int(getattr(cfg, "ctx_size", 0) or 0)
+    return ctx_per_slot * max(1, int(threads))
+
+
 def aider_bench_single(
     model_alias: str | None,
     *,
@@ -1981,7 +1997,7 @@ def aider_bench_single(
     manifest_path: str | None = None,
     run_label: str | None = None,
     max_tokens: int = DEFAULT_AIDER_MAX_TOKENS,
-    threads: int = 1,
+    threads: int | None = None,
     tries: int | None = None,
     edit_format: str = "whole",
     update_harness: bool = False,
@@ -2001,14 +2017,18 @@ def aider_bench_single(
             "profile": profile_name,
         }
 
+    effective_threads, threads_source = _resolve_aider_threads(cfg, threads)
+    effective_context_window = _resolve_aider_context_window(cfg, effective_threads)
+
     profile_label = manifest_path or profile_name
     label_suffix = f"  label={run_label}" if run_label else ""
     info(
         f"═══ Aider benchmark: {cfg.name} ({cfg.alias})  {backend}  "
-        f"profile={profile_label}  max_tokens={max_tokens}{label_suffix} ═══"
+        f"profile={profile_label}  max_tokens={max_tokens}  "
+        f"threads={effective_threads} ({threads_source}){label_suffix} ═══"
     )
 
-    launch_server(cfg, port=port, backend=backend)
+    launch_server(cfg, port=port, backend=backend, parallel_override=effective_threads)
 
     try:
         result = run_aider_benchmark(
@@ -2019,10 +2039,10 @@ def aider_bench_single(
             manifest_path=manifest_path,
             run_label=run_label,
             max_tokens=max_tokens,
-            threads=threads,
+            threads=effective_threads,
             tries=tries,
             edit_format=edit_format,
-            context_window=cfg.ctx_size,
+            context_window=effective_context_window,
             api_key=_api_key_for_model(cfg.alias),
             update_harness=update_harness,
             aider_ref=aider_ref,
@@ -2088,7 +2108,7 @@ def aider_bench_all(
     manifest_path: str | None = None,
     run_label: str | None = None,
     max_tokens: int = DEFAULT_AIDER_MAX_TOKENS,
-    threads: int = 1,
+    threads: int | None = None,
     tries: int | None = None,
     edit_format: str = "whole",
     update_harness: bool = False,
@@ -2121,10 +2141,11 @@ def aider_bench_all(
         results.append((cfg.alias, cfg.name, result))
 
     print()
-    print("  ══════════════════════════════════════════════════════════════════════════════════════")
-    print(f"  {'Model':<28s} {'Try1':>6s} {'Try2':>6s} {'Cases':>9s} {'s/case':>8s} {'tok/s':>8s}")
-    print(f"  {'─'*28} {'─'*6} {'─'*6} {'─'*9} {'─'*8} {'─'*8}")
+    print("  ═══════════════════════════════════════════════════════════════════════════════════════════════")
+    print(f"  {'Model':<28s} {'Thr':>3s} {'Try1':>6s} {'Try2':>6s} {'Cases':>9s} {'s/case':>8s} {'tok/s':>8s}")
+    print(f"  {'─'*28} {'─'*3} {'─'*6} {'─'*6} {'─'*9} {'─'*8} {'─'*8}")
     for _, name, result in results:
+        threads_used = result.get('threads') or 0
         try1 = result.get('pass_rate_1')
         try2 = result.get('pass_rate_2')
         completed = result.get('completed_tests') or 0
@@ -2134,10 +2155,10 @@ def aider_bench_all(
         try1_text = f"{try1:.1f}%" if isinstance(try1, (int, float)) else "—"
         try2_text = f"{try2:.1f}%" if isinstance(try2, (int, float)) else "—"
         print(
-            f"  {name:<28s} {try1_text:>6s} {try2_text:>6s} "
+            f"  {name:<28s} {int(threads_used):>3d} {try1_text:>6s} {try2_text:>6s} "
             f"{f'{completed}/{total}':>9s} {seconds:>8.2f} {tok_s:>8.2f}"
         )
-    print("  ══════════════════════════════════════════════════════════════════════════════════════")
+    print("  ═══════════════════════════════════════════════════════════════════════════════════════════════")
     print()
 
     return [result for _, _, result in results]
@@ -2519,8 +2540,8 @@ def main():
                          help="Optional label to distinguish repeated aider runs")
     p_aider.add_argument("--max-tokens", type=int, default=DEFAULT_AIDER_MAX_TOKENS,
                          help=f"Generation cap forwarded to the model via Aider/LiteLLM (default: {DEFAULT_AIDER_MAX_TOKENS})")
-    p_aider.add_argument("--threads", type=int, default=1,
-                         help="Aider benchmark worker threads (default: 1)")
+    p_aider.add_argument("--threads", type=int, default=None,
+                         help="Aider benchmark worker threads (default: model's parallel_slots from models.py)")
     p_aider.add_argument("--tries", type=int, default=None,
                          help="Number of repair attempts per exercise (default: profile default)")
     p_aider.add_argument("--edit-format", default="whole",
@@ -2545,7 +2566,8 @@ def main():
     p_aider_all.add_argument("--label", default=None,
                              help="Optional label to attach to every aider benchmark run")
     p_aider_all.add_argument("--max-tokens", type=int, default=DEFAULT_AIDER_MAX_TOKENS)
-    p_aider_all.add_argument("--threads", type=int, default=1)
+    p_aider_all.add_argument("--threads", type=int, default=None,
+                             help="Aider benchmark worker threads (default: each model's parallel_slots from models.py)")
     p_aider_all.add_argument("--tries", type=int, default=None)
     p_aider_all.add_argument("--edit-format", default="whole")
     p_aider_all.add_argument("--port", type=int, default=8000)

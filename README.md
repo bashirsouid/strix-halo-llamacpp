@@ -121,11 +121,37 @@ Run the recommended Aider benchmark:
 ```bash
 python server.py aider-setup
 python server.py aider-bench MODEL --backend radv --profile python-quick
-python server.py aider-bench MODEL --backend radv --profile python-all
+python server.py aider-bench MODEL --backend radv --profile python-quick --threads 1
+python server.py aider-bench MODEL --backend radv --profile python-all --threads 3
 python server.py aider-bench-all --backend rocm --profile python-quick
 ```
 
-The default `python-quick` profile is a fixed harder 9-exercise subset chosen to keep local runs near ~30 minutes while still separating models on parsing, stateful logic, tree/graph handling, and API-style edits. `python-all` is the full 34-exercise Python set from Aider's polyglot benchmark. Every Aider run now uses a fresh benchmark directory, forces a clean rerun, fixes the exercise order with a deterministic seed, injects local model metadata so token-limit warnings stop falling back to `0`, emits a compact stats block whenever an exercise finishes, and keeps the terminal focused on warnings plus that progress output instead of dumping authored code. The full raw log is saved under `results/aider/logs/`. Set `STRIX_AIDER_PROGRESS_HEARTBEAT_SECONDS` to change the low-noise heartbeat interval for long-running cases, or `0` to disable it.
+The default `python-quick` profile is a fixed harder 9-exercise subset chosen to keep local runs near ~30 minutes while still separating models on parsing, stateful logic, tree/graph handling, and API-style edits. `python-all` is the full 34-exercise Python set from Aider's polyglot benchmark. Every Aider run now uses a fresh benchmark directory, forces a clean rerun, fixes the exercise order with a deterministic seed, injects local model metadata so token-limit warnings stop falling back to `0`, and filters terminal output down to progress plus actionable warnings. The full raw log is saved under `results/aider/logs/`.
+
+### Aider parallelism
+
+By default, `python server.py aider-bench ...` now uses the model's `parallel_slots` value from `models.py`. That means the worker count you tune with `python server.py bench-parallel MODEL ...` becomes the default quality-eval parallelism for that specific model.
+
+Examples:
+
+```bash
+# Use the model's tuned default from models.py
+python server.py aider-bench qwen3-coder-next-q6 --backend radv --profile python-quick
+
+# Force a strict serial run for apples-to-apples comparisons
+python server.py aider-bench qwen3-coder-next-q6 --backend radv --profile python-quick --threads 1
+
+# Try a higher-concurrency screen run
+python server.py aider-bench qwen3-coder-next-q6 --backend radv --profile python-quick --threads 3
+
+# Let each downloaded model use its own tuned parallel_slots value
+python server.py aider-bench-all --backend rocm7 --profile python-quick
+
+# Force the same parallelism across every model in aider-bench-all
+python server.py aider-bench-all --backend rocm7 --profile python-quick --threads 2
+```
+
+When `--threads` is provided, the launcher starts `llama-server` with matching `--parallel` so the benchmark worker count and server slot count stay aligned. Context still scales as `ctx_per_slot × threads`, just like the rest of the launcher.
 
 Visualize the Aider results:
 

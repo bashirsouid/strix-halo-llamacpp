@@ -1,9 +1,43 @@
 from __future__ import annotations
 
+import importlib
 import json
+import sys
+import types
 from pathlib import Path
 
 import aider_benchmark
+
+
+def _import_server_for_tests(monkeypatch):
+    eval_profiles = types.ModuleType("eval_profiles")
+
+    class EvalProfile:  # pragma: no cover - tiny import shim
+        pass
+
+    eval_profiles.EvalProfile = EvalProfile
+    eval_profiles.ensure_override_dataset = lambda *args, **kwargs: None
+    eval_profiles.resolve_eval_profile = lambda *args, **kwargs: None
+
+    repo_cache = types.ModuleType("repo_cache")
+    repo_cache.DEFAULT_PROXY_HOST = "127.0.0.1"
+    repo_cache.DEFAULT_PROXY_PORT = 8001
+    repo_cache.DEFAULT_SLOT_ID = 0
+    repo_cache.SLOT_CACHE_ROOT = Path("/tmp/slots")
+    repo_cache.ensure_cache_dirs = lambda *args, **kwargs: None
+    repo_cache.ensure_gitignore_entry = lambda *args, **kwargs: None
+    repo_cache.load_repo_context = lambda *args, **kwargs: {}
+    repo_cache.make_warm_payload = lambda *args, **kwargs: {}
+    repo_cache.refresh_repo_context = lambda *args, **kwargs: {}
+    repo_cache.repo_paths = lambda *args, **kwargs: {}
+    repo_cache.start_repo_proxy = lambda *args, **kwargs: None
+    repo_cache.write_opencode_config = lambda *args, **kwargs: None
+
+    monkeypatch.setitem(sys.modules, "eval_profiles", eval_profiles)
+    monkeypatch.setitem(sys.modules, "repo_cache", repo_cache)
+    sys.modules.pop("server", None)
+    return importlib.import_module("server")
+
 
 
 def _make_exercise(root: Path, relpath: str) -> None:
@@ -211,3 +245,67 @@ def test_collect_failed_exercises_and_write_sitecustomize(tmp_path: Path) -> Non
     contents = sitecustomize.read_text()
     assert "register_litellm_models" in contents
     assert "STRIX_AIDER_RANDOM_SEED" in contents
+
+
+class _FakeCfg:
+    def __init__(self, parallel_slots: int, ctx_per_slot: int, ctx_size: int | None = None) -> None:
+        self.parallel_slots = parallel_slots
+        self.ctx_per_slot = ctx_per_slot
+        self.ctx_size = ctx_size if ctx_size is not None else parallel_slots * ctx_per_slot
+
+
+def test_server_resolve_aider_threads_and_context_defaults(monkeypatch) -> None:
+    server = _import_server_for_tests(monkeypatch)
+
+    cfg = _FakeCfg(parallel_slots=3, ctx_per_slot=4096)
+
+    assert server._resolve_aider_threads(cfg, None) == (3, "models.py parallel_slots")
+    assert server._resolve_aider_threads(cfg, 2) == (2, "--threads")
+    assert server._resolve_aider_context_window(cfg, 3) == 12288
+    assert server._resolve_aider_context_window(cfg, 2) == 8192
+
+
+def test_aider_bench_single_uses_effective_threads_for_server_and_metadata(monkeypatch) -> None:
+    server = _import_server_for_tests(monkeypatch)
+
+    calls: dict[str, object] = {}
+
+    cfg = _FakeCfg(parallel_slots=4, ctx_per_slot=2048)
+    cfg.is_downloaded = True
+    cfg.name = "Fake Model"
+    cfg.alias = "fake-model"
+    cfg.quant = "Q8_0"
+
+    monkeypatch.setattr(server, "get_model", lambda alias: cfg)
+    monkeypatch.setattr(server, "stop_server", lambda: None)
+    monkeypatch.setattr(server.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(server, "info", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "ok", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "warn", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "fail", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "_api_key_for_model", lambda _alias: "local")
+
+    def fake_launch(model_cfg, **kwargs):
+        calls["launch"] = {"cfg": model_cfg, **kwargs}
+
+    def fake_run(**kwargs):
+        calls["run"] = kwargs
+        return {"ok": True, "threads": kwargs["threads"]}
+
+    monkeypatch.setattr(server, "launch_server", fake_launch)
+    monkeypatch.setattr(server, "run_aider_benchmark", fake_run)
+
+    result = server.aider_bench_single("fake-model", backend="radv")
+
+    assert result["threads"] == 4
+    assert calls["launch"]["parallel_override"] == 4
+    assert calls["run"]["threads"] == 4
+    assert calls["run"]["context_window"] == 8192
+
+    calls.clear()
+    result = server.aider_bench_single("fake-model", backend="radv", threads=2)
+
+    assert result["threads"] == 2
+    assert calls["launch"]["parallel_override"] == 2
+    assert calls["run"]["threads"] == 2
+    assert calls["run"]["context_window"] == 4096

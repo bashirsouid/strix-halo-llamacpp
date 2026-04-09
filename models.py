@@ -21,7 +21,8 @@ Parallelization and context strategy
                    test --np 1…max_parallel and find the throughput peak.
 
 Use `python server.py bench-parallel [MODEL]` to find the optimal slot count
-for your exact hardware config, then update parallel_slots to match.
+for your exact hardware config, then update parallel_slots to match. The
+Aider benchmark defaults to this value unless you override it with `--threads`.
 """
 
 from __future__ import annotations
@@ -113,7 +114,7 @@ class ModelConfig:
     quant: str = ""             # quantization level (e.g. "Q4_K_M", "Q6_K")
 
     #  Parallelization  
-    parallel_slots: int = 1     # --parallel / -np (concurrent request slots)
+    parallel_slots: int = 1     # --parallel / -np (concurrent request slots, also default aider-bench threads)
     max_parallel: int = 8       # upper bound for bench-parallel sweep
     ctx_per_slot: int = 32768   # context window per slot (total = this × slots)
 

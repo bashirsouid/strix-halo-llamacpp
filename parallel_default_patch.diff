@@ -1,0 +1,305 @@
+--- a/server.py
++++ b/server.py
+@@ -1972,6 +1972,22 @@
+     return setup
+ 
+ 
++def _resolve_aider_threads(cfg: ModelConfig, threads: int | None) -> tuple[int, str]:
++    """Return the effective Aider worker count and where it came from."""
++    if threads is None:
++        resolved = int(getattr(cfg, "parallel_slots", 1) or 1)
++        return max(1, resolved), "models.py parallel_slots"
++    return max(1, int(threads)), "--threads"
++
++
++def _resolve_aider_context_window(cfg: ModelConfig, threads: int) -> int:
++    """Match benchmark metadata to the actual llama-server parallel/context settings."""
++    ctx_per_slot = int(getattr(cfg, "ctx_per_slot", 0) or 0)
++    if ctx_per_slot <= 0:
++        return int(getattr(cfg, "ctx_size", 0) or 0)
++    return ctx_per_slot * max(1, int(threads))
++
++
+ def aider_bench_single(
+     model_alias: str | None,
+     *,
+@@ -1981,7 +1997,7 @@
+     manifest_path: str | None = None,
+     run_label: str | None = None,
+     max_tokens: int = DEFAULT_AIDER_MAX_TOKENS,
+-    threads: int = 1,
++    threads: int | None = None,
+     tries: int | None = None,
+     edit_format: str = "whole",
+     update_harness: bool = False,
+@@ -2001,14 +2017,18 @@
+             "profile": profile_name,
+         }
+ 
++    effective_threads, threads_source = _resolve_aider_threads(cfg, threads)
++    effective_context_window = _resolve_aider_context_window(cfg, effective_threads)
++
+     profile_label = manifest_path or profile_name
+     label_suffix = f"  label={run_label}" if run_label else ""
+     info(
+         f"═══ Aider benchmark: {cfg.name} ({cfg.alias})  {backend}  "
+-        f"profile={profile_label}  max_tokens={max_tokens}{label_suffix} ═══"
++        f"profile={profile_label}  max_tokens={max_tokens}  "
++        f"threads={effective_threads} ({threads_source}){label_suffix} ═══"
+     )
+ 
+-    launch_server(cfg, port=port, backend=backend)
++    launch_server(cfg, port=port, backend=backend, parallel_override=effective_threads)
+ 
+     try:
+         result = run_aider_benchmark(
+@@ -2019,10 +2039,10 @@
+             manifest_path=manifest_path,
+             run_label=run_label,
+             max_tokens=max_tokens,
+-            threads=threads,
++            threads=effective_threads,
+             tries=tries,
+             edit_format=edit_format,
+-            context_window=cfg.ctx_size,
++            context_window=effective_context_window,
+             api_key=_api_key_for_model(cfg.alias),
+             update_harness=update_harness,
+             aider_ref=aider_ref,
+@@ -2088,7 +2108,7 @@
+     manifest_path: str | None = None,
+     run_label: str | None = None,
+     max_tokens: int = DEFAULT_AIDER_MAX_TOKENS,
+-    threads: int = 1,
++    threads: int | None = None,
+     tries: int | None = None,
+     edit_format: str = "whole",
+     update_harness: bool = False,
+@@ -2121,10 +2141,11 @@
+         results.append((cfg.alias, cfg.name, result))
+ 
+     print()
+-    print("  ══════════════════════════════════════════════════════════════════════════════════════")
+-    print(f"  {'Model':<28s} {'Try1':>6s} {'Try2':>6s} {'Cases':>9s} {'s/case':>8s} {'tok/s':>8s}")
+-    print(f"  {'─'*28} {'─'*6} {'─'*6} {'─'*9} {'─'*8} {'─'*8}")
++    print("  ═══════════════════════════════════════════════════════════════════════════════════════════════")
++    print(f"  {'Model':<28s} {'Thr':>3s} {'Try1':>6s} {'Try2':>6s} {'Cases':>9s} {'s/case':>8s} {'tok/s':>8s}")
++    print(f"  {'─'*28} {'─'*3} {'─'*6} {'─'*6} {'─'*9} {'─'*8} {'─'*8}")
+     for _, name, result in results:
++        threads_used = result.get('threads') or 0
+         try1 = result.get('pass_rate_1')
+         try2 = result.get('pass_rate_2')
+         completed = result.get('completed_tests') or 0
+@@ -2134,10 +2155,10 @@
+         try1_text = f"{try1:.1f}%" if isinstance(try1, (int, float)) else "—"
+         try2_text = f"{try2:.1f}%" if isinstance(try2, (int, float)) else "—"
+         print(
+-            f"  {name:<28s} {try1_text:>6s} {try2_text:>6s} "
++            f"  {name:<28s} {int(threads_used):>3d} {try1_text:>6s} {try2_text:>6s} "
+             f"{f'{completed}/{total}':>9s} {seconds:>8.2f} {tok_s:>8.2f}"
+         )
+-    print("  ══════════════════════════════════════════════════════════════════════════════════════")
++    print("  ═══════════════════════════════════════════════════════════════════════════════════════════════")
+     print()
+ 
+     return [result for _, _, result in results]
+@@ -2519,8 +2540,8 @@
+                          help="Optional label to distinguish repeated aider runs")
+     p_aider.add_argument("--max-tokens", type=int, default=DEFAULT_AIDER_MAX_TOKENS,
+                          help=f"Generation cap forwarded to the model via Aider/LiteLLM (default: {DEFAULT_AIDER_MAX_TOKENS})")
+-    p_aider.add_argument("--threads", type=int, default=1,
+-                         help="Aider benchmark worker threads (default: 1)")
++    p_aider.add_argument("--threads", type=int, default=None,
++                         help="Aider benchmark worker threads (default: model's parallel_slots from models.py)")
+     p_aider.add_argument("--tries", type=int, default=None,
+                          help="Number of repair attempts per exercise (default: profile default)")
+     p_aider.add_argument("--edit-format", default="whole",
+@@ -2545,7 +2566,8 @@
+     p_aider_all.add_argument("--label", default=None,
+                              help="Optional label to attach to every aider benchmark run")
+     p_aider_all.add_argument("--max-tokens", type=int, default=DEFAULT_AIDER_MAX_TOKENS)
+-    p_aider_all.add_argument("--threads", type=int, default=1)
++    p_aider_all.add_argument("--threads", type=int, default=None,
++                             help="Aider benchmark worker threads (default: each model's parallel_slots from models.py)")
+     p_aider_all.add_argument("--tries", type=int, default=None)
+     p_aider_all.add_argument("--edit-format", default="whole")
+     p_aider_all.add_argument("--port", type=int, default=8000)
+--- a/README.md
++++ b/README.md
+@@ -121,12 +121,38 @@
+ ```bash
+ python server.py aider-setup
+ python server.py aider-bench MODEL --backend radv --profile python-quick
+-python server.py aider-bench MODEL --backend radv --profile python-all
++python server.py aider-bench MODEL --backend radv --profile python-quick --threads 1
++python server.py aider-bench MODEL --backend radv --profile python-all --threads 3
+ python server.py aider-bench-all --backend rocm --profile python-quick
+ ```
+ 
+ The default `python-quick` profile is a fixed harder 9-exercise subset chosen to keep local runs near ~30 minutes while still separating models on parsing, stateful logic, tree/graph handling, and API-style edits. `python-all` is the full 34-exercise Python set from Aider's polyglot benchmark. Every Aider run now uses a fresh benchmark directory, forces a clean rerun, fixes the exercise order with a deterministic seed, injects local model metadata so token-limit warnings stop falling back to `0`, and filters terminal output down to progress plus actionable warnings. The full raw log is saved under `results/aider/logs/`.
+ 
++### Aider parallelism
++
++By default, `python server.py aider-bench ...` now uses the model's `parallel_slots` value from `models.py`. That means the worker count you tune with `python server.py bench-parallel MODEL ...` becomes the default quality-eval parallelism for that specific model.
++
++Examples:
++
++```bash
++# Use the model's tuned default from models.py
++python server.py aider-bench qwen3-coder-next-q6 --backend radv --profile python-quick
++
++# Force a strict serial run for apples-to-apples comparisons
++python server.py aider-bench qwen3-coder-next-q6 --backend radv --profile python-quick --threads 1
++
++# Try a higher-concurrency screen run
++python server.py aider-bench qwen3-coder-next-q6 --backend radv --profile python-quick --threads 3
++
++# Let each downloaded model use its own tuned parallel_slots value
++python server.py aider-bench-all --backend rocm7 --profile python-quick
++
++# Force the same parallelism across every model in aider-bench-all
++python server.py aider-bench-all --backend rocm7 --profile python-quick --threads 2
++```
++
++When `--threads` is provided, the launcher starts `llama-server` with matching `--parallel` so the benchmark worker count and server slot count stay aligned. Context still scales as `ctx_per_slot × threads`, just like the rest of the launcher.
++
+ Visualize the Aider results:
+ 
+ ```bash
+--- a/models.py
++++ b/models.py
+@@ -21,7 +21,8 @@
+                    test --np 1…max_parallel and find the throughput peak.
+ 
+ Use `python server.py bench-parallel [MODEL]` to find the optimal slot count
+-for your exact hardware config, then update parallel_slots to match.
++for your exact hardware config, then update parallel_slots to match. The
++Aider benchmark defaults to this value unless you override it with `--threads`.
+ """
+ 
+ from __future__ import annotations
+@@ -113,7 +114,7 @@
+     quant: str = ""             # quantization level (e.g. "Q4_K_M", "Q6_K")
+ 
+     #  Parallelization  
+-    parallel_slots: int = 1     # --parallel / -np (concurrent request slots)
++    parallel_slots: int = 1     # --parallel / -np (concurrent request slots, also default aider-bench threads)
+     max_parallel: int = 8       # upper bound for bench-parallel sweep
+     ctx_per_slot: int = 32768   # context window per slot (total = this × slots)
+ 
+--- a/test_aider_benchmark.py
++++ b/test_aider_benchmark.py
+@@ -1,11 +1,45 @@
+ from __future__ import annotations
+ 
++import importlib
+ import json
++import sys
++import types
+ from pathlib import Path
+ 
+ import aider_benchmark
+ 
+ 
++def _import_server_for_tests(monkeypatch):
++    eval_profiles = types.ModuleType("eval_profiles")
++
++    class EvalProfile:  # pragma: no cover - tiny import shim
++        pass
++
++    eval_profiles.EvalProfile = EvalProfile
++    eval_profiles.ensure_override_dataset = lambda *args, **kwargs: None
++    eval_profiles.resolve_eval_profile = lambda *args, **kwargs: None
++
++    repo_cache = types.ModuleType("repo_cache")
++    repo_cache.DEFAULT_PROXY_HOST = "127.0.0.1"
++    repo_cache.DEFAULT_PROXY_PORT = 8001
++    repo_cache.DEFAULT_SLOT_ID = 0
++    repo_cache.SLOT_CACHE_ROOT = Path("/tmp/slots")
++    repo_cache.ensure_cache_dirs = lambda *args, **kwargs: None
++    repo_cache.ensure_gitignore_entry = lambda *args, **kwargs: None
++    repo_cache.load_repo_context = lambda *args, **kwargs: {}
++    repo_cache.make_warm_payload = lambda *args, **kwargs: {}
++    repo_cache.refresh_repo_context = lambda *args, **kwargs: {}
++    repo_cache.repo_paths = lambda *args, **kwargs: {}
++    repo_cache.start_repo_proxy = lambda *args, **kwargs: None
++    repo_cache.write_opencode_config = lambda *args, **kwargs: None
++
++    monkeypatch.setitem(sys.modules, "eval_profiles", eval_profiles)
++    monkeypatch.setitem(sys.modules, "repo_cache", repo_cache)
++    sys.modules.pop("server", None)
++    return importlib.import_module("server")
++
++
++
+ def _make_exercise(root: Path, relpath: str) -> None:
+     exercise_dir = root / relpath
+     exercise_dir.mkdir(parents=True, exist_ok=True)
+@@ -164,3 +198,67 @@
+     contents = sitecustomize.read_text()
+     assert "register_litellm_models" in contents
+     assert "STRIX_AIDER_RANDOM_SEED" in contents
++
++
++class _FakeCfg:
++    def __init__(self, parallel_slots: int, ctx_per_slot: int, ctx_size: int | None = None) -> None:
++        self.parallel_slots = parallel_slots
++        self.ctx_per_slot = ctx_per_slot
++        self.ctx_size = ctx_size if ctx_size is not None else parallel_slots * ctx_per_slot
++
++
++def test_server_resolve_aider_threads_and_context_defaults(monkeypatch) -> None:
++    server = _import_server_for_tests(monkeypatch)
++
++    cfg = _FakeCfg(parallel_slots=3, ctx_per_slot=4096)
++
++    assert server._resolve_aider_threads(cfg, None) == (3, "models.py parallel_slots")
++    assert server._resolve_aider_threads(cfg, 2) == (2, "--threads")
++    assert server._resolve_aider_context_window(cfg, 3) == 12288
++    assert server._resolve_aider_context_window(cfg, 2) == 8192
++
++
++def test_aider_bench_single_uses_effective_threads_for_server_and_metadata(monkeypatch) -> None:
++    server = _import_server_for_tests(monkeypatch)
++
++    calls: dict[str, object] = {}
++
++    cfg = _FakeCfg(parallel_slots=4, ctx_per_slot=2048)
++    cfg.is_downloaded = True
++    cfg.name = "Fake Model"
++    cfg.alias = "fake-model"
++    cfg.quant = "Q8_0"
++
++    monkeypatch.setattr(server, "get_model", lambda alias: cfg)
++    monkeypatch.setattr(server, "stop_server", lambda: None)
++    monkeypatch.setattr(server.time, "sleep", lambda _seconds: None)
++    monkeypatch.setattr(server, "info", lambda *args, **kwargs: None)
++    monkeypatch.setattr(server, "ok", lambda *args, **kwargs: None)
++    monkeypatch.setattr(server, "warn", lambda *args, **kwargs: None)
++    monkeypatch.setattr(server, "fail", lambda *args, **kwargs: None)
++    monkeypatch.setattr(server, "_api_key_for_model", lambda _alias: "local")
++
++    def fake_launch(model_cfg, **kwargs):
++        calls["launch"] = {"cfg": model_cfg, **kwargs}
++
++    def fake_run(**kwargs):
++        calls["run"] = kwargs
++        return {"ok": True, "threads": kwargs["threads"]}
++
++    monkeypatch.setattr(server, "launch_server", fake_launch)
++    monkeypatch.setattr(server, "run_aider_benchmark", fake_run)
++
++    result = server.aider_bench_single("fake-model", backend="radv")
++
++    assert result["threads"] == 4
++    assert calls["launch"]["parallel_override"] == 4
++    assert calls["run"]["threads"] == 4
++    assert calls["run"]["context_window"] == 8192
++
++    calls.clear()
++    result = server.aider_bench_single("fake-model", backend="radv", threads=2)
++
++    assert result["threads"] == 2
++    assert calls["launch"]["parallel_override"] == 2
++    assert calls["run"]["threads"] == 2
++    assert calls["run"]["context_window"] == 4096
