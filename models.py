@@ -315,6 +315,33 @@ MODELS: list[ModelConfig] = [
             "Bug: -ub must be 512 on Strix Halo Vulkan (issue #18725). "
             "Bug: Do NOT use Q6_K_XL — broken architecture detection."
         ),
+
+    # ── Qwen3 Coder Next ──
+    # ~62 GB model weight at UD-Q6_K_XL → ~26 GB left for KV + overhead
+    ModelConfig(
+        name="Qwen3 Coder Next (UD-Q6_K_XL)",
+        alias="qwen3-coder-next-udq6xl",
+        hf_repo="unsloth/Qwen3-Coder-Next-GGUF",
+        dest_dir=MODELS_DIR / "unsloth/Qwen3-Coder-Next-GGUF/UD-Q6_K_XL/",
+        download_include="*UD-Q6_K_XL*",
+        shard_glob="*-00001-of-*.gguf",
+        quant="UD-Q6_K_XL",
+        parallel_slots=1,
+        max_parallel=3,
+        ctx_per_slot=262144,
+        ubatch_size=512,
+        temperature=1.0,
+        top_p=0.95,
+        top_k=40,
+        min_p=0.01,
+        spec=SpecConfig(strategy="ngram"),
+        notes=(
+            "Best for: coding agents, tool calling, agentic workflows. "
+            "MoE 80B (3B active). #1 on SWE-rebench. ~62 GB at UD-Q6_K_XL. "
+            "Non-thinking — fast direct responses, no  Witt blocks. "
+            "Bug: -ub must be 512 on Strix Halo Vulkan (issue #18725). "
+            "Bug: Do NOT use Q6_K_XL — broken architecture detection."
+        ),
     ),
 
     # ── Qwen3 Coder Next ──
