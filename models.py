@@ -317,6 +317,62 @@ MODELS: list[ModelConfig] = [
         ),
     ),
 
+    # ── Qwen3 Coder Next ──
+    # ~40 GB model weight at Q4_K_XL → ~48 GB left for KV + overhead
+    ModelConfig(
+        name="Qwen3 Coder Next (Q4_K_XL)",
+        alias="qwen3-coder-next-q4",
+        hf_repo="unsloth/Qwen3-Coder-Next-GGUF",
+        dest_dir=MODELS_DIR / "unsloth/Qwen3-Coder-Next-GGUF",
+        download_include="*UD-Q4_K_XL*",
+        shard_glob="*UD-Q4_K_XL*.gguf",
+        quant="UD-Q4_K_XL",
+        parallel_slots=1,
+        max_parallel=3,
+        ctx_per_slot=262144,
+        ubatch_size=512,
+        temperature=1.0,
+        top_p=0.95,
+        top_k=40,
+        min_p=0.01,
+        spec=SpecConfig(strategy="ngram"),
+        notes=(
+            "Best for: coding agents, tool calling, agentic workflows. "
+            "MoE 80B (3B active). #1 on SWE-rebench. ~40 GB at UD-Q4_K_XL. "
+            "Non-thinking — fast direct responses, no <think> blocks. "
+            "Bug: -ub must be 512 on Strix Halo Vulkan (issue #18725). "
+            "Bug: Do NOT use Q6_K_XL — broken architecture detection."
+        ),
+    ),
+
+    # ── Kimi-Dev-72B (Q6_K) ──
+    # ~59 GB at Q6_K + ~10 GB KV at 65K ctx = ~69 GB total → comfortable on 96 GB
+    # 131K native context possible (total ≈81 GB) if system memory is otherwise clear
+    ModelConfig(
+        name="Kimi-Dev-72B (Q6_K)",
+        alias="kimi-dev-72b-q6",
+        hf_repo="bartowski/moonshotai_Kimi-Dev-72B-GGUF",
+        dest_dir=MODELS_DIR / "bartowski/moonshotai_Kimi-Dev-72B-GGUF/moonshotai_Kimi-Dev-72B-Q6_K",
+        download_include="moonshotai_Kimi-Dev-72B-Q6_K/*.gguf",
+        shard_glob="*-00001-of-*.gguf",
+        quant="Q6_K",
+        parallel_slots=1,
+        max_parallel=2,
+        ctx_per_slot=65536,
+        temperature=0.2,
+        top_p=0.95,
+        spec=SpecConfig(strategy="ngram"),
+        notes=(
+            "Best for: hard coding tasks, real-world SWE-bench-style patching, large codebase comprehension. "
+            "Dense 72B (no MoE) — 60.4% SWE-bench Verified. "
+            "RL-trained exclusively on test-passing reward in Docker; no instruction tuning. "
+            "~59 GB at Q6_K; KV cache ≈10 GB at 65K ctx (q8_0, GQA-8). "
+            "To use 131K native context: set ctx_per_slot=131072 (total ≈81 GB — safe if system is otherwise idle). "
+            "No thinking/reasoning mode. Dense = slow: expect ~4–6 tok/s vs MoE peers. "
+            "MIT license. Use when quality matters more than speed."
+        ),
+    ),
+
     # ── GLM 4.7 Flash ──
     # ~30 GB at Q8 → ~58 GB for KV + overhead — plenty of room
     ModelConfig(
