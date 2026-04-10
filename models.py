@@ -315,6 +315,7 @@ MODELS: list[ModelConfig] = [
             "Bug: -ub must be 512 on Strix Halo Vulkan (issue #18725). "
             "Bug: Do NOT use Q6_K_XL — broken architecture detection."
         ),
+    ),
 
     # ── Qwen3 Coder Next ──
     # ~62 GB model weight at UD-Q6_K_XL → ~26 GB left for KV + overhead
