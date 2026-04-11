@@ -459,7 +459,7 @@ def _find_hf_cli() -> str | None:
 def _hf_download_cli(cli: str, repo: str, pattern: str, local_dir: str, revision: str | None = None):
     """Download via the `hf` or `huggingface-cli` binary."""
     is_glob = any(c in pattern for c in "*?[")
-    cmd = [cli, "download", repo, "--local-dir", local_dir, "--resume"]
+    cmd = [cli, "download", repo, "--local-dir", local_dir]
     if revision:
         cmd += ["--revision", revision]
     if is_glob:

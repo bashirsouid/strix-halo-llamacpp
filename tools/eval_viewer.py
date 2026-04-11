@@ -17,6 +17,11 @@ import sys
 import webbrowser
 from pathlib import Path
 
+try:
+    from .report_helpers import bar_chart_height, compact_k, stable_color, wrap_label_parts
+except ImportError:
+    from report_helpers import bar_chart_height, compact_k, stable_color, wrap_label_parts
+
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_FILE = PROJECT_DIR / "results" / "aider" / "aider_results.jsonl"
 DEFAULT_OUTPUT = PROJECT_DIR / "eval_report.html"
@@ -95,6 +100,34 @@ def _series_key(record: dict) -> str:
     return f"{base} ({', '.join(parts)})" if parts else base
 
 
+def _chart_label_parts(record: dict) -> list[str]:
+    parts = [_display_model(record)]
+    backend = str(record.get("backend") or "").strip()
+    profile = str(record.get("profile") or record.get("eval_profile") or "").strip()
+    label = str(record.get("run_label") or "").strip()
+    edit_format = str(record.get("edit_format") or "").strip()
+    max_tokens = compact_k(_safe_int(record.get("max_tokens")))
+    tries = _safe_int(record.get("tries"))
+
+    if backend:
+        parts.append(backend)
+    if profile:
+        parts.append(profile)
+    if max_tokens:
+        parts.append(max_tokens)
+    if tries:
+        parts.append(f"t{tries}")
+    if edit_format and edit_format != "whole":
+        parts.append(edit_format)
+    if label:
+        parts.append(label)
+    return parts
+
+
+def _chart_label(record: dict, width: int = 34) -> list[str]:
+    return wrap_label_parts(_chart_label_parts(record), width=width)
+
+
 def _latest_per_series(records: list[dict]) -> list[dict]:
     latest: dict[str, tuple[str, int, dict]] = {}
     for index, record in enumerate(records):
@@ -117,12 +150,6 @@ def _int_metric(record: dict, name: str, default: int = 0) -> int:
 
 
 def generate_html(records: list[dict]) -> str:
-    palette = [
-        "#e63946", "#457b9d", "#2a9d8f", "#e9c46a", "#f4a261",
-        "#264653", "#a8dadc", "#6d6875", "#b5838d", "#ffb703",
-        "#023047", "#8ecae6",
-    ]
-
     latest = _latest_per_series(records)
     latest = sorted(
         latest,
@@ -154,31 +181,44 @@ def generate_html(records: list[dict]) -> str:
 </body>
 </html>"""
 
-    pass_labels = [_series_key(record) for record in latest]
+    series_keys = sorted({_series_key(record) for record in records})
+    series_colors = {key: stable_color(key) for key in series_keys}
+    series_chart_labels = {
+        _series_key(record): _chart_label(record)
+        for record in latest
+    }
+
+    pass_full_labels = [_series_key(record) for record in latest]
+    pass_labels = [series_chart_labels[key] for key in pass_full_labels]
     pass_try1 = [round(_metric(record, "pass_rate_1"), 1) for record in latest]
     pass_try2 = [round(_metric(record, "pass_rate_2"), 1) for record in latest]
-    pass_colors = [palette[index % len(palette)] for index in range(len(latest))]
+    pass_colors = [series_colors[key] for key in pass_full_labels]
+    pass_fill_colors = [stable_color(key, alpha=0.55) for key in pass_full_labels]
 
     speed_sorted = sorted(latest, key=lambda record: _metric(record, "completion_tok_s_wall"), reverse=True)
-    speed_labels = [_series_key(record) for record in speed_sorted]
+    speed_full_labels = [_series_key(record) for record in speed_sorted]
+    speed_labels = [series_chart_labels[key] for key in speed_full_labels]
     speed_values = [round(_metric(record, "completion_tok_s_wall"), 2) for record in speed_sorted]
-    speed_colors = [palette[index % len(palette)] for index in range(len(speed_sorted))]
+    speed_colors = [series_colors[key] for key in speed_full_labels]
 
     time_sorted = sorted(
         latest,
         key=lambda record: _metric(record, "seconds_per_case_wall", 10**9),
     )
-    time_labels = [_series_key(record) for record in time_sorted]
+    time_full_labels = [_series_key(record) for record in time_sorted]
+    time_labels = [series_chart_labels[key] for key in time_full_labels]
     time_values = [round(_metric(record, "seconds_per_case_wall"), 2) for record in time_sorted]
-    time_colors = [palette[index % len(palette)] for index in range(len(time_sorted))]
+    time_colors = [series_colors[key] for key in time_full_labels]
 
-    warning_labels = [_series_key(record) for record in latest]
+    warning_full_labels = [_series_key(record) for record in latest]
+    warning_labels = [series_chart_labels[key] for key in warning_full_labels]
     exhausted_values = [_int_metric(record, "exhausted_context_windows") for record in latest]
     malformed_values = [_int_metric(record, "num_malformed_responses") for record in latest]
     timeout_values = [_int_metric(record, "test_timeouts") for record in latest]
 
     scatter_points = []
-    for index, record in enumerate(latest):
+    for record in latest:
+        key = _series_key(record)
         seconds = _safe_float(record.get("seconds_per_case_wall"))
         score = _safe_float(record.get("pass_rate_2"))
         if seconds is None or score is None:
@@ -187,8 +227,9 @@ def generate_html(records: list[dict]) -> str:
             {
                 "x": round(seconds, 2),
                 "y": round(score, 1),
-                "label": _series_key(record),
-                "color": palette[index % len(palette)],
+                "label": " · ".join(_chart_label_parts(record)),
+                "fullLabel": key,
+                "color": series_colors[key],
                 "wellFormed": round(_metric(record, "percent_cases_well_formed"), 1),
             }
         )
@@ -201,10 +242,10 @@ def generate_html(records: list[dict]) -> str:
         history_map.setdefault(_series_key(record), []).append(record)
 
     history_datasets = []
-    for index, (key, series_records) in enumerate(sorted(history_map.items())):
+    for key, series_records in sorted(history_map.items()):
         if len(series_records) < 2:
             continue
-        color = palette[index % len(palette)]
+        color = series_colors.get(key, stable_color(key))
         lookup = {
             str(record.get("timestamp") or ""): round(_metric(record, "pass_rate_2"), 1)
             for record in series_records
@@ -212,10 +253,11 @@ def generate_html(records: list[dict]) -> str:
         values = [lookup.get(timestamp, None) for timestamp in timestamps]
         history_datasets.append(
             {
-                "label": key,
+                "label": " · ".join(series_chart_labels.get(key, wrap_label_parts([key]))),
+                "fullLabel": key,
                 "data": values,
                 "borderColor": color,
-                "backgroundColor": f"{color}33",
+                "backgroundColor": stable_color(key, alpha=0.20),
             }
         )
 
@@ -303,26 +345,31 @@ def generate_html(records: list[dict]) -> str:
 
     timestamps_js = json.dumps(timestamps)
     pass_labels_js = json.dumps(pass_labels)
+    pass_full_labels_js = json.dumps(pass_full_labels)
     pass_try1_js = json.dumps(pass_try1)
     pass_try2_js = json.dumps(pass_try2)
     pass_colors_js = json.dumps(pass_colors)
+    pass_fill_colors_js = json.dumps(pass_fill_colors)
     speed_labels_js = json.dumps(speed_labels)
+    speed_full_labels_js = json.dumps(speed_full_labels)
     speed_values_js = json.dumps(speed_values)
     speed_colors_js = json.dumps(speed_colors)
     time_labels_js = json.dumps(time_labels)
+    time_full_labels_js = json.dumps(time_full_labels)
     time_values_js = json.dumps(time_values)
     time_colors_js = json.dumps(time_colors)
     warning_labels_js = json.dumps(warning_labels)
+    warning_full_labels_js = json.dumps(warning_full_labels)
     exhausted_js = json.dumps(exhausted_values)
     malformed_js = json.dumps(malformed_values)
     timeout_js = json.dumps(timeout_values)
     scatter_js = json.dumps(scatter_points)
     history_datasets_js = json.dumps(history_datasets)
 
-    pass_chart_height = max(360, 84 + 28 * len(pass_labels))
-    speed_chart_height = max(360, 84 + 28 * len(speed_labels))
-    time_chart_height = max(360, 84 + 28 * len(time_labels))
-    warning_chart_height = max(360, 84 + 28 * len(warning_labels))
+    pass_chart_height = bar_chart_height(pass_labels)
+    speed_chart_height = bar_chart_height(speed_labels)
+    time_chart_height = bar_chart_height(time_labels)
+    warning_chart_height = bar_chart_height(warning_labels)
     scatter_chart_height = 360
     history_chart_height = 360
 
@@ -358,7 +405,7 @@ def generate_html(records: list[dict]) -> str:
     .stat-card {{ padding: 18px 18px 16px; }}
     .stat-value {{ font-size: 28px; font-weight: 700; margin-bottom: 6px; }}
     .stat-label {{ font-size: 13px; color: var(--muted); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.04em; }}
-    .stat-model {{ font-size: 13px; line-height: 1.45; color: var(--text); }}
+    .stat-model {{ font-size: 13px; line-height: 1.45; color: var(--text); overflow-wrap: anywhere; word-break: break-word; }}
     .chart-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(520px, 1fr)); gap: 18px; }}
     .chart-box {{ padding: 18px; min-width: 0; }}
     .chart-sub {{ color: var(--muted); font-size: 13px; margin-bottom: 12px; }}
@@ -453,16 +500,21 @@ def generate_html(records: list[dict]) -> str:
   </main>
   <script>
     const passLabels = {pass_labels_js};
+    const passFullLabels = {pass_full_labels_js};
     const passTry1 = {pass_try1_js};
     const passTry2 = {pass_try2_js};
     const passColors = {pass_colors_js};
+    const passFillColors = {pass_fill_colors_js};
     const speedLabels = {speed_labels_js};
+    const speedFullLabels = {speed_full_labels_js};
     const speedValues = {speed_values_js};
     const speedColors = {speed_colors_js};
     const timeLabels = {time_labels_js};
+    const timeFullLabels = {time_full_labels_js};
     const timeValues = {time_values_js};
     const timeColors = {time_colors_js};
     const warningLabels = {warning_labels_js};
+    const warningFullLabels = {warning_full_labels_js};
     const exhaustedValues = {exhausted_js};
     const malformedValues = {malformed_js};
     const timeoutValues = {timeout_js};
@@ -491,6 +543,7 @@ def generate_html(records: list[dict]) -> str:
       resizeDelay: 150,
       animation: false,
     }};
+    const barTitle = fullLabels => items => fullLabels[items[0].dataIndex];
 
     new Chart(document.getElementById('passChart'), {{
       type: 'bar',
@@ -500,7 +553,7 @@ def generate_html(records: list[dict]) -> str:
           {{
             label: 'Try 1 (%)',
             data: passTry1,
-            backgroundColor: passColors.map(color => color + '99'),
+            backgroundColor: passFillColors,
             borderColor: passColors,
             borderWidth: 1,
             borderRadius: 5,
@@ -518,10 +571,16 @@ def generate_html(records: list[dict]) -> str:
       options: {{
         indexAxis: 'y',
         ...responsiveCommon,
-        plugins: pluginCommon,
+        plugins: {{
+          ...pluginCommon,
+          tooltip: {{
+            ...pluginCommon.tooltip,
+            callbacks: {{ title: barTitle(passFullLabels) }},
+          }},
+        }},
         scales: {{
           x: {{ ...axisCommon, beginAtZero: true, max: 100, title: {{ display: true, text: 'Pass rate %', color: '#c9d1d9' }} }},
-          y: axisCommon,
+          y: {{ ...axisCommon, ticks: {{ ...axisCommon.ticks, autoSkip: false }} }},
         }},
       }},
     }});
@@ -542,10 +601,16 @@ def generate_html(records: list[dict]) -> str:
       options: {{
         indexAxis: 'y',
         ...responsiveCommon,
-        plugins: pluginCommon,
+        plugins: {{
+          ...pluginCommon,
+          tooltip: {{
+            ...pluginCommon.tooltip,
+            callbacks: {{ title: barTitle(speedFullLabels) }},
+          }},
+        }},
         scales: {{
           x: {{ ...axisCommon, beginAtZero: true, title: {{ display: true, text: 'tok/s', color: '#c9d1d9' }} }},
-          y: axisCommon,
+          y: {{ ...axisCommon, ticks: {{ ...axisCommon.ticks, autoSkip: false }} }},
         }},
       }},
     }});
@@ -566,10 +631,16 @@ def generate_html(records: list[dict]) -> str:
       options: {{
         indexAxis: 'y',
         ...responsiveCommon,
-        plugins: pluginCommon,
+        plugins: {{
+          ...pluginCommon,
+          tooltip: {{
+            ...pluginCommon.tooltip,
+            callbacks: {{ title: barTitle(timeFullLabels) }},
+          }},
+        }},
         scales: {{
           x: {{ ...axisCommon, beginAtZero: true, title: {{ display: true, text: 'seconds', color: '#c9d1d9' }} }},
-          y: axisCommon,
+          y: {{ ...axisCommon, ticks: {{ ...axisCommon.ticks, autoSkip: false }} }},
         }},
       }},
     }});
@@ -595,7 +666,7 @@ def generate_html(records: list[dict]) -> str:
             callbacks: {{
               label(context) {{
                 const dataset = scatterPoints[context.datasetIndex];
-                return `${{dataset.label}} | ${{dataset.x}}s/case | ${{dataset.y}}% try2 | ${{dataset.wellFormed}}% well formed`;
+                return `${{dataset.fullLabel}} | ${{dataset.x}}s/case | ${{dataset.y}}% try2 | ${{dataset.wellFormed}}% well formed`;
               }},
             }},
           }},
@@ -621,10 +692,16 @@ def generate_html(records: list[dict]) -> str:
       options: {{
         indexAxis: 'y',
         ...responsiveCommon,
-        plugins: pluginCommon,
+        plugins: {{
+          ...pluginCommon,
+          tooltip: {{
+            ...pluginCommon.tooltip,
+            callbacks: {{ title: barTitle(warningFullLabels) }},
+          }},
+        }},
         scales: {{
           x: {{ ...axisCommon, beginAtZero: true, stacked: true, title: {{ display: true, text: 'count', color: '#c9d1d9' }} }},
-          y: {{ ...axisCommon, stacked: true }},
+          y: {{ ...axisCommon, stacked: true, ticks: {{ ...axisCommon.ticks, autoSkip: false }} }},
         }},
       }},
     }});
@@ -644,7 +721,18 @@ def generate_html(records: list[dict]) -> str:
       }},
       options: {{
         ...responsiveCommon,
-        plugins: pluginCommon,
+        plugins: {{
+          ...pluginCommon,
+          tooltip: {{
+            ...pluginCommon.tooltip,
+            callbacks: {{
+              label(context) {{
+                const dataset = context.dataset;
+                return `${{dataset.fullLabel || dataset.label}}: ${{context.parsed.y}}%`;
+              }},
+            }},
+          }},
+        }},
         scales: {{
           x: axisCommon,
           y: {{ ...axisCommon, beginAtZero: true, max: 100, title: {{ display: true, text: 'Try 2 pass rate %', color: '#c9d1d9' }} }},

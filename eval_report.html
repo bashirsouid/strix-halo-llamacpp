@@ -30,7 +30,7 @@
     .stat-card { padding: 18px 18px 16px; }
     .stat-value { font-size: 28px; font-weight: 700; margin-bottom: 6px; }
     .stat-label { font-size: 13px; color: var(--muted); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.04em; }
-    .stat-model { font-size: 13px; line-height: 1.45; color: var(--text); }
+    .stat-model { font-size: 13px; line-height: 1.45; color: var(--text); overflow-wrap: anywhere; word-break: break-word; }
     .chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(520px, 1fr)); gap: 18px; }
     .chart-box { padding: 18px; min-width: 0; }
     .chart-sub { color: var(--muted); font-size: 13px; margin-bottom: 12px; }
@@ -57,7 +57,7 @@
 <body>
   <main>
     <h1>Strix Halo — Aider benchmark results</h1>
-    <p class="lead">12 total records · 6 latest comparison rows · input file: /home/bashirs/src/strix-llamacpp/results/aider/aider_results.jsonl</p>
+    <p class="lead">16 total records · 10 latest comparison rows · input file: /home/bashirs/src/strix-llamacpp/results/aider/aider_results.jsonl</p>
 
     <section class="stats-grid">
       <div class="stat-card">
@@ -67,15 +67,15 @@
       </div>
 
       <div class="stat-card">
-        <div class="stat-value">151.32s</div>
+        <div class="stat-value">51.28s</div>
         <div class="stat-label">Fastest case</div>
-        <div class="stat-model">Qwen3 Coder Next (Q6_K) (rocm7, python-quick, max=24576, tries=2)</div>
+        <div class="stat-model">DeepSeek Coder V2 Lite (Q8_0_L) (radv, python-quick, max=24576, tries=2)</div>
       </div>
 
       <div class="stat-card">
-        <div class="stat-value">39.65</div>
+        <div class="stat-value">43.94</div>
         <div class="stat-label">Best tok/s</div>
-        <div class="stat-model">Nemotron Nano (Q4_K_M) (rocm7, python-quick, max=24576, tries=2)</div>
+        <div class="stat-model">DeepSeek Coder V2 Lite (Q8_0_L) (radv, python-quick, max=24576, tries=2)</div>
       </div>
 
       <div class="stat-card">
@@ -89,17 +89,17 @@
       <div class="chart-box">
         <h2>Pass rate by model</h2>
         <p class="chart-sub">Try 2 is the most important comparison; try 1 shows first-shot quality.</p>
-        <div class="chart-frame" style="height: 360px"><canvas id="passChart"></canvas></div>
+        <div class="chart-frame" style="height: 518px"><canvas id="passChart"></canvas></div>
       </div>
       <div class="chart-box">
         <h2>Completion tok/s</h2>
         <p class="chart-sub">Higher is better. This is wall-clock throughput across the full run.</p>
-        <div class="chart-frame" style="height: 360px"><canvas id="speedChart"></canvas></div>
+        <div class="chart-frame" style="height: 518px"><canvas id="speedChart"></canvas></div>
       </div>
       <div class="chart-box">
         <h2>Seconds per case</h2>
         <p class="chart-sub">Lower is better. Useful for judging whether a profile still fits your 30–60 minute budget.</p>
-        <div class="chart-frame" style="height: 360px"><canvas id="timeChart"></canvas></div>
+        <div class="chart-frame" style="height: 518px"><canvas id="timeChart"></canvas></div>
       </div>
       <div class="chart-box">
         <h2>Quality vs speed</h2>
@@ -109,7 +109,7 @@
       <div class="chart-box">
         <h2>Warning counters</h2>
         <p class="chart-sub">Shows context exhaustion, malformed responses, and timed-out test runs.</p>
-        <div class="chart-frame" style="height: 360px"><canvas id="warningChart"></canvas></div>
+        <div class="chart-frame" style="height: 518px"><canvas id="warningChart"></canvas></div>
       </div>
       <div class="chart-box">
         <h2>Try 2 history</h2>
@@ -184,6 +184,26 @@
         </tr>
 
         <tr>
+          <td>Qwen3.5 122B A10B (UD-Q4_K_XL)</td>
+          <td class="mono">rocm7</td>
+          <td class="mono">python-quick</td>
+          <td class="mono">—</td>
+          <td class="mono">24576</td>
+          <td class="score">33.3%</td>
+          <td class="score">66.7%</td>
+          <td class="mono">9/9</td>
+          <td class="mono">200.33</td>
+          <td class="mono">14.88</td>
+          <td class="mono">100.0%</td>
+          <td class="mono">0</td>
+          <td class="mono">0</td>
+          <td class="mono">0</td>
+          <td class="mono">0</td>
+          <td class="status ok">✓</td>
+          <td class="mono dim">2026-04-11 10:56:06</td>
+        </tr>
+
+        <tr>
           <td>Qwen3 Coder Next (Q4_K_XL) [UD-Q4_K_XL]</td>
           <td class="mono">rocm7</td>
           <td class="mono">python-quick</td>
@@ -224,6 +244,26 @@
         </tr>
 
         <tr>
+          <td>Qwen3.5 35B (Q8_K_XL) [UD-Q8_K_XL]</td>
+          <td class="mono">rocm7</td>
+          <td class="mono">python-quick</td>
+          <td class="mono">—</td>
+          <td class="mono">24576</td>
+          <td class="score">11.1%</td>
+          <td class="score">44.4%</td>
+          <td class="mono">9/9</td>
+          <td class="mono">163.64</td>
+          <td class="mono">18.24</td>
+          <td class="mono">100.0%</td>
+          <td class="mono">0</td>
+          <td class="mono">0</td>
+          <td class="mono">0</td>
+          <td class="mono">0</td>
+          <td class="status ok">✓</td>
+          <td class="mono dim">2026-04-10 22:19:12</td>
+        </tr>
+
+        <tr>
           <td>Nemotron Nano (Q4_K_M)</td>
           <td class="mono">rocm7</td>
           <td class="mono">python-quick</td>
@@ -241,6 +281,46 @@
           <td class="mono">0</td>
           <td class="status ok">✓</td>
           <td class="mono dim">2026-04-09 09:24:05</td>
+        </tr>
+
+        <tr>
+          <td>Qwen3 Coder 30B A3B (UD-Q4_K_XL)</td>
+          <td class="mono">rocm7</td>
+          <td class="mono">python-quick</td>
+          <td class="mono">—</td>
+          <td class="mono">24576</td>
+          <td class="score">0.0%</td>
+          <td class="score">11.1%</td>
+          <td class="mono">9/9</td>
+          <td class="mono">63.00</td>
+          <td class="mono">29.28</td>
+          <td class="mono">100.0%</td>
+          <td class="mono">0</td>
+          <td class="mono">0</td>
+          <td class="mono">0</td>
+          <td class="mono">0</td>
+          <td class="status ok">✓</td>
+          <td class="mono dim">2026-04-10 21:30:18</td>
+        </tr>
+
+        <tr>
+          <td>DeepSeek Coder V2 Lite (Q8_0_L)</td>
+          <td class="mono">radv</td>
+          <td class="mono">python-quick</td>
+          <td class="mono">—</td>
+          <td class="mono">24576</td>
+          <td class="score">0.0%</td>
+          <td class="score">0.0%</td>
+          <td class="mono">9/9</td>
+          <td class="mono">51.28</td>
+          <td class="mono">43.94</td>
+          <td class="mono">66.7%</td>
+          <td class="mono">0</td>
+          <td class="mono">6</td>
+          <td class="mono">0</td>
+          <td class="mono">0</td>
+          <td class="status ok">✓</td>
+          <td class="mono dim">2026-04-11 08:50:28</td>
         </tr>
 
         <tr>
@@ -268,23 +348,28 @@
     </section>
   </main>
   <script>
-    const passLabels = ["Qwen3 Coder Next (UD-Q6_K_XL) (rocm7, python-quick, max=24576, tries=2)", "Qwen3 Coder Next (Q6_K) (rocm7, python-quick, max=24576, tries=2)", "Qwen3 Coder Next (Q4_K_XL) [UD-Q4_K_XL] (rocm7, python-quick, max=24576, tries=2)", "Gemma 4 26B A4B (Q8_0) (rocm7, python-quick, max=24576, tries=2)", "Nemotron Nano (Q4_K_M) (rocm7, python-quick, max=24576, tries=2)", "gemma4-26b-a4b-q8 (rocm7, python-30m, max=8192, tries=2)"];
-    const passTry1 = [33.3, 44.4, 11.1, 0.0, 0.0, 0.0];
-    const passTry2 = [77.8, 66.7, 66.7, 50.0, 44.4, 0.0];
-    const passColors = ["#e63946", "#457b9d", "#2a9d8f", "#e9c46a", "#f4a261", "#264653"];
-    const speedLabels = ["Nemotron Nano (Q4_K_M) (rocm7, python-quick, max=24576, tries=2)", "Qwen3 Coder Next (Q4_K_XL) [UD-Q4_K_XL] (rocm7, python-quick, max=24576, tries=2)", "Qwen3 Coder Next (Q6_K) (rocm7, python-quick, max=24576, tries=2)", "Qwen3 Coder Next (UD-Q6_K_XL) (rocm7, python-quick, max=24576, tries=2)", "Gemma 4 26B A4B (Q8_0) (rocm7, python-quick, max=24576, tries=2)", "gemma4-26b-a4b-q8 (rocm7, python-30m, max=8192, tries=2)"];
-    const speedValues = [39.65, 23.25, 21.31, 19.57, 7.04, 0.0];
-    const speedColors = ["#e63946", "#457b9d", "#2a9d8f", "#e9c46a", "#f4a261", "#264653"];
-    const timeLabels = ["Qwen3 Coder Next (Q6_K) (rocm7, python-quick, max=24576, tries=2)", "Qwen3 Coder Next (Q4_K_XL) [UD-Q4_K_XL] (rocm7, python-quick, max=24576, tries=2)", "Nemotron Nano (Q4_K_M) (rocm7, python-quick, max=24576, tries=2)", "Qwen3 Coder Next (UD-Q6_K_XL) (rocm7, python-quick, max=24576, tries=2)", "Gemma 4 26B A4B (Q8_0) (rocm7, python-quick, max=24576, tries=2)", "gemma4-26b-a4b-q8 (rocm7, python-30m, max=8192, tries=2)"];
-    const timeValues = [151.32, 215.67, 219.7, 224.04, 899.41, 0.0];
-    const timeColors = ["#e63946", "#457b9d", "#2a9d8f", "#e9c46a", "#f4a261", "#264653"];
-    const warningLabels = ["Qwen3 Coder Next (UD-Q6_K_XL) (rocm7, python-quick, max=24576, tries=2)", "Qwen3 Coder Next (Q6_K) (rocm7, python-quick, max=24576, tries=2)", "Qwen3 Coder Next (Q4_K_XL) [UD-Q4_K_XL] (rocm7, python-quick, max=24576, tries=2)", "Gemma 4 26B A4B (Q8_0) (rocm7, python-quick, max=24576, tries=2)", "Nemotron Nano (Q4_K_M) (rocm7, python-quick, max=24576, tries=2)", "gemma4-26b-a4b-q8 (rocm7, python-30m, max=8192, tries=2)"];
-    const exhaustedValues = [0, 0, 0, 1, 0, 0];
-    const malformedValues = [0, 0, 0, 0, 0, 0];
-    const timeoutValues = [0, 0, 0, 0, 0, 0];
-    const scatterPoints = [{"x": 224.04, "y": 77.8, "label": "Qwen3 Coder Next (UD-Q6_K_XL) (rocm7, python-quick, max=24576, tries=2)", "color": "#e63946", "wellFormed": 100.0}, {"x": 151.32, "y": 66.7, "label": "Qwen3 Coder Next (Q6_K) (rocm7, python-quick, max=24576, tries=2)", "color": "#457b9d", "wellFormed": 100.0}, {"x": 215.67, "y": 66.7, "label": "Qwen3 Coder Next (Q4_K_XL) [UD-Q4_K_XL] (rocm7, python-quick, max=24576, tries=2)", "color": "#2a9d8f", "wellFormed": 100.0}, {"x": 899.41, "y": 50.0, "label": "Gemma 4 26B A4B (Q8_0) (rocm7, python-quick, max=24576, tries=2)", "color": "#e9c46a", "wellFormed": 100.0}, {"x": 219.7, "y": 44.4, "label": "Nemotron Nano (Q4_K_M) (rocm7, python-quick, max=24576, tries=2)", "color": "#f4a261", "wellFormed": 100.0}];
-    const historyTimestamps = ["2026-04-07 22:00:24", "2026-04-07 22:03:06", "2026-04-07 22:05:37", "2026-04-08 15:40:29", "2026-04-08 17:11:30", "2026-04-08 18:18:20", "2026-04-08 20:50:12", "2026-04-09 08:48:37", "2026-04-09 09:24:05", "2026-04-09 10:25:03", "2026-04-10 11:33:23", "2026-04-10 13:13:46"];
-    const historyDatasets = [{"label": "Gemma 4 26B A4B (Q8_0) (rocm7, python-quick, max=24576, tries=2)", "data": [null, null, null, 100.0, 60.0, 50.0, null, null, null, null, null, null], "borderColor": "#e63946", "backgroundColor": "#e6394633"}, {"label": "Nemotron Nano (Q4_K_M) (rocm7, python-quick, max=24576, tries=2)", "data": [null, null, null, null, null, null, 50.0, 0.0, 44.4, null, null, null], "borderColor": "#457b9d", "backgroundColor": "#457b9d33"}];
+    const passLabels = [["Qwen3 Coder Next (UD-Q6_K_XL)", "rocm7 \u00b7 python-quick \u00b7 24.6k \u00b7 t2"], ["Qwen3 Coder Next (Q6_K) \u00b7 rocm7", "python-quick \u00b7 24.6k \u00b7 t2"], ["Qwen3.5 122B A10B (UD-Q4_K_XL)", "rocm7 \u00b7 python-quick \u00b7 24.6k \u00b7 t2"], ["Qwen3 Coder Next (Q4_K_XL)", "[UD-Q4_K_XL] \u00b7 rocm7", "python-quick \u00b7 24.6k \u00b7 t2"], ["Gemma 4 26B A4B (Q8_0) \u00b7 rocm7", "python-quick \u00b7 24.6k \u00b7 t2"], ["Qwen3.5 35B (Q8_K_XL) [UD-Q8_K_XL]", "rocm7 \u00b7 python-quick \u00b7 24.6k \u00b7 t2"], ["Nemotron Nano (Q4_K_M) \u00b7 rocm7", "python-quick \u00b7 24.6k \u00b7 t2"], ["Qwen3 Coder 30B A3B (UD-Q4_K_XL)", "rocm7 \u00b7 python-quick \u00b7 24.6k \u00b7 t2"], ["DeepSeek Coder V2 Lite (Q8_0_L)", "radv \u00b7 python-quick \u00b7 24.6k \u00b7 t2"], ["gemma4-26b-a4b-q8 \u00b7 rocm7", "python-30m \u00b7 8.2k \u00b7 t2"]];
+    const passFullLabels = ["Qwen3 Coder Next (UD-Q6_K_XL) (rocm7, python-quick, max=24576, tries=2)", "Qwen3 Coder Next (Q6_K) (rocm7, python-quick, max=24576, tries=2)", "Qwen3.5 122B A10B (UD-Q4_K_XL) (rocm7, python-quick, max=24576, tries=2)", "Qwen3 Coder Next (Q4_K_XL) [UD-Q4_K_XL] (rocm7, python-quick, max=24576, tries=2)", "Gemma 4 26B A4B (Q8_0) (rocm7, python-quick, max=24576, tries=2)", "Qwen3.5 35B (Q8_K_XL) [UD-Q8_K_XL] (rocm7, python-quick, max=24576, tries=2)", "Nemotron Nano (Q4_K_M) (rocm7, python-quick, max=24576, tries=2)", "Qwen3 Coder 30B A3B (UD-Q4_K_XL) (rocm7, python-quick, max=24576, tries=2)", "DeepSeek Coder V2 Lite (Q8_0_L) (radv, python-quick, max=24576, tries=2)", "gemma4-26b-a4b-q8 (rocm7, python-30m, max=8192, tries=2)"];
+    const passTry1 = [33.3, 44.4, 33.3, 11.1, 0.0, 11.1, 0.0, 0.0, 0.0, 0.0];
+    const passTry2 = [77.8, 66.7, 66.7, 66.7, 50.0, 44.4, 44.4, 11.1, 0.0, 0.0];
+    const passColors = ["hsl(56, 69%, 55%)", "hsl(306, 69%, 48%)", "hsl(68, 64%, 52%)", "hsl(21, 71%, 53%)", "hsl(38, 67%, 52%)", "hsl(70, 65%, 58%)", "hsl(199, 69%, 61%)", "hsl(354, 66%, 55%)", "hsl(216, 73%, 57%)", "hsl(60, 70%, 54%)"];
+    const passFillColors = ["hsla(56, 69%, 55%, 0.55)", "hsla(306, 69%, 48%, 0.55)", "hsla(68, 64%, 52%, 0.55)", "hsla(21, 71%, 53%, 0.55)", "hsla(38, 67%, 52%, 0.55)", "hsla(70, 65%, 58%, 0.55)", "hsla(199, 69%, 61%, 0.55)", "hsla(354, 66%, 55%, 0.55)", "hsla(216, 73%, 57%, 0.55)", "hsla(60, 70%, 54%, 0.55)"];
+    const speedLabels = [["DeepSeek Coder V2 Lite (Q8_0_L)", "radv \u00b7 python-quick \u00b7 24.6k \u00b7 t2"], ["Nemotron Nano (Q4_K_M) \u00b7 rocm7", "python-quick \u00b7 24.6k \u00b7 t2"], ["Qwen3 Coder 30B A3B (UD-Q4_K_XL)", "rocm7 \u00b7 python-quick \u00b7 24.6k \u00b7 t2"], ["Qwen3 Coder Next (Q4_K_XL)", "[UD-Q4_K_XL] \u00b7 rocm7", "python-quick \u00b7 24.6k \u00b7 t2"], ["Qwen3 Coder Next (Q6_K) \u00b7 rocm7", "python-quick \u00b7 24.6k \u00b7 t2"], ["Qwen3 Coder Next (UD-Q6_K_XL)", "rocm7 \u00b7 python-quick \u00b7 24.6k \u00b7 t2"], ["Qwen3.5 35B (Q8_K_XL) [UD-Q8_K_XL]", "rocm7 \u00b7 python-quick \u00b7 24.6k \u00b7 t2"], ["Qwen3.5 122B A10B (UD-Q4_K_XL)", "rocm7 \u00b7 python-quick \u00b7 24.6k \u00b7 t2"], ["Gemma 4 26B A4B (Q8_0) \u00b7 rocm7", "python-quick \u00b7 24.6k \u00b7 t2"], ["gemma4-26b-a4b-q8 \u00b7 rocm7", "python-30m \u00b7 8.2k \u00b7 t2"]];
+    const speedFullLabels = ["DeepSeek Coder V2 Lite (Q8_0_L) (radv, python-quick, max=24576, tries=2)", "Nemotron Nano (Q4_K_M) (rocm7, python-quick, max=24576, tries=2)", "Qwen3 Coder 30B A3B (UD-Q4_K_XL) (rocm7, python-quick, max=24576, tries=2)", "Qwen3 Coder Next (Q4_K_XL) [UD-Q4_K_XL] (rocm7, python-quick, max=24576, tries=2)", "Qwen3 Coder Next (Q6_K) (rocm7, python-quick, max=24576, tries=2)", "Qwen3 Coder Next (UD-Q6_K_XL) (rocm7, python-quick, max=24576, tries=2)", "Qwen3.5 35B (Q8_K_XL) [UD-Q8_K_XL] (rocm7, python-quick, max=24576, tries=2)", "Qwen3.5 122B A10B (UD-Q4_K_XL) (rocm7, python-quick, max=24576, tries=2)", "Gemma 4 26B A4B (Q8_0) (rocm7, python-quick, max=24576, tries=2)", "gemma4-26b-a4b-q8 (rocm7, python-30m, max=8192, tries=2)"];
+    const speedValues = [43.94, 39.65, 29.28, 23.25, 21.31, 19.57, 18.24, 14.88, 7.04, 0.0];
+    const speedColors = ["hsl(216, 73%, 57%)", "hsl(199, 69%, 61%)", "hsl(354, 66%, 55%)", "hsl(21, 71%, 53%)", "hsl(306, 69%, 48%)", "hsl(56, 69%, 55%)", "hsl(70, 65%, 58%)", "hsl(68, 64%, 52%)", "hsl(38, 67%, 52%)", "hsl(60, 70%, 54%)"];
+    const timeLabels = [["DeepSeek Coder V2 Lite (Q8_0_L)", "radv \u00b7 python-quick \u00b7 24.6k \u00b7 t2"], ["Qwen3 Coder 30B A3B (UD-Q4_K_XL)", "rocm7 \u00b7 python-quick \u00b7 24.6k \u00b7 t2"], ["Qwen3 Coder Next (Q6_K) \u00b7 rocm7", "python-quick \u00b7 24.6k \u00b7 t2"], ["Qwen3.5 35B (Q8_K_XL) [UD-Q8_K_XL]", "rocm7 \u00b7 python-quick \u00b7 24.6k \u00b7 t2"], ["Qwen3.5 122B A10B (UD-Q4_K_XL)", "rocm7 \u00b7 python-quick \u00b7 24.6k \u00b7 t2"], ["Qwen3 Coder Next (Q4_K_XL)", "[UD-Q4_K_XL] \u00b7 rocm7", "python-quick \u00b7 24.6k \u00b7 t2"], ["Nemotron Nano (Q4_K_M) \u00b7 rocm7", "python-quick \u00b7 24.6k \u00b7 t2"], ["Qwen3 Coder Next (UD-Q6_K_XL)", "rocm7 \u00b7 python-quick \u00b7 24.6k \u00b7 t2"], ["Gemma 4 26B A4B (Q8_0) \u00b7 rocm7", "python-quick \u00b7 24.6k \u00b7 t2"], ["gemma4-26b-a4b-q8 \u00b7 rocm7", "python-30m \u00b7 8.2k \u00b7 t2"]];
+    const timeFullLabels = ["DeepSeek Coder V2 Lite (Q8_0_L) (radv, python-quick, max=24576, tries=2)", "Qwen3 Coder 30B A3B (UD-Q4_K_XL) (rocm7, python-quick, max=24576, tries=2)", "Qwen3 Coder Next (Q6_K) (rocm7, python-quick, max=24576, tries=2)", "Qwen3.5 35B (Q8_K_XL) [UD-Q8_K_XL] (rocm7, python-quick, max=24576, tries=2)", "Qwen3.5 122B A10B (UD-Q4_K_XL) (rocm7, python-quick, max=24576, tries=2)", "Qwen3 Coder Next (Q4_K_XL) [UD-Q4_K_XL] (rocm7, python-quick, max=24576, tries=2)", "Nemotron Nano (Q4_K_M) (rocm7, python-quick, max=24576, tries=2)", "Qwen3 Coder Next (UD-Q6_K_XL) (rocm7, python-quick, max=24576, tries=2)", "Gemma 4 26B A4B (Q8_0) (rocm7, python-quick, max=24576, tries=2)", "gemma4-26b-a4b-q8 (rocm7, python-30m, max=8192, tries=2)"];
+    const timeValues = [51.28, 63.0, 151.32, 163.64, 200.33, 215.67, 219.7, 224.04, 899.41, 0.0];
+    const timeColors = ["hsl(216, 73%, 57%)", "hsl(354, 66%, 55%)", "hsl(306, 69%, 48%)", "hsl(70, 65%, 58%)", "hsl(68, 64%, 52%)", "hsl(21, 71%, 53%)", "hsl(199, 69%, 61%)", "hsl(56, 69%, 55%)", "hsl(38, 67%, 52%)", "hsl(60, 70%, 54%)"];
+    const warningLabels = [["Qwen3 Coder Next (UD-Q6_K_XL)", "rocm7 \u00b7 python-quick \u00b7 24.6k \u00b7 t2"], ["Qwen3 Coder Next (Q6_K) \u00b7 rocm7", "python-quick \u00b7 24.6k \u00b7 t2"], ["Qwen3.5 122B A10B (UD-Q4_K_XL)", "rocm7 \u00b7 python-quick \u00b7 24.6k \u00b7 t2"], ["Qwen3 Coder Next (Q4_K_XL)", "[UD-Q4_K_XL] \u00b7 rocm7", "python-quick \u00b7 24.6k \u00b7 t2"], ["Gemma 4 26B A4B (Q8_0) \u00b7 rocm7", "python-quick \u00b7 24.6k \u00b7 t2"], ["Qwen3.5 35B (Q8_K_XL) [UD-Q8_K_XL]", "rocm7 \u00b7 python-quick \u00b7 24.6k \u00b7 t2"], ["Nemotron Nano (Q4_K_M) \u00b7 rocm7", "python-quick \u00b7 24.6k \u00b7 t2"], ["Qwen3 Coder 30B A3B (UD-Q4_K_XL)", "rocm7 \u00b7 python-quick \u00b7 24.6k \u00b7 t2"], ["DeepSeek Coder V2 Lite (Q8_0_L)", "radv \u00b7 python-quick \u00b7 24.6k \u00b7 t2"], ["gemma4-26b-a4b-q8 \u00b7 rocm7", "python-30m \u00b7 8.2k \u00b7 t2"]];
+    const warningFullLabels = ["Qwen3 Coder Next (UD-Q6_K_XL) (rocm7, python-quick, max=24576, tries=2)", "Qwen3 Coder Next (Q6_K) (rocm7, python-quick, max=24576, tries=2)", "Qwen3.5 122B A10B (UD-Q4_K_XL) (rocm7, python-quick, max=24576, tries=2)", "Qwen3 Coder Next (Q4_K_XL) [UD-Q4_K_XL] (rocm7, python-quick, max=24576, tries=2)", "Gemma 4 26B A4B (Q8_0) (rocm7, python-quick, max=24576, tries=2)", "Qwen3.5 35B (Q8_K_XL) [UD-Q8_K_XL] (rocm7, python-quick, max=24576, tries=2)", "Nemotron Nano (Q4_K_M) (rocm7, python-quick, max=24576, tries=2)", "Qwen3 Coder 30B A3B (UD-Q4_K_XL) (rocm7, python-quick, max=24576, tries=2)", "DeepSeek Coder V2 Lite (Q8_0_L) (radv, python-quick, max=24576, tries=2)", "gemma4-26b-a4b-q8 (rocm7, python-30m, max=8192, tries=2)"];
+    const exhaustedValues = [0, 0, 0, 0, 1, 0, 0, 0, 0, 0];
+    const malformedValues = [0, 0, 0, 0, 0, 0, 0, 0, 6, 0];
+    const timeoutValues = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    const scatterPoints = [{"x": 224.04, "y": 77.8, "label": "Qwen3 Coder Next (UD-Q6_K_XL) \u00b7 rocm7 \u00b7 python-quick \u00b7 24.6k \u00b7 t2", "fullLabel": "Qwen3 Coder Next (UD-Q6_K_XL) (rocm7, python-quick, max=24576, tries=2)", "color": "hsl(56, 69%, 55%)", "wellFormed": 100.0}, {"x": 151.32, "y": 66.7, "label": "Qwen3 Coder Next (Q6_K) \u00b7 rocm7 \u00b7 python-quick \u00b7 24.6k \u00b7 t2", "fullLabel": "Qwen3 Coder Next (Q6_K) (rocm7, python-quick, max=24576, tries=2)", "color": "hsl(306, 69%, 48%)", "wellFormed": 100.0}, {"x": 200.33, "y": 66.7, "label": "Qwen3.5 122B A10B (UD-Q4_K_XL) \u00b7 rocm7 \u00b7 python-quick \u00b7 24.6k \u00b7 t2", "fullLabel": "Qwen3.5 122B A10B (UD-Q4_K_XL) (rocm7, python-quick, max=24576, tries=2)", "color": "hsl(68, 64%, 52%)", "wellFormed": 100.0}, {"x": 215.67, "y": 66.7, "label": "Qwen3 Coder Next (Q4_K_XL) [UD-Q4_K_XL] \u00b7 rocm7 \u00b7 python-quick \u00b7 24.6k \u00b7 t2", "fullLabel": "Qwen3 Coder Next (Q4_K_XL) [UD-Q4_K_XL] (rocm7, python-quick, max=24576, tries=2)", "color": "hsl(21, 71%, 53%)", "wellFormed": 100.0}, {"x": 899.41, "y": 50.0, "label": "Gemma 4 26B A4B (Q8_0) \u00b7 rocm7 \u00b7 python-quick \u00b7 24.6k \u00b7 t2", "fullLabel": "Gemma 4 26B A4B (Q8_0) (rocm7, python-quick, max=24576, tries=2)", "color": "hsl(38, 67%, 52%)", "wellFormed": 100.0}, {"x": 163.64, "y": 44.4, "label": "Qwen3.5 35B (Q8_K_XL) [UD-Q8_K_XL] \u00b7 rocm7 \u00b7 python-quick \u00b7 24.6k \u00b7 t2", "fullLabel": "Qwen3.5 35B (Q8_K_XL) [UD-Q8_K_XL] (rocm7, python-quick, max=24576, tries=2)", "color": "hsl(70, 65%, 58%)", "wellFormed": 100.0}, {"x": 219.7, "y": 44.4, "label": "Nemotron Nano (Q4_K_M) \u00b7 rocm7 \u00b7 python-quick \u00b7 24.6k \u00b7 t2", "fullLabel": "Nemotron Nano (Q4_K_M) (rocm7, python-quick, max=24576, tries=2)", "color": "hsl(199, 69%, 61%)", "wellFormed": 100.0}, {"x": 63.0, "y": 11.1, "label": "Qwen3 Coder 30B A3B (UD-Q4_K_XL) \u00b7 rocm7 \u00b7 python-quick \u00b7 24.6k \u00b7 t2", "fullLabel": "Qwen3 Coder 30B A3B (UD-Q4_K_XL) (rocm7, python-quick, max=24576, tries=2)", "color": "hsl(354, 66%, 55%)", "wellFormed": 100.0}, {"x": 51.28, "y": 0.0, "label": "DeepSeek Coder V2 Lite (Q8_0_L) \u00b7 radv \u00b7 python-quick \u00b7 24.6k \u00b7 t2", "fullLabel": "DeepSeek Coder V2 Lite (Q8_0_L) (radv, python-quick, max=24576, tries=2)", "color": "hsl(216, 73%, 57%)", "wellFormed": 66.7}];
+    const historyTimestamps = ["2026-04-07 22:00:24", "2026-04-07 22:03:06", "2026-04-07 22:05:37", "2026-04-08 15:40:29", "2026-04-08 17:11:30", "2026-04-08 18:18:20", "2026-04-08 20:50:12", "2026-04-09 08:48:37", "2026-04-09 09:24:05", "2026-04-09 10:25:03", "2026-04-10 11:33:23", "2026-04-10 13:13:46", "2026-04-10 21:30:18", "2026-04-10 22:19:12", "2026-04-11 08:50:28", "2026-04-11 10:56:06"];
+    const historyDatasets = [{"label": "Gemma 4 26B A4B (Q8_0) \u00b7 rocm7 \u00b7 python-quick \u00b7 24.6k \u00b7 t2", "fullLabel": "Gemma 4 26B A4B (Q8_0) (rocm7, python-quick, max=24576, tries=2)", "data": [null, null, null, 100.0, 60.0, 50.0, null, null, null, null, null, null, null, null, null, null], "borderColor": "hsl(38, 67%, 52%)", "backgroundColor": "hsla(38, 67%, 52%, 0.2)"}, {"label": "Nemotron Nano (Q4_K_M) \u00b7 rocm7 \u00b7 python-quick \u00b7 24.6k \u00b7 t2", "fullLabel": "Nemotron Nano (Q4_K_M) (rocm7, python-quick, max=24576, tries=2)", "data": [null, null, null, null, null, null, 50.0, 0.0, 44.4, null, null, null, null, null, null, null], "borderColor": "hsl(199, 69%, 61%)", "backgroundColor": "hsla(199, 69%, 61%, 0.2)"}];
 
     const axisCommon = {
       ticks: { color: '#c9d1d9' },
@@ -307,6 +392,7 @@
       resizeDelay: 150,
       animation: false,
     };
+    const barTitle = fullLabels => items => fullLabels[items[0].dataIndex];
 
     new Chart(document.getElementById('passChart'), {
       type: 'bar',
@@ -316,7 +402,7 @@
           {
             label: 'Try 1 (%)',
             data: passTry1,
-            backgroundColor: passColors.map(color => color + '99'),
+            backgroundColor: passFillColors,
             borderColor: passColors,
             borderWidth: 1,
             borderRadius: 5,
@@ -334,10 +420,16 @@
       options: {
         indexAxis: 'y',
         ...responsiveCommon,
-        plugins: pluginCommon,
+        plugins: {
+          ...pluginCommon,
+          tooltip: {
+            ...pluginCommon.tooltip,
+            callbacks: { title: barTitle(passFullLabels) },
+          },
+        },
         scales: {
           x: { ...axisCommon, beginAtZero: true, max: 100, title: { display: true, text: 'Pass rate %', color: '#c9d1d9' } },
-          y: axisCommon,
+          y: { ...axisCommon, ticks: { ...axisCommon.ticks, autoSkip: false } },
         },
       },
     });
@@ -358,10 +450,16 @@
       options: {
         indexAxis: 'y',
         ...responsiveCommon,
-        plugins: pluginCommon,
+        plugins: {
+          ...pluginCommon,
+          tooltip: {
+            ...pluginCommon.tooltip,
+            callbacks: { title: barTitle(speedFullLabels) },
+          },
+        },
         scales: {
           x: { ...axisCommon, beginAtZero: true, title: { display: true, text: 'tok/s', color: '#c9d1d9' } },
-          y: axisCommon,
+          y: { ...axisCommon, ticks: { ...axisCommon.ticks, autoSkip: false } },
         },
       },
     });
@@ -382,10 +480,16 @@
       options: {
         indexAxis: 'y',
         ...responsiveCommon,
-        plugins: pluginCommon,
+        plugins: {
+          ...pluginCommon,
+          tooltip: {
+            ...pluginCommon.tooltip,
+            callbacks: { title: barTitle(timeFullLabels) },
+          },
+        },
         scales: {
           x: { ...axisCommon, beginAtZero: true, title: { display: true, text: 'seconds', color: '#c9d1d9' } },
-          y: axisCommon,
+          y: { ...axisCommon, ticks: { ...axisCommon.ticks, autoSkip: false } },
         },
       },
     });
@@ -411,7 +515,7 @@
             callbacks: {
               label(context) {
                 const dataset = scatterPoints[context.datasetIndex];
-                return `${dataset.label} | ${dataset.x}s/case | ${dataset.y}% try2 | ${dataset.wellFormed}% well formed`;
+                return `${dataset.fullLabel} | ${dataset.x}s/case | ${dataset.y}% try2 | ${dataset.wellFormed}% well formed`;
               },
             },
           },
@@ -437,10 +541,16 @@
       options: {
         indexAxis: 'y',
         ...responsiveCommon,
-        plugins: pluginCommon,
+        plugins: {
+          ...pluginCommon,
+          tooltip: {
+            ...pluginCommon.tooltip,
+            callbacks: { title: barTitle(warningFullLabels) },
+          },
+        },
         scales: {
           x: { ...axisCommon, beginAtZero: true, stacked: true, title: { display: true, text: 'count', color: '#c9d1d9' } },
-          y: { ...axisCommon, stacked: true },
+          y: { ...axisCommon, stacked: true, ticks: { ...axisCommon.ticks, autoSkip: false } },
         },
       },
     });
@@ -460,7 +570,18 @@
       },
       options: {
         ...responsiveCommon,
-        plugins: pluginCommon,
+        plugins: {
+          ...pluginCommon,
+          tooltip: {
+            ...pluginCommon.tooltip,
+            callbacks: {
+              label(context) {
+                const dataset = context.dataset;
+                return `${dataset.fullLabel || dataset.label}: ${context.parsed.y}%`;
+              },
+            },
+          },
+        },
         scales: {
           x: axisCommon,
           y: { ...axisCommon, beginAtZero: true, max: 100, title: { display: true, text: 'Try 2 pass rate %', color: '#c9d1d9' } },

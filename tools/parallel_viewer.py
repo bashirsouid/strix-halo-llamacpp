@@ -17,6 +17,11 @@ import sys
 import webbrowser
 from pathlib import Path
 
+try:
+    from .report_helpers import stable_color, wrap_text_label
+except ImportError:
+    from report_helpers import stable_color, wrap_text_label
+
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_FILE = PROJECT_DIR / "results" / "benchmark" / "bench_parallel_results.jsonl"
 
@@ -69,13 +74,6 @@ def _dedupe_latest(records: list[dict]) -> dict[str, dict[str, dict[int, dict]]]
 def generate_html(records: list[dict]) -> str:
     grouped = _dedupe_latest(records)
 
-    # Colors per model series
-    palette = [
-        "#2a9d8f", "#7f77dd", "#457b9d", "#e63946", "#e9c46a",
-        "#f4a261", "#264653", "#b5838d", "#ffb703", "#8ecae6",
-        "#6d6875", "#023047",
-    ]
-
     # Determine all np values and payloads present
     all_np = sorted(set(r["np"] for r in records))
     max_np = max(all_np) if all_np else 12
@@ -88,13 +86,18 @@ def generate_html(records: list[dict]) -> str:
     )
 
     model_keys = sorted(grouped.keys())
+    model_colors = {mk: stable_color(mk) for mk in model_keys}
+    summary_full_labels = model_keys
+    summary_labels = [wrap_text_label(label, width=24) for label in summary_full_labels]
+    summary_labels_js = json.dumps(summary_labels)
+    summary_full_labels_js = json.dumps(summary_full_labels)
 
     # ── Per-payload aggregate tok/s line charts ──────────────────────────
     payload_charts_js = {}
     for payload in payloads_present:
         datasets = []
-        for i, mk in enumerate(model_keys):
-            color = palette[i % len(palette)]
+        for mk in model_keys:
+            color = model_colors[mk]
             np_map = grouped[mk].get(payload, {})
             data = [np_map[n]["concurrent_agg_tok_s"] if n in np_map else "null"
                     for n in np_labels]
@@ -102,7 +105,7 @@ def generate_html(records: list[dict]) -> str:
                 label: {json.dumps(mk)},
                 data: [{', '.join(str(d) for d in data)}],
                 borderColor: '{color}',
-                backgroundColor: '{color}33',
+                backgroundColor: '{stable_color(mk, alpha=0.20)}',
                 borderWidth: 2,
                 pointRadius: 4,
                 pointBackgroundColor: '{color}',
@@ -116,8 +119,8 @@ def generate_html(records: list[dict]) -> str:
     single_charts_js = {}
     for payload in payloads_present:
         datasets = []
-        for i, mk in enumerate(model_keys):
-            color = palette[i % len(palette)]
+        for mk in model_keys:
+            color = model_colors[mk]
             np_map = grouped[mk].get(payload, {})
             data = [np_map[n]["single_tok_s"] if n in np_map else "null"
                     for n in np_labels]
@@ -283,7 +286,7 @@ makeLineChart('{single_id}', [{single_charts_js[payload]}], 'Single-request tok/
     background: #161b22; border: 1px solid #21262d;
     border-radius: 8px; padding: 14px 16px;
   }}
-  .reco-model {{ font-size: 13px; font-weight: 600; color: #f0f6fc; margin-bottom: 10px; }}
+  .reco-model {{ font-size: 13px; font-weight: 600; color: #f0f6fc; margin-bottom: 10px; overflow-wrap: anywhere; }}
   .reco-row {{
     display: flex; justify-content: space-between; align-items: baseline;
     font-size: 12px; padding: 3px 0;
@@ -386,7 +389,7 @@ function makeLineChart(id, datasets, yLabel) {{
 new Chart(document.getElementById('summaryChart'), {{
   type: 'bar',
   data: {{
-    labels: {json.dumps(model_keys)},
+    labels: {summary_labels_js},
     datasets: [{', '.join(summary_datasets_js)}]
   }},
   options: {{
@@ -398,7 +401,10 @@ new Chart(document.getElementById('summaryChart'), {{
       tooltip: {{
         backgroundColor: '#161b22', borderColor: '#30363d', borderWidth: 1,
         bodyFont: {{ size: 11 }},
-        callbacks: {{ label: ctx => ctx.dataset.label + ': ' + ctx.parsed.x + ' tok/s' }}
+        callbacks: {{
+          title: items => {summary_full_labels_js}[items[0].dataIndex],
+          label: ctx => ctx.dataset.label + ': ' + ctx.parsed.x + ' tok/s'
+        }}
       }}
     }},
     scales: {{

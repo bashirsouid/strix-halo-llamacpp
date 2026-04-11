@@ -459,15 +459,14 @@ MODELS: list[ModelConfig] = [
     ),
 
     # ── Gemma 4 26B A4B MoE ──
-    # ~27 GB at Q8_0 → ~63 GB for KV + overhead — fast MoE, excellent room
     ModelConfig(
-        name="Gemma 4 26B A4B (Q8_0)",
-        alias="gemma4-26b-a4b-q8",
+        name="Gemma 4 26B A4B (UD-IQ4_XS)",
+        alias="gemma4-26b-a4b-udiq4",
         hf_repo="unsloth/gemma-4-26B-A4B-it-GGUF",
         dest_dir=MODELS_DIR / "unsloth/gemma-4-26B-A4B-it-GGUF",
-        download_include="*Q8_0*",
-        shard_glob="*Q8_0*.gguf",
-        quant="Q8_0",
+        download_include="gemma-4-26B-A4B-it-UD-IQ4_XS.gguf",
+        shard_glob="*UD-IQ4_XS*.gguf",
+        quant="UD-IQ4_XS",
         parallel_slots=1,
         max_parallel=6,
         ctx_per_slot=262144,
@@ -482,7 +481,7 @@ MODELS: list[ModelConfig] = [
         notes=(
             "Best for: code, tool calling, reasoning, vision (with mmproj). "
             "MoE 25.2B (3.8B active). 128 experts, 8 active + 1 shared. "
-            "~27 GB at Q8_0 — near-lossless, fast MoE inference (~50-70 tok/s). "
+            "UD dynamic quant — smaller than the prior Q8_0 entry while keeping the same model family. "
             "256K native context. Native function calling baked into training. "
             "Thinking mode is forced on via chat_template_kwargs.enable_thinking. "
             "Google-recommended sampling: temp=1.0, top_p=0.95, top_k=64. "
@@ -524,17 +523,15 @@ MODELS: list[ModelConfig] = [
         ),
     ),
 
-
     # ── Qwen3 Coder 30B A3B ──
-    # ~32.5 GB at Q8_0 → ~57 GB for KV + overhead
     ModelConfig(
-        name="Qwen3 Coder 30B A3B (Q8_0)",
-        alias="qwen3-coder-30b-q8",
+        name="Qwen3 Coder 30B A3B (UD-Q4_K_XL)",
+        alias="qwen3-coder-30b-udq4",
         hf_repo="unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",
         dest_dir=MODELS_DIR / "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",
-        download_include="*Q8_0*",
-        shard_glob="*Q8_0*.gguf",
-        quant="Q8_0",
+        download_include="*UD-Q4_K_XL*",
+        shard_glob="*UD-Q4_K_XL*.gguf",
+        quant="UD-Q4_K_XL",
         parallel_slots=1,
         max_parallel=6,
         ctx_per_slot=262144,
@@ -548,13 +545,14 @@ MODELS: list[ModelConfig] = [
         notes=(
             "Best for: coding agents, tool calling — lighter alternative to Coder Next. "
             "MoE 30.5B (3.3B active). 128 experts, 8 activated. "
-            "~32.5 GB at Q8_0 — near-lossless, fits easily. "
+            "UD dynamic quant for better quality-per-GB than uniform low-bit quants. "
             "256K native context. Non-thinking only (no <think> blocks). "
             "Qwen-recommended sampling: temp=0.7, top_p=0.8, top_k=20, rep_pen=1.05. "
             "Bug: -ub must be 512 on Strix Halo Vulkan (same qwen3_moe arch as Coder Next). "
             "Apache 2.0. Agentic coding: supports Qwen Code, CLINE, function call format."
         ),
     ),
+
     # ── Mistral Small 4 Tool/Code ──
     # ~50–60 GB at Q4 → ~28–38 GB for KV + overhead
     ModelConfig(
@@ -647,16 +645,15 @@ MODELS: list[ModelConfig] = [
         ),
     ),
 
-    # ── Nemotron Nano Q4 ──
-    # ~6 GB at Q4 → ~82 GB for KV + overhead — max parallelism
+        # ── Nemotron Nano Q4 ──
     ModelConfig(
-        name="Nemotron Nano (Q4_K_M)",
-        alias="nemotron-nano-q4",
+        name="Nemotron Nano (UD-Q4_K_XL)",
+        alias="nemotron-nano-udq4",
         hf_repo="unsloth/Nemotron-3-Nano-30B-A3B-GGUF",
         dest_dir=MODELS_DIR / "nvidia/nemotron-nano",
-        download_include="*Q4_K_M*.gguf",
-        shard_glob="*Q4_K_M*.gguf",
-        quant="Q4_K_M",
+        download_include="*UD-Q4_K_XL*",
+        shard_glob="*UD-Q4_K_XL*.gguf",
+        quant="UD-Q4_K_XL",
         parallel_slots=8,
         max_parallel=12,
         ctx_per_slot=1048576,
@@ -667,7 +664,8 @@ MODELS: list[ModelConfig] = [
         reasoning_format="auto",
         notes=(
             "Best for: speed, lightweight tasks, tool calling, quick iteration. "
-            "MoE 30B (3B active). Fastest model in catalog (~60+ tok/s). "
+            "MoE 30B (3B active). "
+            "UD dynamic quant for better quality-per-GB than the prior uniform Q4 entry. "
             "Thinking mode is forced on via chat_template_kwargs.enable_thinking. "
             "Good for drafting, quick Q&A, low-latency tool calls."
         ),
@@ -696,6 +694,62 @@ MODELS: list[ModelConfig] = [
             "MoE 30B (3B active). ~45+ tok/s at Q8. "
             "Thinking mode is forced on via chat_template_kwargs.enable_thinking. "
             "Good for drafting, quick Q&A, low-latency tool calls."
+        ),
+    ),
+
+    # ── Qwen3.5 122B A10B (Architect) ──
+    ModelConfig(
+        name="Qwen3.5 122B A10B (UD-Q4_K_XL)",
+        alias="qwen3.5-122b-udq4",
+        hf_repo="unsloth/Qwen3.5-122B-A10B-GGUF",
+        dest_dir=MODELS_DIR / "unsloth/Qwen3.5-122B-A10B-GGUF/UD-Q4_K_XL",
+        download_include="*UD-Q4_K_XL*",
+        shard_glob="*UD-Q4_K_XL*.gguf",
+        quant="UD-Q4_K_XL",
+        parallel_slots=1,
+        max_parallel=2,
+        ctx_per_slot=131072, 
+        ubatch_size=512,
+        temperature=0.6,
+        top_p=0.95,
+        top_k=20,
+        repeat_penalty=1.0,       # Keep at 1.0 (off) to prevent degrading <think> loops
+        spec=SpecConfig(strategy="ngram"),
+        chat_template_kwargs={"enable_thinking": True},
+        reasoning_format="auto",
+        notes=(
+            "Best for: The 'Architect' model in multi-file agentic refactoring. "
+            "MoE 122B (10B active). Fits in ~70GB, leaving ~20GB for the 128K context cache. "
+            "Expect ~12-15 tok/sec on Strix Halo 395 due to 10B active parameters. "
+            "Thinking mode is forced on via chat_template_kwargs.enable_thinking. "
+            "Do not use for fast autocomplete; use strictly as a planner/architect."
+        ),
+    ),
+
+    # ── DeepSeek Coder V2 Lite ──
+    ModelConfig(
+        name="DeepSeek Coder V2 Lite (Q8_0_L)",
+        alias="deepseek-coder-v2-lite",
+        hf_repo="bartowski/DeepSeek-Coder-V2-Lite-Instruct-GGUF",
+        dest_dir=MODELS_DIR / "deepseek/DeepSeek-Coder-V2-Lite-Instruct",
+        download_include="*Q8_0_L.gguf",
+        shard_glob="*Q8_0_L.gguf",
+        quant="Q8_0_L",
+        parallel_slots=1,
+        max_parallel=4,
+        ctx_per_slot=65536,       # Model supports 128K, but 64K is safer for VRAM at Q8
+        ubatch_size=512,
+        temperature=0.0,          # DeepSeek recommends 0.0 for pure coding tasks
+        top_p=1.0,                # DeepSeek recommends 1.0 when temp is 0.0
+        repeat_penalty=1.0,
+        spec=SpecConfig(strategy="ngram"),
+        # Note: DeepSeek-V2 requires the deepseek2/deepseek-chat chat template
+        chat_template_kwargs={},
+        notes=(
+            "Best for: Fast agentic coding, autocomplete, and massive context ingestion. "
+            "MoE 16B (2.4B active). Uses Multi-Head Latent Attention (MLA). "
+            "Will run extremely fast on Strix Halo due to only 2.4B active parameters. "
+            "Native 128K context. DeepSeek recommends temp=0.0 and top_p=1.0 for coding tasks. "
         ),
     ),
 

@@ -17,6 +17,11 @@ import sys
 import webbrowser
 from pathlib import Path
 
+try:
+    from .report_helpers import wrap_text_label
+except ImportError:
+    from report_helpers import wrap_text_label
+
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_FILE = PROJECT_DIR / "results" / "benchmark" / "bench_results.jsonl"
 
@@ -93,8 +98,10 @@ def generate_html(records: list[dict]) -> str:
                 return f"{model} [{r['quant']}]"
         return model
 
-    model_labels = [_label(m) for m in models]
-    model_labels_js = json.dumps(model_labels)
+    full_model_labels = [_label(m) for m in models]
+    wrapped_model_labels = [wrap_text_label(label, width=28) for label in full_model_labels]
+    model_labels_js = json.dumps(wrapped_model_labels)
+    full_model_labels_js = json.dumps(full_model_labels)
 
     # ── Chart 1: Generation tok/s at each tier, grouped by model ─────────
     # One dataset per payload tier, models on Y axis, side-by-side bars
@@ -206,7 +213,7 @@ def generate_html(records: list[dict]) -> str:
     for m in models:
         label = _label(m)
         for b in backends:
-            cells = [f'<td style="font-weight:600;white-space:nowrap;">{label}</td>',
+            cells = [f'<td style="font-weight:600;white-space:normal;overflow-wrap:anywhere;">{label}</td>',
                      f'<td>{b}</td>']
             for p in payloads:
                 gen = _get(m, b, p, "gen_tok_s")
@@ -298,7 +305,7 @@ def generate_html(records: list[dict]) -> str:
     border-radius: 6px; padding: 10px 16px; flex: 1 1 160px;
   }}
   .stat-value {{ font-size: 20px; font-weight: 700; color: #f0f6fc; }}
-  .stat-sub {{ font-size: 11px; color: #6e7681; }}
+  .stat-sub {{ font-size: 11px; color: #6e7681; overflow-wrap: anywhere; }}
   .stat-label {{ font-size: 11px; color: #6e7681; text-transform: uppercase; letter-spacing: 1px; }}
   .chart-box {{
     background: #0d1117; border: 1px solid #21262d;
@@ -398,6 +405,7 @@ Chart.defaults.color = '#6e7681';
 Chart.defaults.borderColor = '#21262d';
 
 const modelLabels = {model_labels_js};
+const fullModelLabels = {full_model_labels_js};
 
 function makeBar(id, datasets, xLabel) {{
   new Chart(document.getElementById(id), {{
@@ -412,7 +420,10 @@ function makeBar(id, datasets, xLabel) {{
         tooltip: {{
           backgroundColor: '#161b22', borderColor: '#30363d', borderWidth: 1,
           bodyFont: {{ size: 11 }},
-          callbacks: {{ label: ctx => ctx.dataset.label + ': ' + ctx.parsed.x + ' tok/s' }}
+          callbacks: {{
+            title: items => fullModelLabels[items[0].dataIndex],
+            label: ctx => ctx.dataset.label + ': ' + ctx.parsed.x + ' tok/s'
+          }}
         }}
       }},
       scales: {{
@@ -439,7 +450,10 @@ new Chart(document.getElementById('degradeChart'), {{
       tooltip: {{
         backgroundColor: '#161b22', borderColor: '#30363d', borderWidth: 1,
         bodyFont: {{ size: 11 }},
-        callbacks: {{ label: ctx => ctx.dataset.label + ': ' + ctx.parsed.x + '% retained' }}
+        callbacks: {{
+          title: items => fullModelLabels[items[0].dataIndex],
+          label: ctx => ctx.dataset.label + ': ' + ctx.parsed.x + '% retained'
+        }}
       }}
     }},
     scales: {{
@@ -463,7 +477,10 @@ new Chart(document.getElementById('backendChart'), {{
       tooltip: {{
         backgroundColor: '#161b22', borderColor: '#30363d', borderWidth: 1,
         bodyFont: {{ size: 11 }},
-        callbacks: {{ label: ctx => ctx.dataset.label + ': ' + ctx.parsed.x + ' tok/s' }}
+        callbacks: {{
+          title: items => fullModelLabels[items[0].dataIndex],
+          label: ctx => ctx.dataset.label + ': ' + ctx.parsed.x + ' tok/s'
+        }}
       }}
     }},
     scales: {{
