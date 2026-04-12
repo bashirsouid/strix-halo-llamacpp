@@ -131,6 +131,8 @@ class ModelConfig:
     top_k: int | None = None             # --top-k
     min_p: float | None = None           # --min-p
     repeat_penalty: float | None = None  # --repeat-penalty
+    presence_penalty: float | None = None  # --presence-penalty
+    frequency_penalty: float | None = None  # --frequency-penalty
 
     #  Feature flags  
     reasoning_format: str | None = None  # --reasoning-format (none, deepseek, deepseek-legacy, auto)
@@ -225,6 +227,10 @@ class ModelConfig:
             args += ["--min-p", str(self.min_p)]
         if self.repeat_penalty is not None:
             args += ["--repeat-penalty", str(self.repeat_penalty)]
+        if self.presence_penalty is not None:
+            args += ["--presence-penalty", str(self.presence_penalty)]
+        if self.frequency_penalty is not None:
+            args += ["--frequency-penalty", str(self.frequency_penalty)]
 
         if self.chat_template_file:
             args += ["--chat-template-file", self.chat_template_file]
@@ -312,6 +318,7 @@ MODELS: list[ModelConfig] = [
             "Best for: coding agents, tool calling, agentic workflows. "
             "MoE 80B (3B active). #1 on SWE-rebench. ~62 GB at Q6_K. "
             "Non-thinking — fast direct responses, no <think> blocks. "
+            "Qwen official: temp=1.0, top_p=0.95, top_k=40. "
             "Bug: -ub must be 512 on Strix Halo Vulkan (issue #18725). "
             "Bug: Do NOT use Q6_K_XL — broken architecture detection."
         ),
@@ -340,6 +347,7 @@ MODELS: list[ModelConfig] = [
             "Best for: coding agents, tool calling, agentic workflows. "
             "MoE 80B (3B active). #1 on SWE-rebench. ~62 GB at UD-Q6_K_XL. "
             "Non-thinking — fast direct responses, no  Witt blocks. "
+            "Qwen official: temp=1.0, top_p=0.95, top_k=40. "
             "Bug: -ub must be 512 on Strix Halo Vulkan (issue #18725). "
             "Bug: Do NOT use Q6_K_XL — broken architecture detection."
         ),
@@ -368,6 +376,7 @@ MODELS: list[ModelConfig] = [
             "Best for: coding agents, tool calling, agentic workflows. "
             "MoE 80B (3B active). #1 on SWE-rebench. ~40 GB at UD-Q4_K_XL. "
             "Non-thinking — fast direct responses, no <think> blocks. "
+            "Qwen official: temp=1.0, top_p=0.95, top_k=40. "
             "Bug: -ub must be 512 on Strix Halo Vulkan (issue #18725). "
             "Bug: Do NOT use Q6_K_XL — broken architecture detection."
         ),
@@ -387,7 +396,7 @@ MODELS: list[ModelConfig] = [
         parallel_slots=1,
         max_parallel=2,
         ctx_per_slot=65536,
-        temperature=0.2,
+        temperature=0.3,  # Conservative for code; RL-trained on test-passing (moonshotai)
         top_p=0.95,
         spec=SpecConfig(strategy="ngram"),
         notes=(
@@ -417,7 +426,7 @@ MODELS: list[ModelConfig] = [
         temperature=0.7,
         top_p=1.0,
         min_p=0.01,
-        repeat_penalty=1.0,
+        repeat_penalty=1.1,  # Mild prevention; GLM 4.7 Flash needs this (notes indicated issue)
         spec=SpecConfig(strategy="ngram"),
         chat_template_kwargs={"enable_thinking": True},
         reasoning_format="auto",
@@ -427,7 +436,7 @@ MODELS: list[ModelConfig] = [
             "Parallelism is only effective on ROCM; latest testing is slower than sequential on RADV."
             "MoE 30B (3B active). Best 30B model on SWE-Bench + GPQA."
             "~30 GB at Q8 — near-lossless, fits easily. 200K context."
-            "Bug: needs --repeat-penalty 1.0 and --min-p 0.01."
+            "Bug: needs --repeat-penalty 1.1 and --min-p 0.01."
         ),
     ),
 
@@ -444,9 +453,11 @@ MODELS: list[ModelConfig] = [
         parallel_slots=3,
         max_parallel=6,
         ctx_per_slot=32768,
-        temperature=0.6,
+        temperature=0.6,  # Qwen official: temp=0.6 for coding tasks (thinking mode)
         top_p=0.95,
         top_k=20,
+        min_p=0.0,
+        presence_penalty=0.0,  # Qwen official: 0.0 for coding tasks
         repeat_penalty=1.0,
         spec=SpecConfig(strategy="ngram"),
         chat_template_kwargs={"enable_thinking": True},
@@ -454,7 +465,8 @@ MODELS: list[ModelConfig] = [
         notes=(
             "Best for: reasoning, summarization, general-purpose. "
             "MoE 35B (3B active). Thinking mode forced on via chat_template_kwargs.enable_thinking. "
-            "~48 GB at Q8_K_XL — high quality. Multimodal."
+            "~48 GB at Q8_K_XL — high quality. Multimodal. "
+            "Qwen official: temp=0.6 (coding), top_p=0.95, top_k=20, presence_penalty=0.0."
         ),
     ),
 
@@ -484,7 +496,7 @@ MODELS: list[ModelConfig] = [
             "UD dynamic quant — smaller than the prior Q8_0 entry while keeping the same model family. "
             "256K native context. Native function calling baked into training. "
             "Thinking mode is forced on via chat_template_kwargs.enable_thinking. "
-            "Google-recommended sampling: temp=1.0, top_p=0.95, top_k=64. "
+            "Google official: temp=1.0, top_p=0.95, top_k=64. "
             "Vision: requires mmproj-BF16.gguf projector file. "
             "Apache 2.0. Day-1 note: tool-call templates still maturing in llama.cpp."
         ),
@@ -516,7 +528,7 @@ MODELS: list[ModelConfig] = [
             "GPQA 84.3%, AIME 89.2%. Use for hard single-shot problems where "
             "you can wait — too slow for interactive agentic loops. "
             "Thinking mode is forced on via chat_template_kwargs.enable_thinking. "
-            "Google-recommended sampling: temp=1.0, top_p=0.95, top_k=64. "
+            "Google official: temp=1.0, top_p=0.95, top_k=64. "
             "Vision: download mmproj-BF16.gguf separately, use --mmproj flag. "
             "Apache 2.0. No speculation — dense models don't benefit much from "
             "ngram on UMA, and draft models add memory pressure."
@@ -547,7 +559,7 @@ MODELS: list[ModelConfig] = [
             "MoE 30.5B (3.3B active). 128 experts, 8 activated. "
             "UD dynamic quant for better quality-per-GB than uniform low-bit quants. "
             "256K native context. Non-thinking only (no <think> blocks). "
-            "Qwen-recommended sampling: temp=0.7, top_p=0.8, top_k=20, rep_pen=1.05. "
+            "Qwen official: temp=0.7, top_p=0.8, top_k=20, rep_pen=1.05. "
             "Bug: -ub must be 512 on Strix Halo Vulkan (same qwen3_moe arch as Coder Next). "
             "Apache 2.0. Agentic coding: supports Qwen Code, CLINE, function call format."
         ),
@@ -566,7 +578,7 @@ MODELS: list[ModelConfig] = [
         parallel_slots=1,
         max_parallel=4,
         ctx_per_slot=32768,
-        temperature=0.1,
+        temperature=0.1,  # Mistral official: temp=0.1 for tool/code (reasoning_effort=none)
         top_k=50,
         chat_template_kwargs={"reasoning_effort": "none"},
         spec=SpecConfig(
@@ -584,6 +596,7 @@ MODELS: list[ModelConfig] = [
             "MoE 119B (6.5B active). Temperature=0.1 for deterministic outputs. "
             "Reasoning is pinned to reasoning_effort=none for the tool/code alias. "
             "Draft model + ngram speculation for speed. "
+            "Mistral official: temp=0.1 (tool/code), 0.7 (reasoning). "
             "Unsloth recommends --jinja template."
         ),
     ),
@@ -601,7 +614,7 @@ MODELS: list[ModelConfig] = [
         parallel_slots=1,
         max_parallel=2,
         ctx_per_slot=131072,
-        temperature=0.7,
+        temperature=0.7,  # Mistral official: temp=0.7 for reasoning (reasoning_effort=high)
         top_p=0.95,
         top_k=20,
         chat_template_kwargs={"reasoning_effort": "high"},
@@ -613,7 +626,8 @@ MODELS: list[ModelConfig] = [
             "MoE 119B (6.5B active). Temperature=0.7 for creative reasoning. "
             "Reasoning is forced on via chat_template_kwargs.reasoning_effort=high. "
             "N-gram speculation (draft model not recommended for reasoning). "
-            "256K context window (limited to 128K here)."
+            "256K context window (limited to 128K here). "
+            "Mistral official: temp=0.7 (reasoning)."
         ),
     ),
 
@@ -632,6 +646,8 @@ MODELS: list[ModelConfig] = [
         ctx_per_slot=65536,
         temperature=1.0,
         top_p=0.95,
+        presence_penalty=0.0,  # NVIDIA default (no penalty)
+        frequency_penalty=0.0,  # NVIDIA default (no penalty)
         spec=SpecConfig(strategy="ngram"),
         chat_template_kwargs={"enable_thinking": True},
         reasoning_format="auto",
@@ -639,7 +655,7 @@ MODELS: list[ModelConfig] = [
             "Best for: long-context reasoning, multi-agent workflows. "
             "Hybrid Mamba2-Transformer MoE 120B (12B active). "
             "Natively supports 1M context (limited here by memory). "
-            "NVIDIA-recommended: temp=1.0, top_p=0.95. "
+            "NVIDIA official: temp=1.0, top_p=0.95. "
             "Thinking mode is forced on via chat_template_kwargs.enable_thinking. "
             "Use --reasoning-budget and --reasoning-format controls for advanced usage."
         ),
@@ -659,6 +675,9 @@ MODELS: list[ModelConfig] = [
         ctx_per_slot=1048576,
         temperature=0.6,
         top_p=0.95,
+        min_p=0.0,
+        presence_penalty=0.0,
+        frequency_penalty=0.0,
         spec=SpecConfig(strategy="ngram"),
         chat_template_kwargs={"enable_thinking": True},
         reasoning_format="auto",
@@ -667,7 +686,8 @@ MODELS: list[ModelConfig] = [
             "MoE 30B (3B active). "
             "UD dynamic quant for better quality-per-GB than the prior uniform Q4 entry. "
             "Thinking mode is forced on via chat_template_kwargs.enable_thinking. "
-            "Good for drafting, quick Q&A, low-latency tool calls."
+            "Good for drafting, quick Q&A, low-latency tool calls. "
+            "NVIDIA: temp=0.6 for lightweight tasks."
         ),
     ),
 
@@ -686,6 +706,9 @@ MODELS: list[ModelConfig] = [
         ctx_per_slot=1048576,
         temperature=0.6,
         top_p=0.95,
+        min_p=0.0,
+        presence_penalty=0.0,
+        frequency_penalty=0.0,
         spec=SpecConfig(strategy="ngram"),
         chat_template_kwargs={"enable_thinking": True},
         reasoning_format="auto",
@@ -693,7 +716,8 @@ MODELS: list[ModelConfig] = [
             "Best for: speed/quality balance, lightweight tasks, tool calling. "
             "MoE 30B (3B active). ~45+ tok/s at Q8. "
             "Thinking mode is forced on via chat_template_kwargs.enable_thinking. "
-            "Good for drafting, quick Q&A, low-latency tool calls."
+            "Good for drafting, quick Q&A, low-latency tool calls. "
+            "NVIDIA: temp=0.6 for lightweight tasks."
         ),
     ),
 
@@ -710,9 +734,11 @@ MODELS: list[ModelConfig] = [
         max_parallel=2,
         ctx_per_slot=131072, 
         ubatch_size=512,
-        temperature=0.6,
+        temperature=0.6,  # Qwen official: temp=0.6 for coding tasks (thinking mode)
         top_p=0.95,
         top_k=20,
+        min_p=0.0,
+        presence_penalty=0.0,  # Qwen official: 0.0 for coding tasks
         repeat_penalty=1.0,       # Keep at 1.0 (off) to prevent degrading <think> loops
         spec=SpecConfig(strategy="ngram"),
         chat_template_kwargs={"enable_thinking": True},
@@ -722,6 +748,7 @@ MODELS: list[ModelConfig] = [
             "MoE 122B (10B active). Fits in ~70GB, leaving ~20GB for the 128K context cache. "
             "Expect ~12-15 tok/sec on Strix Halo 395 due to 10B active parameters. "
             "Thinking mode is forced on via chat_template_kwargs.enable_thinking. "
+            "Qwen official: temp=0.6 (coding), top_p=0.95, top_k=20, presence_penalty=0.0. "
             "Do not use for fast autocomplete; use strictly as a planner/architect."
         ),
     ),
@@ -739,8 +766,8 @@ MODELS: list[ModelConfig] = [
         max_parallel=4,
         ctx_per_slot=65536,       # Model supports 128K, but 64K is safer for VRAM at Q8
         ubatch_size=512,
-        temperature=0.0,          # DeepSeek recommends 0.0 for pure coding tasks
-        top_p=1.0,                # DeepSeek recommends 1.0 when temp is 0.0
+        temperature=0.0,          # DeepSeek official: temp=0.0 for pure coding tasks
+        top_p=1.0,                # DeepSeek official: top_p=1.0 when temp is 0.0
         repeat_penalty=1.0,
         spec=SpecConfig(strategy="ngram"),
         # Note: DeepSeek-V2 requires the deepseek2/deepseek-chat chat template
@@ -749,7 +776,7 @@ MODELS: list[ModelConfig] = [
             "Best for: Fast agentic coding, autocomplete, and massive context ingestion. "
             "MoE 16B (2.4B active). Uses Multi-Head Latent Attention (MLA). "
             "Will run extremely fast on Strix Halo due to only 2.4B active parameters. "
-            "Native 128K context. DeepSeek recommends temp=0.0 and top_p=1.0 for coding tasks. "
+            "Native 128K context. DeepSeek official: temp=0.0, top_p=1.0 for coding. "
         ),
     ),
 

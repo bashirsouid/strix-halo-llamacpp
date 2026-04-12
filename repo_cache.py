@@ -803,8 +803,23 @@ def collapse_system_messages(
     return [merged_system] + remaining_messages
 
 
-def inject_repo_context(payload: dict[str, Any], context_text: str, slot_id: int = DEFAULT_SLOT_ID) -> dict[str, Any]:
+def ensure_stream_usage_metrics(payload: dict[str, Any]) -> dict[str, Any]:
     cloned = copy.deepcopy(payload)
+    if not cloned.get("stream"):
+        return cloned
+    stream_options = cloned.get("stream_options")
+    if stream_options is None:
+        cloned["stream_options"] = {"include_usage": True}
+        return cloned
+    if isinstance(stream_options, dict):
+        updated = copy.deepcopy(stream_options)
+        updated["include_usage"] = True
+        cloned["stream_options"] = updated
+    return cloned
+
+
+def inject_repo_context(payload: dict[str, Any], context_text: str, slot_id: int = DEFAULT_SLOT_ID) -> dict[str, Any]:
+    cloned = ensure_stream_usage_metrics(payload)
     messages = cloned.get("messages")
     if not isinstance(messages, list):
         raise ValueError("Expected an OpenAI-compatible payload with a 'messages' array")
@@ -849,6 +864,12 @@ def _as_float(value: Any) -> float | None:
         return None
 
 
+def _pct(numerator: int | None, denominator: int | None) -> float | None:
+    if numerator is None or denominator is None or denominator <= 0:
+        return None
+    return 100.0 * numerator / denominator
+
+
 def extract_completion_metrics(payload: dict[str, Any] | None) -> dict[str, float | int | None]:
     if not isinstance(payload, dict):
         return {}
@@ -872,12 +893,30 @@ def extract_completion_metrics(payload: dict[str, Any] | None) -> dict[str, floa
         or _as_int(usage.get("input_tokens"))
         or ((cache_tokens or 0) + (prompt_eval_tokens or 0) or None)
     )
+    if prompt_tokens is None and (cache_tokens is not None or prompt_eval_tokens is not None):
+        prompt_tokens = (cache_tokens or 0) + (prompt_eval_tokens or 0)
+
+    call_tokens = None
+    if prompt_tokens is not None or completion_tokens is not None:
+        call_tokens = (prompt_tokens or 0) + (completion_tokens or 0)
+
+    prompt_cache_hit_pct = _pct(cache_tokens, prompt_tokens)
+    prompt_eval_pct = _pct(prompt_eval_tokens, prompt_tokens)
+    call_cache_hit_pct = _pct(cache_tokens, call_tokens)
+    call_uncached_tokens = None
+    if call_tokens is not None and cache_tokens is not None:
+        call_uncached_tokens = max(call_tokens - cache_tokens, 0)
 
     return {
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
         "cache_tokens": cache_tokens,
         "prompt_eval_tokens": prompt_eval_tokens,
+        "call_tokens": call_tokens,
+        "call_uncached_tokens": call_uncached_tokens,
+        "prompt_cache_hit_pct": prompt_cache_hit_pct,
+        "prompt_eval_pct": prompt_eval_pct,
+        "call_cache_hit_pct": call_cache_hit_pct,
         "prompt_ms": _as_float(timings.get("prompt_ms")),
         "prompt_tps": _as_float(timings.get("prompt_per_second")),
         "completion_ms": _as_float(timings.get("predicted_ms")),
@@ -926,19 +965,35 @@ def format_proxy_metrics_line(
     if isinstance(slot_id, int):
         parts.append(f"slot={slot_id}")
 
-    prompt_eval_tokens = metrics.get("prompt_eval_tokens")
+    prompt_tokens = metrics.get("prompt_tokens")
+    if isinstance(prompt_tokens, int) and prompt_tokens > 0:
+        parts.append(f"prompt={prompt_tokens}")
+
     cache_tokens = metrics.get("cache_tokens")
-    ctx_tokens = None
-    if isinstance(prompt_eval_tokens, int) or isinstance(cache_tokens, int):
-        ctx_tokens = (prompt_eval_tokens or 0) + (cache_tokens or 0)
-        if ctx_tokens > 0:
-            parts.append(f"ctx={ctx_tokens}")
+    prompt_cache_hit_pct = metrics.get("prompt_cache_hit_pct")
     if isinstance(cache_tokens, int):
-        if ctx_tokens and ctx_tokens > 0:
-            cache_pct = 100.0 * cache_tokens / ctx_tokens
-            parts.append(f"cache={cache_tokens}/{ctx_tokens}({cache_pct:.1f}%)")
+        if isinstance(prompt_tokens, int) and prompt_tokens > 0 and isinstance(prompt_cache_hit_pct, float):
+            parts.append(f"prompt_cache={cache_tokens}/{prompt_tokens}({prompt_cache_hit_pct:.1f}%)")
         else:
-            parts.append(f"cache={cache_tokens}")
+            parts.append(f"prompt_cache={cache_tokens}")
+
+    prompt_eval_tokens = metrics.get("prompt_eval_tokens")
+    prompt_eval_pct = metrics.get("prompt_eval_pct")
+    if isinstance(prompt_eval_tokens, int):
+        if isinstance(prompt_tokens, int) and prompt_tokens > 0 and isinstance(prompt_eval_pct, float):
+            parts.append(f"prompt_eval={prompt_eval_tokens}/{prompt_tokens}({prompt_eval_pct:.1f}%)")
+        else:
+            parts.append(f"prompt_eval={prompt_eval_tokens}")
+
+    call_tokens = metrics.get("call_tokens")
+    call_cache_hit_pct = metrics.get("call_cache_hit_pct")
+    if (
+        isinstance(call_tokens, int)
+        and call_tokens > 0
+        and isinstance(cache_tokens, int)
+        and isinstance(call_cache_hit_pct, float)
+    ):
+        parts.append(f"call_cache={cache_tokens}/{call_tokens}({call_cache_hit_pct:.1f}%)")
 
     prompt_tps = metrics.get("prompt_tps")
     if isinstance(prompt_tps, float):
@@ -961,6 +1016,20 @@ def format_proxy_metrics_line(
         parts.append(f"error={clean_error}")
 
     return " ".join(parts)
+
+
+def _merge_stream_metrics_payload(
+    current: dict[str, Any] | None,
+    incoming: dict[str, Any],
+) -> dict[str, Any]:
+    merged = copy.deepcopy(current) if isinstance(current, dict) else {}
+    for key in ("id", "object", "created", "model", "usage", "timings"):
+        value = incoming.get(key)
+        if value is not None:
+            merged[key] = copy.deepcopy(value)
+    if "choices" in incoming and "choices" not in merged:
+        merged["choices"] = copy.deepcopy(incoming["choices"])
+    return merged
 
 
 def _update_sse_metrics_buffer(
@@ -990,7 +1059,7 @@ def _update_sse_metrics_buffer(
         except json.JSONDecodeError:
             continue
         if isinstance(payload, dict):
-            latest_payload = payload
+            latest_payload = _merge_stream_metrics_payload(latest_payload, payload)
     return buffer, latest_payload
 
 
@@ -1639,6 +1708,15 @@ class _ProxyHandler(http.server.BaseHTTPRequestHandler):
                         upstream_path=route.upstream_path,
                     )
                     return
+
+            plain_upstream_path = route.upstream_path.split("?", 1)[0]
+            if (
+                request_payload is not None
+                and not route.inject_context
+                and plain_upstream_path == "/v1/chat/completions"
+            ):
+                request_payload = ensure_stream_usage_metrics(request_payload)
+                body = json.dumps(request_payload).encode("utf-8")
 
             if route.inject_context:
                 try:

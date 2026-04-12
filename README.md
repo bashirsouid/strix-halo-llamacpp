@@ -391,11 +391,18 @@ Hard kills and power loss still cannot be made crash-safe, so `repo-save` remain
 
 ### Metrics and logs
 
-The proxy prints one human-readable line per request and also appends JSONL metrics to `~/.cache/strix-halo-llamacpp/proxy-metrics.jsonl`. The request lines include the repo slug, model, elapsed time, total prompt context, cache hits, prompt throughput, and generation throughput. Switch/save events are logged separately, for example:
+The proxy prints one human-readable line per request and also appends JSONL metrics to `~/.cache/strix-halo-llamacpp/proxy-metrics.jsonl`. The request lines now make the cache hit rate explicit in two ways:
+
+- `prompt_cache=` shows how much of the **prompt** came from the KV cache.
+- `call_cache=` shows how much of the **entire request** (prompt + generated tokens) came from cache.
+
+That makes it easier to decide whether prompt caching is saving enough work to justify keeping it on for a given workflow. For streamed chat completions, the proxy automatically asks llama.cpp to include final usage stats so those cache fields still show up in the log.
+
+Switch/save events are logged separately, for example:
 
 ```text
 [switch] repo=my-app-a1b2c3d4 from=qwen3.5-122b-udq4 save=ok(...) to=qwen3-coder-next-udq6xl cold_start=13.8s restore=ok(...)
-[proxy] repo=my-app-a1b2c3d4 status=200 path=/v1/chat/completions time=3.42s model=qwen3-coder-next-udq6xl slot=0 ctx=4102 cache=3800/4102(92.6%) pp=894tok/s gen=412 gen_tps=44.7
+[proxy] repo=my-app-a1b2c3d4 status=200 path=/v1/chat/completions time=3.42s model=qwen3-coder-next-udq6xl slot=0 prompt=4102 prompt_cache=3800/4102(92.6%) prompt_eval=302/4102(7.4%) call_cache=3800/4514(84.2%) pp=894tok/s gen=412 gen_tps=44.7
 ```
 
 The detached proxy process started by `serve`/`start.sh` also writes its stdout/stderr to `./.proxy.log`.

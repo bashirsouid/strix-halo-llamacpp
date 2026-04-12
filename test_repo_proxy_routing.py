@@ -7,6 +7,9 @@ from repo_cache import (
     REPO_PATH_HEADER,
     RepoProxyController,
     _update_sse_metrics_buffer,
+    ensure_stream_usage_metrics,
+    extract_completion_metrics,
+    format_proxy_metrics_line,
     inject_repo_context,
     provider_payload,
     refresh_repo_context,
@@ -120,7 +123,7 @@ def test_controller_auto_initializes_repo_from_repo_path_header(tmp_path: Path) 
 def test_update_sse_metrics_buffer_tracks_latest_json_payload() -> None:
     chunks = [
         b'data: {"model":"first","timings":{"prompt_n":4}}\n\n',
-        b'data: {"model":"second","timings":{"cache_n":12}}\n\n',
+        b'data: {"usage":{"prompt_tokens":16}}\n\n',
         b'data: [DONE]\n\n',
     ]
 
@@ -134,7 +137,11 @@ def test_update_sse_metrics_buffer_tracks_latest_json_payload() -> None:
         )
 
     assert buffer == ""
-    assert latest_payload == {"model": "second", "timings": {"cache_n": 12}}
+    assert latest_payload == {
+        "model": "first",
+        "timings": {"prompt_n": 4},
+        "usage": {"prompt_tokens": 16},
+    }
 
 
 def test_inject_repo_context_collapses_late_system_messages() -> None:
@@ -204,3 +211,57 @@ def test_write_opencode_config_sets_plan_agent_and_small_model(tmp_path: Path) -
     assert config["model"] == "strix-local/qwen3-coder-next-udq6xl"
     assert config["small_model"] == "strix-local/qwen3-coder-next-udq6xl"
     assert config["agent"]["plan"]["model"] == "strix-local/qwen3.5-122b-udq4"
+
+
+def test_extract_completion_metrics_reports_prompt_and_call_cache_rates() -> None:
+    metrics = extract_completion_metrics(
+        {
+            "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+            "timings": {"cache_n": 80, "prompt_n": 20, "predicted_n": 20},
+        }
+    )
+
+    assert metrics["prompt_cache_hit_pct"] == 80.0
+    assert metrics["prompt_eval_pct"] == 20.0
+    assert metrics["call_tokens"] == 120
+    assert round(metrics["call_cache_hit_pct"], 1) == 66.7
+    assert metrics["call_uncached_tokens"] == 40
+
+
+def test_format_proxy_metrics_line_makes_cache_hit_explicit() -> None:
+    line = format_proxy_metrics_line(
+        path="/v1/chat/completions",
+        status=200,
+        elapsed_sec=3.42,
+        request_payload={"model": "coder", "id_slot": 0},
+        response_payload={
+            "model": "coder",
+            "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+            "timings": {
+                "cache_n": 80,
+                "prompt_n": 20,
+                "prompt_per_second": 400.0,
+                "predicted_n": 20,
+                "predicted_per_second": 40.0,
+            },
+        },
+        repo_slug="demo-1234",
+    )
+
+    assert "prompt=100" in line
+    assert "prompt_cache=80/100(80.0%)" in line
+    assert "prompt_eval=20/100(20.0%)" in line
+    assert "call_cache=80/120(66.7%)" in line
+
+
+def test_ensure_stream_usage_metrics_enables_include_usage_for_streams() -> None:
+    payload = ensure_stream_usage_metrics(
+        {
+            "stream": True,
+            "stream_options": {"foo": "bar"},
+            "messages": [{"role": "user", "content": "hello"}],
+        }
+    )
+
+    assert payload["stream_options"]["include_usage"] is True
+    assert payload["stream_options"]["foo"] == "bar"
