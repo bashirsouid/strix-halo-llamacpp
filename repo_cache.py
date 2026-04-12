@@ -6,22 +6,28 @@ import http.server
 import json
 import os
 import re
+import signal
 import socketserver
 import sys
+import threading
 import time
 import tomllib
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 CACHE_ROOT = Path.home() / ".cache" / "strix-halo-llamacpp"
 REPO_CACHE_ROOT = CACHE_ROOT / "repositories"
 SLOT_CACHE_ROOT = CACHE_ROOT / "slots"
+PROXY_STATE_FILE = CACHE_ROOT / "proxy-state.json"
+PROXY_METRICS_FILE = CACHE_ROOT / "proxy-metrics.jsonl"
 DEFAULT_PROXY_PORT = 8001
 DEFAULT_PROXY_HOST = "127.0.0.1"
 DEFAULT_SLOT_ID = 0
+REPO_ROUTE_PREFIX = "/r"
 REPO_CONTEXT_MARKER = "<!-- strix-halo-repo-context -->"
 MAX_DOC_CHARS = 8000
 MAX_TOTAL_CONTEXT_CHARS = 24000
@@ -115,6 +121,23 @@ class RepoPaths:
     opencode_file: Path
 
 
+@dataclass(frozen=True)
+class PublishedModel:
+    alias: str
+    name: str
+    context_limit: int
+    output_limit: int = 8192
+
+
+@dataclass(frozen=True)
+class ProxyRoute:
+    repo_slug: str | None
+    repo_dir: Path | None
+    upstream_path: str
+    inject_context: bool = False
+    synthetic_response: dict[str, Any] | None = None
+
+
 class _ThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     allow_reuse_address = True
     daemon_threads = True
@@ -155,6 +178,119 @@ def repo_paths(repo_dir: str | Path) -> RepoPaths:
         slot_filename=f"{slug}-slot0.bin",
         opencode_file=root / "opencode.json",
     )
+
+
+def _safe_component(value: str) -> str:
+    safe = re.sub(r"[^a-z0-9._-]+", "-", value.lower()).strip("-")
+    return safe or "value"
+
+
+def exact_model_key(model_alias: str | None) -> str:
+    raw = (model_alias or "default").strip() or "default"
+    safe = _safe_component(raw)
+    digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:8]
+    return f"{safe}-{digest}"
+
+
+def slot_filename_for(
+    repo_dir: str | Path,
+    model_alias: str | None,
+    *,
+    slot_id: int = DEFAULT_SLOT_ID,
+    exact_key: str | None = None,
+) -> str:
+    paths = repo_paths(repo_dir)
+    model_key = exact_key or exact_model_key(model_alias)
+    return f"{paths.slug}--m_{model_key}--slot{slot_id}.bin"
+
+
+def repo_proxy_base_url(
+    repo_dir: str | Path,
+    *,
+    proxy_host: str = DEFAULT_PROXY_HOST,
+    proxy_port: int = DEFAULT_PROXY_PORT,
+) -> str:
+    slug = repo_paths(repo_dir).slug
+    return f"http://{proxy_host}:{proxy_port}{REPO_ROUTE_PREFIX}/{slug}/v1"
+
+
+def discover_cached_repos() -> dict[str, Path]:
+    ensure_cache_dirs()
+    discovered: dict[str, Path] = {}
+    for cache_dir in sorted(REPO_CACHE_ROOT.iterdir() if REPO_CACHE_ROOT.exists() else [], key=lambda item: item.name):
+        if not cache_dir.is_dir():
+            continue
+        metadata_file = cache_dir / "repo-context.json"
+        if not metadata_file.exists():
+            continue
+        try:
+            data = json.loads(metadata_file.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        repo_root = data.get("repo_root") if isinstance(data, dict) else None
+        if not isinstance(repo_root, str) or not repo_root.strip():
+            continue
+        repo_path = Path(repo_root).expanduser()
+        if repo_path.exists() and repo_path.is_dir():
+            discovered[cache_dir.name] = repo_path.resolve()
+    return discovered
+
+
+def _normalize_published_models(
+    *,
+    models: list[PublishedModel | dict[str, Any]] | None = None,
+    model_alias: str | None = None,
+    model_name: str | None = None,
+    context_limit: int | None = None,
+    output_limit: int = 8192,
+) -> list[PublishedModel]:
+    normalized: list[PublishedModel] = []
+    if models:
+        for entry in models:
+            if isinstance(entry, PublishedModel):
+                normalized.append(entry)
+                continue
+            if not isinstance(entry, dict):
+                raise TypeError(f"Unsupported model entry type: {type(entry)!r}")
+            alias = entry.get("alias") or entry.get("model_alias")
+            name = entry.get("name") or entry.get("model_name")
+            ctx = entry.get("context_limit")
+            out = entry.get("output_limit", output_limit)
+            if not isinstance(alias, str) or not alias.strip():
+                raise ValueError(f"Model entry is missing a valid alias: {entry!r}")
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError(f"Model entry is missing a valid name: {entry!r}")
+            if ctx is None:
+                raise ValueError(f"Model entry is missing context_limit: {entry!r}")
+            normalized.append(
+                PublishedModel(
+                    alias=alias.strip(),
+                    name=name.strip(),
+                    context_limit=int(ctx),
+                    output_limit=int(out),
+                )
+            )
+
+    if not normalized:
+        if not model_alias or not model_name or context_limit is None:
+            raise ValueError("Need either models=... or model_alias/model_name/context_limit")
+        normalized.append(
+            PublishedModel(
+                alias=model_alias,
+                name=model_name,
+                context_limit=int(context_limit),
+                output_limit=int(output_limit),
+            )
+        )
+
+    deduped: list[PublishedModel] = []
+    seen: set[str] = set()
+    for item in normalized:
+        if item.alias in seen:
+            continue
+        deduped.append(item)
+        seen.add(item.alias)
+    return deduped
 
 
 def _collapse_blank_lines(text: str) -> str:
@@ -433,47 +569,73 @@ def provider_payload(
     provider_id: str,
     provider_name: str,
     proxy_port: int,
-    model_alias: str,
-    model_name: str,
-    context_limit: int,
+    models: list[PublishedModel | dict[str, Any]] | None = None,
+    repo_dir: str | Path | None = None,
+    model_alias: str | None = None,
+    model_name: str | None = None,
+    context_limit: int | None = None,
     output_limit: int = 8192,
     api_key: str | None = None,
+    timeout_ms: int = 900_000,
+    chunk_timeout_ms: int = 120_000,
 ) -> dict[str, Any]:
+    published_models = _normalize_published_models(
+        models=models,
+        model_alias=model_alias,
+        model_name=model_name,
+        context_limit=context_limit,
+        output_limit=output_limit,
+    )
+
+    base_url = f"http://127.0.0.1:{proxy_port}/v1"
+    if repo_dir is not None:
+        base_url = repo_proxy_base_url(repo_dir, proxy_port=proxy_port)
+
     options: dict[str, Any] = {
-        "baseURL": f"http://127.0.0.1:{proxy_port}/v1",
+        "baseURL": base_url,
+        "timeout": timeout_ms,
+        "chunkTimeout": chunk_timeout_ms,
     }
     if api_key:
         options["apiKey"] = api_key
+
+    models_payload: dict[str, Any] = {}
+    for item in published_models:
+        models_payload[item.alias] = {
+            "name": item.name,
+            "limit": {
+                "context": item.context_limit,
+                "output": item.output_limit,
+            },
+        }
 
     return {
         provider_id: {
             "npm": "@ai-sdk/openai-compatible",
             "name": provider_name,
             "options": options,
-            "models": {
-                model_alias: {
-                    "name": model_name,
-                    "limit": {
-                        "context": context_limit,
-                        "output": output_limit,
-                    },
-                }
-            },
+            "models": models_payload,
         }
     }
+
 
 
 def write_opencode_config(
     repo_dir: str | Path,
     *,
-    model_alias: str,
-    model_name: str,
-    context_limit: int,
+    models: list[PublishedModel | dict[str, Any]] | None = None,
+    default_model: str | None = None,
+    small_model: str | None = None,
+    model_alias: str | None = None,
+    model_name: str | None = None,
+    context_limit: int | None = None,
     proxy_port: int = DEFAULT_PROXY_PORT,
     provider_id: str = "strix-local",
     provider_name: str = "Strix Halo llama.cpp",
     output_limit: int = 8192,
     api_key: str | None = None,
+    timeout_ms: int = 900_000,
+    chunk_timeout_ms: int = 120_000,
 ) -> Path:
     paths = repo_paths(repo_dir)
     config_path = paths.opencode_file
@@ -488,6 +650,15 @@ def write_opencode_config(
     if not isinstance(config, dict):
         raise ValueError(f"Existing opencode.json must contain a JSON object: {config_path}")
 
+    published_models = _normalize_published_models(
+        models=models,
+        model_alias=model_alias,
+        model_name=model_name,
+        context_limit=context_limit,
+        output_limit=output_limit,
+    )
+    default_alias = default_model or published_models[0].alias
+
     config.setdefault("$schema", "https://opencode.ai/config.json")
     provider = config.setdefault("provider", {})
     if not isinstance(provider, dict):
@@ -498,14 +669,16 @@ def write_opencode_config(
             provider_id=provider_id,
             provider_name=provider_name,
             proxy_port=proxy_port,
-            model_alias=model_alias,
-            model_name=model_name,
-            context_limit=context_limit,
-            output_limit=output_limit,
+            repo_dir=paths.repo_dir,
+            models=published_models,
             api_key=api_key,
+            timeout_ms=timeout_ms,
+            chunk_timeout_ms=chunk_timeout_ms,
         )
     )
-    config["model"] = f"{provider_id}/{model_alias}"
+    config["model"] = f"{provider_id}/{default_alias}"
+    if small_model:
+        config["small_model"] = f"{provider_id}/{small_model}"
 
     config_path.write_text(json.dumps(config, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return config_path
@@ -631,6 +804,7 @@ def format_proxy_metrics_line(
     request_payload: dict[str, Any] | None = None,
     response_payload: dict[str, Any] | None = None,
     error: str | None = None,
+    repo_slug: str | None = None,
 ) -> str:
     metrics = extract_completion_metrics(response_payload)
     model = None
@@ -640,7 +814,10 @@ def format_proxy_metrics_line(
         model = request_payload.get("model")
     slot_id = request_payload.get("id_slot") if isinstance(request_payload, dict) else None
 
-    parts = ["[proxy]", f"status={status}", f"path={path}", f"time={elapsed_sec:.2f}s"]
+    parts = ["[proxy]"]
+    if isinstance(repo_slug, str) and repo_slug:
+        parts.append(f"repo={repo_slug}")
+    parts.extend([f"status={status}", f"path={path}", f"time={elapsed_sec:.2f}s"])
     if isinstance(model, str) and model:
         parts.append(f"model={model}")
     if isinstance(slot_id, int):
@@ -683,30 +860,410 @@ def format_proxy_metrics_line(
     return " ".join(parts)
 
 
-def _update_sse_metrics_buffer(
-    buffer: str,
-    chunk: bytes,
-    *,
-    latest_payload: dict[str, Any] | None = None,
-) -> tuple[str, dict[str, Any] | None]:
-    text = chunk.decode("utf-8", errors="replace").replace("\r\n", "\n")
-    buffer += text
-    while "\n\n" in buffer:
-        event, buffer = buffer.split("\n\n", 1)
-        for line in event.split("\n"):
-            if not line.startswith("data:"):
-                continue
-            data = line[5:].strip()
-            if not data or data == "[DONE]":
-                continue
-            try:
-                payload = json.loads(data)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(payload, dict):
-                latest_payload = payload
-    return buffer, latest_payload
 
+def _jsonable(value: Any) -> Any:
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
+    return str(value)
+
+
+
+def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
+    ensure_cache_dirs()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, sort_keys=True) + "\n")
+
+
+
+def _slot_action_summary(result: dict[str, Any] | None, *, action: str) -> str:
+    if not isinstance(result, dict):
+        return f"{action}=ok"
+    fields: list[str] = []
+    for key in ("n_saved", "n_written", "n_restored", "filename"):
+        value = result.get(key)
+        if value is not None:
+            fields.append(f"{key}={value}")
+    for key in ("save_ms", "restore_ms", "ms"):
+        value = result.get(key)
+        if isinstance(value, (int, float)):
+            fields.append(f"{key}={value:.0f}ms")
+            break
+    return f"{action}=ok" + (f"({', '.join(fields)})" if fields else "")
+
+
+
+class RepoProxyController:
+    def __init__(
+        self,
+        *,
+        upstream_port: int,
+        slot_id: int = DEFAULT_SLOT_ID,
+        default_repo_dir: str | Path | None = None,
+        available_models: list[PublishedModel | dict[str, Any]] | None = None,
+        default_model: str | None = None,
+        switch_model_callback: Callable[[str], None] | None = None,
+        save_slot_callback: Callable[..., dict[str, Any]] | None = None,
+        restore_slot_callback: Callable[..., dict[str, Any]] | None = None,
+        warm_slot_callback: Callable[..., dict[str, Any]] | None = None,
+        current_model_callback: Callable[[], str | None] | None = None,
+        state_file: Path = PROXY_STATE_FILE,
+        metrics_file: Path = PROXY_METRICS_FILE,
+    ) -> None:
+        self.upstream_port = upstream_port
+        self.slot_id = slot_id
+        self.default_repo_dir = normalize_repo_dir(default_repo_dir) if default_repo_dir else None
+        self.default_repo_slug = repo_slug(self.default_repo_dir) if self.default_repo_dir else None
+        self.available_models = {
+            item.alias: item
+            for item in _normalize_published_models(models=available_models)
+        } if available_models else {}
+        self.default_model = default_model
+        self.switch_model_callback = switch_model_callback
+        self.save_slot_callback = save_slot_callback
+        self.restore_slot_callback = restore_slot_callback
+        self.warm_slot_callback = warm_slot_callback
+        self.current_model_callback = current_model_callback
+        self.state_file = state_file
+        self.metrics_file = metrics_file
+        self.lock = threading.RLock()
+        self.active_repo_slug: str | None = None
+        self.active_repo_dir: Path | None = None
+        self.active_model: str | None = None
+        self.active_slot_filename: str | None = None
+        self.active_dirty = False
+        self._repo_map: dict[str, Path] = {}
+        self._refresh_repo_map()
+        self._load_state()
+
+    def _refresh_repo_map(self) -> None:
+        self._repo_map = discover_cached_repos()
+        if self.default_repo_dir is not None:
+            self._repo_map[self.default_repo_slug or repo_slug(self.default_repo_dir)] = self.default_repo_dir
+
+    def _load_state(self) -> None:
+        if not self.state_file.exists():
+            return
+        try:
+            data = json.loads(self.state_file.read_text(encoding="utf-8"))
+        except Exception:
+            return
+        if not isinstance(data, dict):
+            return
+        repo_root = data.get("repo_root")
+        self.active_repo_slug = data.get("repo_slug") if isinstance(data.get("repo_slug"), str) else None
+        if isinstance(repo_root, str) and repo_root:
+            repo_path = Path(repo_root).expanduser()
+            if repo_path.exists() and repo_path.is_dir():
+                self.active_repo_dir = repo_path.resolve()
+        self.active_model = data.get("model_alias") if isinstance(data.get("model_alias"), str) else None
+        self.active_slot_filename = data.get("slot_filename") if isinstance(data.get("slot_filename"), str) else None
+        self.active_dirty = bool(data.get("dirty", False))
+
+    def _write_state(self) -> None:
+        ensure_cache_dirs()
+        payload = {
+            "repo_slug": self.active_repo_slug,
+            "repo_root": str(self.active_repo_dir) if self.active_repo_dir else None,
+            "model_alias": self.active_model,
+            "slot_id": self.slot_id,
+            "slot_filename": self.active_slot_filename,
+            "dirty": self.active_dirty,
+            "upstream_port": self.upstream_port,
+            "updated_at": int(time.time()),
+        }
+        self.state_file.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    def models_payload(self) -> dict[str, Any]:
+        aliases = list(self.available_models)
+        if not aliases:
+            current = self.current_model_callback() if self.current_model_callback else None
+            if current:
+                aliases = [current]
+        return {
+            "object": "list",
+            "data": [
+                {
+                    "id": alias,
+                    "object": "model",
+                    "created": 0,
+                    "owned_by": "strix-local",
+                }
+                for alias in aliases
+            ],
+        }
+
+    def resolve_route(self, raw_path: str, headers: http.client.HTTPMessage | dict[str, Any]) -> ProxyRoute:
+        self._refresh_repo_map()
+        parsed = urllib.parse.urlsplit(raw_path)
+        upstream_path = parsed.path or "/"
+        repo_slug_value = None
+        if upstream_path.startswith(f"{REPO_ROUTE_PREFIX}/"):
+            parts = upstream_path.split("/")
+            if len(parts) >= 4 and parts[1] == REPO_ROUTE_PREFIX.strip("/"):
+                repo_slug_value = parts[2]
+                remainder = "/" + "/".join(parts[3:])
+                upstream_path = remainder if remainder != "//" else "/"
+        if repo_slug_value is None:
+            header_value = headers.get("X-Repo-Slug") if hasattr(headers, "get") else None
+            if isinstance(header_value, str) and header_value.strip():
+                repo_slug_value = header_value.strip()
+        if repo_slug_value is None:
+            if self.default_repo_slug:
+                repo_slug_value = self.default_repo_slug
+            elif len(self._repo_map) == 1:
+                repo_slug_value = next(iter(self._repo_map))
+        if parsed.query:
+            upstream_path = f"{upstream_path}?{parsed.query}"
+
+        repo_dir = self._repo_map.get(repo_slug_value) if repo_slug_value else None
+        synthetic_response = None
+        inject_context = False
+        plain_path = upstream_path.split("?", 1)[0]
+        if plain_path == "/v1/models":
+            synthetic_response = self.models_payload()
+        elif plain_path == "/v1/chat/completions" and repo_dir is not None:
+            inject_context = True
+        return ProxyRoute(
+            repo_slug=repo_slug_value,
+            repo_dir=repo_dir,
+            upstream_path=upstream_path,
+            inject_context=inject_context,
+            synthetic_response=synthetic_response,
+        )
+
+    def resolve_requested_model(self, payload: dict[str, Any] | None) -> str | None:
+        model = payload.get("model") if isinstance(payload, dict) else None
+        if isinstance(model, str) and model.strip():
+            return model.strip()
+        if self.default_model:
+            return self.default_model
+        if self.active_model:
+            return self.active_model
+        if self.current_model_callback:
+            return self.current_model_callback()
+        return None
+
+    def ensure_target(self, repo_slug: str, repo_dir: Path, model_alias: str) -> dict[str, Any]:
+        previous_model = self.active_model
+        current_model = self.current_model_callback() if self.current_model_callback else self.active_model
+        target_slot_filename = slot_filename_for(repo_dir, model_alias, slot_id=self.slot_id)
+        no_change = (
+            self.active_repo_slug == repo_slug
+            and self.active_model == model_alias
+            and self.active_slot_filename == target_slot_filename
+            and current_model == model_alias
+        )
+        if no_change:
+            return {
+                "repo_slug": repo_slug,
+                "model_alias": model_alias,
+                "slot_filename": target_slot_filename,
+                "switched": False,
+                "restored": False,
+                "warmed": False,
+            }
+
+        save_result = None
+        save_error = None
+        if (
+            self.active_dirty
+            and self.active_repo_dir is not None
+            and self.active_model
+            and self.active_slot_filename
+            and self.save_slot_callback is not None
+            and current_model
+        ):
+            try:
+                save_result = self.save_slot_callback(
+                    self.active_repo_dir,
+                    model_alias=self.active_model,
+                    slot_id=self.slot_id,
+                    filename=self.active_slot_filename,
+                )
+                self.active_dirty = False
+            except Exception as exc:  # pragma: no cover - defensive logging path
+                save_error = str(exc)
+
+        switched = False
+        cold_start_sec = None
+        if current_model != model_alias:
+            if self.switch_model_callback is None:
+                raise RuntimeError(f"Model switch requested for {model_alias!r}, but no switch callback is configured")
+            started = time.perf_counter()
+            self.switch_model_callback(model_alias)
+            cold_start_sec = time.perf_counter() - started
+            switched = True
+
+        restore_result = None
+        restore_error = None
+        restored = False
+        if self.restore_slot_callback is not None:
+            try:
+                restore_result = self.restore_slot_callback(
+                    repo_dir,
+                    model_alias=model_alias,
+                    slot_id=self.slot_id,
+                    filename=target_slot_filename,
+                )
+                restored = True
+            except urllib.error.HTTPError as exc:
+                if exc.code != 404:
+                    restore_error = str(exc)
+            except Exception as exc:  # pragma: no cover - defensive logging path
+                restore_error = str(exc)
+
+        warm_result = None
+        warmed = False
+        if not restored and self.warm_slot_callback is not None:
+            warm_result = self.warm_slot_callback(repo_dir, model_alias=model_alias, slot_id=self.slot_id)
+            warmed = True
+
+        self.active_repo_slug = repo_slug
+        self.active_repo_dir = repo_dir
+        self.active_model = model_alias
+        self.active_slot_filename = target_slot_filename
+        self.active_dirty = bool(warmed)
+        self._write_state()
+
+        message = ["[switch]", f"repo={repo_slug}"]
+        if previous_model:
+            message.append(f"from={previous_model}")
+        if save_result is not None or save_error:
+            if save_error:
+                message.append(f"save=error({save_error})")
+            else:
+                message.append(_slot_action_summary(save_result, action="save"))
+        message.append(f"to={model_alias}")
+        if switched and cold_start_sec is not None:
+            message.append(f"cold_start={cold_start_sec:.1f}s")
+        if restored:
+            message.append(_slot_action_summary(restore_result, action="restore"))
+        elif warm_result is not None:
+            message.append("restore=miss")
+            message.append("warm=ok")
+        elif restore_error:
+            message.append(f"restore=error({restore_error})")
+        print(" ".join(message), flush=True)
+        _append_jsonl(
+            self.metrics_file,
+            {
+                "event": "switch",
+                "repo_slug": repo_slug,
+                "model_alias": model_alias,
+                "slot_filename": target_slot_filename,
+                "save": _jsonable(save_result),
+                "save_error": save_error,
+                "restore": _jsonable(restore_result),
+                "restore_error": restore_error,
+                "warm": _jsonable(warm_result),
+                "switched": switched,
+                "cold_start_sec": cold_start_sec,
+                "timestamp": time.time(),
+            },
+        )
+
+        return {
+            "repo_slug": repo_slug,
+            "model_alias": model_alias,
+            "slot_filename": target_slot_filename,
+            "switched": switched,
+            "restored": restored,
+            "warmed": warmed,
+            "save_result": save_result,
+            "restore_result": restore_result,
+            "warm_result": warm_result,
+        }
+
+    def mark_active_dirty(self) -> None:
+        self.active_dirty = True
+        self._write_state()
+
+    def flush_active(self, *, reason: str = "shutdown") -> dict[str, Any] | None:
+        current_model = self.current_model_callback() if self.current_model_callback else self.active_model
+        if not (
+            self.active_dirty
+            and self.active_repo_dir is not None
+            and self.active_model
+            and self.active_slot_filename
+            and self.save_slot_callback is not None
+            and current_model
+        ):
+            return None
+        result = self.save_slot_callback(
+            self.active_repo_dir,
+            model_alias=self.active_model,
+            slot_id=self.slot_id,
+            filename=self.active_slot_filename,
+        )
+        self.active_dirty = False
+        self._write_state()
+        print(
+            " ".join(
+                [
+                    "[save]",
+                    f"repo={self.active_repo_slug}",
+                    f"model={self.active_model}",
+                    _slot_action_summary(result, action="save"),
+                    f"reason={reason}",
+                ]
+            ),
+            flush=True,
+        )
+        _append_jsonl(
+            self.metrics_file,
+            {
+                "event": "save",
+                "repo_slug": self.active_repo_slug,
+                "model_alias": self.active_model,
+                "slot_filename": self.active_slot_filename,
+                "reason": reason,
+                "result": _jsonable(result),
+                "timestamp": time.time(),
+            },
+        )
+        return result
+
+    def log_request(
+        self,
+        *,
+        path: str,
+        status: int,
+        elapsed_sec: float,
+        request_payload: dict[str, Any] | None = None,
+        response_payload: dict[str, Any] | None = None,
+        error: str | None = None,
+        repo_slug: str | None = None,
+    ) -> None:
+        line = format_proxy_metrics_line(
+            path=path,
+            status=status,
+            elapsed_sec=elapsed_sec,
+            request_payload=request_payload,
+            response_payload=response_payload,
+            error=error,
+            repo_slug=repo_slug,
+        )
+        print(line, flush=True)
+        _append_jsonl(
+            self.metrics_file,
+            {
+                "event": "request",
+                "repo_slug": repo_slug,
+                "path": path,
+                "status": status,
+                "elapsed_sec": elapsed_sec,
+                "request": _jsonable(request_payload),
+                "response": _jsonable(response_payload),
+                "error": error,
+                "metrics": _jsonable(extract_completion_metrics(response_payload)),
+                "timestamp": time.time(),
+            },
+        )
 
 
 class _ProxyHandler(http.server.BaseHTTPRequestHandler):
@@ -733,18 +1290,33 @@ class _ProxyHandler(http.server.BaseHTTPRequestHandler):
         request_payload: dict[str, Any] | None = None,
         response_payload: dict[str, Any] | None = None,
         error: str | None = None,
+        repo_slug: str | None = None,
+        upstream_path: str | None = None,
     ) -> None:
         if not self._metrics_enabled():
             return
         elapsed_sec = time.perf_counter() - started_at
-        print(
-            format_proxy_metrics_line(
-                path=self.path,
+        controller: RepoProxyController | None = getattr(self.server, "controller", None)
+        if controller is not None:
+            controller.log_request(
+                path=upstream_path or self.path,
                 status=status,
                 elapsed_sec=elapsed_sec,
                 request_payload=request_payload,
                 response_payload=response_payload,
                 error=error,
+                repo_slug=repo_slug,
+            )
+            return
+        print(
+            format_proxy_metrics_line(
+                path=upstream_path or self.path,
+                status=status,
+                elapsed_sec=elapsed_sec,
+                request_payload=request_payload,
+                response_payload=response_payload,
+                error=error,
+                repo_slug=repo_slug,
             ),
             flush=True,
         )
@@ -752,8 +1324,9 @@ class _ProxyHandler(http.server.BaseHTTPRequestHandler):
     def _forward(self) -> None:
         upstream_base: str = getattr(self.server, "upstream_base")
         upstream_headers: dict[str, str] = getattr(self.server, "upstream_headers")
-        repo_context_file: Path = getattr(self.server, "repo_context_file")
+        upstream_headers_callback: Callable[[], dict[str, str]] | None = getattr(self.server, "upstream_headers_callback", None)
         slot_id: int = getattr(self.server, "slot_id")
+        controller: RepoProxyController | None = getattr(self.server, "controller", None)
         started_at = time.perf_counter()
 
         body = b""
@@ -773,35 +1346,107 @@ class _ProxyHandler(http.server.BaseHTTPRequestHandler):
                 if isinstance(parsed_payload, dict):
                     request_payload = parsed_payload
 
-        if self.command == "POST" and self.path == "/v1/chat/completions":
-            try:
-                payload = request_payload or {}
-                context_text = repo_context_file.read_text(encoding="utf-8")
-                payload = inject_repo_context(payload, context_text, slot_id=slot_id)
-                request_payload = payload
-                body = json.dumps(payload).encode("utf-8")
-            except Exception as exc:
-                self.send_error(400, f"Invalid chat payload: {exc}")
-                self._log_proxy_summary(status=400, started_at=started_at, request_payload=request_payload, error=str(exc))
+        with (controller.lock if controller is not None else threading.RLock()):
+            route = controller.resolve_route(self.path, self.headers) if controller is not None else ProxyRoute(
+                repo_slug=None,
+                repo_dir=None,
+                upstream_path=self.path,
+            )
+            if route.synthetic_response is not None:
+                data = json.dumps(route.synthetic_response).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Connection", "close")
+                self.end_headers()
+                self.wfile.write(data)
+                self._log_proxy_summary(
+                    status=200,
+                    started_at=started_at,
+                    request_payload=request_payload,
+                    response_payload=route.synthetic_response,
+                    repo_slug=route.repo_slug,
+                    upstream_path=route.upstream_path,
+                )
                 return
 
-        url = upstream_base + self.path
-        request_headers = {
-            key: value
-            for key, value in self.headers.items()
-            if key.lower() not in {"host", "content-length", "connection"}
-        }
-        request_headers.update(upstream_headers)
+            if controller is not None and route.repo_dir is not None:
+                requested_model = controller.resolve_requested_model(request_payload)
+                if requested_model and self.command in {"POST", "PUT", "PATCH"}:
+                    try:
+                        controller.ensure_target(route.repo_slug or repo_slug(route.repo_dir), route.repo_dir, requested_model)
+                    except Exception as exc:
+                        self.send_error(502, f"Failed to prepare target model: {exc}")
+                        self._log_proxy_summary(
+                            status=502,
+                            started_at=started_at,
+                            request_payload=request_payload,
+                            error=str(exc),
+                            repo_slug=route.repo_slug,
+                            upstream_path=route.upstream_path,
+                        )
+                        return
 
-        req = urllib.request.Request(url, data=body or None, headers=request_headers, method=self.command)
-        try:
-            with urllib.request.urlopen(req, timeout=600) as response:
-                self._relay_response(response, started_at=started_at, request_payload=request_payload)
-        except urllib.error.HTTPError as exc:
-            self._relay_error(exc, started_at=started_at, request_payload=request_payload)
-        except urllib.error.URLError as exc:
-            self.send_error(502, f"Upstream request failed: {exc}")
-            self._log_proxy_summary(status=502, started_at=started_at, request_payload=request_payload, error=str(exc))
+            if route.inject_context:
+                try:
+                    payload = request_payload or {}
+                    context_text = load_repo_context(route.repo_dir, refresh_if_missing=True)
+                    payload = inject_repo_context(payload, context_text, slot_id=slot_id)
+                    request_payload = payload
+                    body = json.dumps(payload).encode("utf-8")
+                except Exception as exc:
+                    self.send_error(400, f"Invalid chat payload: {exc}")
+                    self._log_proxy_summary(
+                        status=400,
+                        started_at=started_at,
+                        request_payload=request_payload,
+                        error=str(exc),
+                        repo_slug=route.repo_slug,
+                        upstream_path=route.upstream_path,
+                    )
+                    return
+
+            url = upstream_base + route.upstream_path
+            request_headers = {
+                key: value
+                for key, value in self.headers.items()
+                if key.lower() not in {"host", "content-length", "connection"}
+            }
+            request_headers.update(upstream_headers)
+            if callable(upstream_headers_callback):
+                try:
+                    request_headers.update(upstream_headers_callback())
+                except Exception:
+                    pass
+
+            req = urllib.request.Request(url, data=body or None, headers=request_headers, method=self.command)
+            try:
+                with urllib.request.urlopen(req, timeout=600) as response:
+                    self._relay_response(
+                        response,
+                        started_at=started_at,
+                        request_payload=request_payload,
+                        controller=controller,
+                        route=route,
+                    )
+            except urllib.error.HTTPError as exc:
+                self._relay_error(
+                    exc,
+                    started_at=started_at,
+                    request_payload=request_payload,
+                    controller=controller,
+                    route=route,
+                )
+            except urllib.error.URLError as exc:
+                self.send_error(502, f"Upstream request failed: {exc}")
+                self._log_proxy_summary(
+                    status=502,
+                    started_at=started_at,
+                    request_payload=request_payload,
+                    error=str(exc),
+                    repo_slug=route.repo_slug,
+                    upstream_path=route.upstream_path,
+                )
 
     def _relay_response(
         self,
@@ -809,6 +1454,8 @@ class _ProxyHandler(http.server.BaseHTTPRequestHandler):
         *,
         started_at: float,
         request_payload: dict[str, Any] | None = None,
+        controller: RepoProxyController | None = None,
+        route: ProxyRoute | None = None,
     ) -> None:
         content_type = response.headers.get("Content-Type", "application/octet-stream")
         stream = "text/event-stream" in content_type
@@ -835,11 +1482,15 @@ class _ProxyHandler(http.server.BaseHTTPRequestHandler):
                     chunk,
                     latest_payload=latest_payload,
                 )
+            if controller is not None and route is not None and response.status < 400 and request_payload is not None:
+                controller.mark_active_dirty()
             self._log_proxy_summary(
                 status=response.status,
                 started_at=started_at,
                 request_payload=request_payload,
                 response_payload=latest_payload,
+                repo_slug=route.repo_slug if route else None,
+                upstream_path=route.upstream_path if route else None,
             )
             return
 
@@ -856,11 +1507,15 @@ class _ProxyHandler(http.server.BaseHTTPRequestHandler):
                 parsed = None
             if isinstance(parsed, dict):
                 response_payload = parsed
+        if controller is not None and route is not None and response.status < 400 and request_payload is not None:
+            controller.mark_active_dirty()
         self._log_proxy_summary(
             status=response.status,
             started_at=started_at,
             request_payload=request_payload,
             response_payload=response_payload,
+            repo_slug=route.repo_slug if route else None,
+            upstream_path=route.upstream_path if route else None,
         )
 
     def _relay_error(
@@ -869,6 +1524,8 @@ class _ProxyHandler(http.server.BaseHTTPRequestHandler):
         *,
         started_at: float,
         request_payload: dict[str, Any] | None = None,
+        controller: RepoProxyController | None = None,
+        route: ProxyRoute | None = None,
     ) -> None:
         data = error.read()
         self.send_response(error.code)
@@ -896,11 +1553,13 @@ class _ProxyHandler(http.server.BaseHTTPRequestHandler):
             request_payload=request_payload,
             response_payload=response_payload,
             error=_extract_error_message(response_payload) or str(error),
+            repo_slug=route.repo_slug if route else None,
+            upstream_path=route.upstream_path if route else None,
         )
 
 
 def start_repo_proxy(
-    repo_dir: str | Path,
+    repo_dir: str | Path | None = None,
     *,
     listen_host: str = DEFAULT_PROXY_HOST,
     listen_port: int = DEFAULT_PROXY_PORT,
@@ -908,24 +1567,72 @@ def start_repo_proxy(
     upstream_port: int = 8000,
     slot_id: int = DEFAULT_SLOT_ID,
     upstream_headers: dict[str, str] | None = None,
+    upstream_headers_callback: Callable[[], dict[str, str]] | None = None,
     verbose: bool = False,
     metrics: bool = True,
+    available_models: list[PublishedModel | dict[str, Any]] | None = None,
+    default_model: str | None = None,
+    switch_model_callback: Callable[[str], None] | None = None,
+    save_slot_callback: Callable[..., dict[str, Any]] | None = None,
+    restore_slot_callback: Callable[..., dict[str, Any]] | None = None,
+    warm_slot_callback: Callable[..., dict[str, Any]] | None = None,
+    current_model_callback: Callable[[], str | None] | None = None,
 ) -> None:
-    paths = repo_paths(repo_dir)
-    if not paths.context_file.exists():
-        refresh_repo_context(paths.repo_dir)
+    default_repo = normalize_repo_dir(repo_dir) if repo_dir is not None else None
+    if default_repo is not None and not repo_paths(default_repo).context_file.exists():
+        refresh_repo_context(default_repo)
 
     server = _ThreadingHTTPServer((listen_host, listen_port), _ProxyHandler)
     server.upstream_base = f"http://{upstream_host}:{upstream_port}"
     server.upstream_headers = dict(upstream_headers or {})
-    server.repo_context_file = paths.context_file
+    server.upstream_headers_callback = upstream_headers_callback
     server.slot_id = slot_id
     server.verbose = verbose
     server.metrics_enabled = metrics
+    server.controller = RepoProxyController(
+        upstream_port=upstream_port,
+        slot_id=slot_id,
+        default_repo_dir=default_repo,
+        available_models=available_models,
+        default_model=default_model,
+        switch_model_callback=switch_model_callback,
+        save_slot_callback=save_slot_callback,
+        restore_slot_callback=restore_slot_callback,
+        warm_slot_callback=warm_slot_callback,
+        current_model_callback=current_model_callback,
+    )
+
+    previous_handlers: dict[int, Any] = {}
+
+    def _shutdown_handler(signum: int, _frame: Any) -> None:
+        try:
+            server.shutdown()
+        except Exception:
+            pass
+
+    for signum in (getattr(signal, "SIGINT", None), getattr(signal, "SIGTERM", None)):
+        if signum is None:
+            continue
+        try:
+            previous_handlers[signum] = signal.getsignal(signum)
+            signal.signal(signum, _shutdown_handler)
+        except Exception:
+            continue
 
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        try:
+            controller = getattr(server, "controller", None)
+            if controller is not None:
+                controller.flush_active(reason="proxy-exit")
+        except Exception:
+            pass
         server.server_close()
+        for signum, handler in previous_handlers.items():
+            try:
+                signal.signal(signum, handler)
+            except Exception:
+                continue

@@ -67,6 +67,7 @@ from repo_cache import (
     DEFAULT_PROXY_HOST,
     DEFAULT_PROXY_PORT,
     DEFAULT_SLOT_ID,
+    PROXY_STATE_FILE,
     SLOT_CACHE_ROOT,
     ensure_cache_dirs,
     ensure_gitignore_entry,
@@ -74,6 +75,7 @@ from repo_cache import (
     make_warm_payload,
     refresh_repo_context,
     repo_paths,
+    slot_filename_for,
     start_repo_proxy,
     write_opencode_config,
 )
@@ -250,31 +252,33 @@ def warm_repo_slot(repo_dir: str | Path, *, port: int = 8000,
 
 def save_repo_slot(repo_dir: str | Path, *, port: int = 8000,
                    slot_id: int = DEFAULT_SLOT_ID,
-                   filename: str | None = None) -> dict[str, Any]:
-    paths = repo_paths(repo_dir)
-    slot_file = filename or paths.slot_filename
+                   filename: str | None = None,
+                   model_alias: str | None = None) -> dict[str, Any]:
+    alias = model_alias or _current_model_alias()
+    slot_file = _repo_slot_filename(repo_dir, model_alias=alias, slot_id=slot_id, filename=filename)
     return _request_json(
         port,
         f"/slots/{slot_id}?action=save",
         payload={"filename": slot_file},
         method="POST",
         timeout=600,
-        api_key=_api_key_for_model(),
+        api_key=_api_key_for_model(alias),
     )
 
 
 def restore_repo_slot(repo_dir: str | Path, *, port: int = 8000,
                       slot_id: int = DEFAULT_SLOT_ID,
-                      filename: str | None = None) -> dict[str, Any]:
-    paths = repo_paths(repo_dir)
-    slot_file = filename or paths.slot_filename
+                      filename: str | None = None,
+                      model_alias: str | None = None) -> dict[str, Any]:
+    alias = model_alias or _current_model_alias()
+    slot_file = _repo_slot_filename(repo_dir, model_alias=alias, slot_id=slot_id, filename=filename)
     return _request_json(
         port,
         f"/slots/{slot_id}?action=restore",
         payload={"filename": slot_file},
         method="POST",
         timeout=600,
-        api_key=_api_key_for_model(),
+        api_key=_api_key_for_model(alias),
     )
 
 
@@ -400,6 +404,107 @@ def resolve_model_or_running(model_arg: str | None,
     if running:
         return get_model(running)
     return pick_model(prompt_text)
+
+
+def _repo_model_alias_or_running(model_arg: str | None = None) -> str:
+    alias = model_arg or _current_model_alias()
+    if not alias:
+        raise ValueError("No model specified and no running server state found")
+    return get_model(alias).alias
+
+
+def _repo_slot_filename(repo_dir: str | Path, *, model_alias: str | None = None,
+                        slot_id: int = DEFAULT_SLOT_ID,
+                        filename: str | None = None) -> str:
+    if filename:
+        return filename
+    alias = _repo_model_alias_or_running(model_alias)
+    return slot_filename_for(repo_dir, alias, slot_id=slot_id)
+
+
+def _advertised_models(model_args: list[str] | None = None) -> list[dict[str, Any]]:
+    aliases: list[str]
+    if model_args:
+        aliases = []
+        for item in model_args:
+            alias = get_model(item).alias
+            if alias not in aliases:
+                aliases.append(alias)
+    else:
+        aliases = [alias for alias in MODELS]
+    return [
+        {
+            "alias": MODELS[alias].alias,
+            "name": MODELS[alias].name,
+            "context_limit": MODELS[alias].ctx_size,
+            "output_limit": 8192,
+        }
+        for alias in aliases
+    ]
+
+
+def _launch_model_for_proxy(model_alias: str, *, backend: str, port: int, verbose: bool = False) -> None:
+    cfg = copy.deepcopy(get_model(model_alias))
+    state = _load_state() or {}
+    if state.get("cache_prompt") is False:
+        cfg.cache_prompt = False
+        cfg.cache_reuse = 0
+    if isinstance(state.get("cache_reuse"), int):
+        cfg.cache_reuse = state["cache_reuse"]
+    if state.get("cache_ram") is not None:
+        cfg.cache_ram = state.get("cache_ram")
+    if isinstance(state.get("slot_save_path"), str) and state["slot_save_path"]:
+        cfg.slot_save_path = state["slot_save_path"]
+    launch_server(cfg, port=port, backend=backend, verbose=verbose)
+
+
+def _flush_proxy_slot_state(port: int | None = None) -> dict[str, Any] | None:
+    if not PROXY_STATE_FILE.exists():
+        return None
+    try:
+        data = json.loads(PROXY_STATE_FILE.read_text())
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict) or not data.get("dirty"):
+        return None
+
+    repo_root = data.get("repo_root")
+    model_alias = data.get("model_alias")
+    slot_filename = data.get("slot_filename")
+    raw_slot_id = data.get("slot_id", DEFAULT_SLOT_ID)
+    raw_port = port if port is not None else data.get("upstream_port")
+
+    if not isinstance(repo_root, str) or not repo_root:
+        return None
+    if not isinstance(model_alias, str) or not model_alias:
+        return None
+    if not isinstance(slot_filename, str) or not slot_filename:
+        return None
+
+    try:
+        slot_id = int(raw_slot_id)
+    except (TypeError, ValueError):
+        slot_id = DEFAULT_SLOT_ID
+    try:
+        save_port = int(raw_port)
+    except (TypeError, ValueError):
+        save_port = 8000
+
+    try:
+        result = save_repo_slot(
+            repo_root,
+            port=save_port,
+            slot_id=slot_id,
+            filename=slot_filename,
+            model_alias=model_alias,
+        )
+    except Exception as exc:
+        warn(f"Could not save active proxy slot {slot_filename}: {exc}")
+        return None
+
+    data["dirty"] = False
+    PROXY_STATE_FILE.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+    return result
 
 
 # ── Backend picker TUI ───────────────────────────────────────────────────────
@@ -642,8 +747,17 @@ def download_container_images():
 #  SERVER MANAGEMENT
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def stop_server():
+def stop_server(save_proxy_state: bool = True):
     """Stop all llama-server containers started by this launcher."""
+
+    if save_proxy_state:
+        state = _load_state() or {}
+        raw_port = state.get("port", 8000)
+        try:
+            port = int(raw_port)
+        except (TypeError, ValueError):
+            port = 8000
+        _flush_proxy_slot_state(port=port)
 
     rt = _find_container_runtime()
     if rt:
@@ -728,7 +842,7 @@ def launch_server(cfg: ModelConfig, port: int = 8000, backend: str = "vulkan",
     download_model(cfg)
 
     # Stop any existing server (native or container)
-    stop_server()
+    stop_server(save_proxy_state=False)
 
     np = parallel_override if parallel_override is not None else cfg.parallel_slots
 
@@ -2483,11 +2597,15 @@ def main():
     p_repo_init.add_argument("--repo", default=".",
                              help="Project repository path (default: current directory)")
     p_repo_init.add_argument("--model", default=None,
-                             help="Model alias or name for OpenCode (default: running model or picker)")
+                             help="Default model alias or name for OpenCode (default: running model or picker)")
+    p_repo_init.add_argument("--models", nargs="+", default=None,
+                             help="Additional model aliases or names to publish in opencode.json")
+    p_repo_init.add_argument("--small-model", default=None,
+                             help="Optional OpenCode small_model alias or name")
     p_repo_init.add_argument("--proxy-port", type=int, default=DEFAULT_PROXY_PORT,
                              help="Port that the repo-aware proxy will listen on")
     p_repo_init.add_argument("--context-limit", type=int, default=None,
-                             help="Context limit to publish in opencode.json (default: selected model ctx)")
+                             help="Context limit override to publish for every listed model")
     p_repo_init.add_argument("--output-limit", type=int, default=8192,
                              help="Output token limit to publish in opencode.json")
     p_repo_init.add_argument("--provider-id", default="strix-local",
@@ -2501,19 +2619,25 @@ def main():
                                 help="Project repository path (default: current directory)")
 
     p_repo_proxy = sub.add_parser("repo-proxy",
-        help="Run a local OpenAI-compatible proxy that injects cached repo context")
-    p_repo_proxy.add_argument("--repo", default=".",
-                              help="Project repository path (default: current directory)")
+        help="Run a local OpenAI-compatible proxy that injects cached repo context and auto-switches models")
+    p_repo_proxy.add_argument("--repo", default=None,
+                              help="Optional default project repository path used when the client does not send a repo slug")
     p_repo_proxy.add_argument("--host", default=DEFAULT_PROXY_HOST,
                               help="Proxy listen host")
     p_repo_proxy.add_argument("--port", type=int, default=DEFAULT_PROXY_PORT,
                               help="Proxy listen port")
     p_repo_proxy.add_argument("--server-port", type=int, default=8000,
                               help="Upstream llama-server port")
+    p_repo_proxy.add_argument("--backend", choices=VALID_BACKENDS, default=None,
+                              help="Backend used for automatic model switches (default: running backend or radv)")
+    p_repo_proxy.add_argument("--default-model", default=None,
+                              help="Fallback model alias or name when the client omits model")
+    p_repo_proxy.add_argument("--models", nargs="+", default=None,
+                              help="Optional subset of models to advertise from /v1/models")
     p_repo_proxy.add_argument("--slot-id", type=int, default=DEFAULT_SLOT_ID,
-                              help="llama.cpp slot ID to pin this repo to")
+                              help="llama.cpp slot ID to pin this repo cache to")
     p_repo_proxy.add_argument("--refresh", action="store_true",
-                              help="Refresh the repo context before starting the proxy")
+                              help="Refresh the default repo context before starting the proxy")
     p_repo_proxy.add_argument("--verbose", action="store_true",
                               help="Enable proxy request logging")
     p_repo_proxy.add_argument("--no-metrics", action="store_true",
@@ -2536,6 +2660,8 @@ def main():
                              help="Project repository path (default: current directory)")
     p_repo_save.add_argument("--port", type=int, default=8000,
                              help="Upstream llama-server port")
+    p_repo_save.add_argument("--model", default=None,
+                             help="Model alias or name for the default snapshot filename")
     p_repo_save.add_argument("--slot-id", type=int, default=DEFAULT_SLOT_ID,
                              help="llama.cpp slot ID to save")
     p_repo_save.add_argument("--filename", default=None,
@@ -2547,15 +2673,19 @@ def main():
                                 help="Project repository path (default: current directory)")
     p_repo_restore.add_argument("--port", type=int, default=8000,
                                 help="Upstream llama-server port")
+    p_repo_restore.add_argument("--model", default=None,
+                                help="Model alias or name for the default snapshot filename")
     p_repo_restore.add_argument("--slot-id", type=int, default=DEFAULT_SLOT_ID,
                                 help="llama.cpp slot ID to restore")
     p_repo_restore.add_argument("--filename", default=None,
                                 help="Override the slot snapshot filename")
 
     p_repo_status = sub.add_parser("repo-status",
-        help="Show cached repo context files and current server settings")
+        help="Show cached repo context files, saved slot snapshots, and current server settings")
     p_repo_status.add_argument("--repo", default=".",
                                help="Project repository path (default: current directory)")
+    p_repo_status.add_argument("--model", default=None,
+                               help="Model alias or name for the primary snapshot display")
 
     # bench
     p_bench = sub.add_parser("bench",
@@ -2760,13 +2890,48 @@ def main():
         stop_server()
 
     elif args.command == "repo-init":
-        cfg = copy.deepcopy(resolve_model_or_running(args.model, "Pick a model for OpenCode"))
+        selected_cfgs: list[ModelConfig] = []
+        seen_aliases: set[str] = set()
+        if args.models:
+            for model_name in args.models:
+                cfg = copy.deepcopy(get_model(model_name))
+                if cfg.alias in seen_aliases:
+                    continue
+                selected_cfgs.append(cfg)
+                seen_aliases.add(cfg.alias)
+
+        if args.model or not selected_cfgs:
+            default_cfg = copy.deepcopy(resolve_model_or_running(args.model, "Pick a default model for OpenCode"))
+        else:
+            default_cfg = selected_cfgs[0]
+        if default_cfg.alias not in seen_aliases:
+            selected_cfgs.insert(0, default_cfg)
+            seen_aliases.add(default_cfg.alias)
+
+        small_model_alias = None
+        if args.small_model:
+            small_cfg = copy.deepcopy(get_model(args.small_model))
+            small_model_alias = small_cfg.alias
+            if small_cfg.alias not in seen_aliases:
+                selected_cfgs.append(small_cfg)
+                seen_aliases.add(small_cfg.alias)
+
+        published_models = [
+            {
+                "alias": cfg.alias,
+                "name": cfg.name,
+                "context_limit": args.context_limit or cfg.ctx_size,
+                "output_limit": args.output_limit,
+            }
+            for cfg in selected_cfgs
+        ]
+
         paths = refresh_repo_context(args.repo)
         config_path = write_opencode_config(
             paths.repo_dir,
-            model_alias=cfg.alias,
-            model_name=cfg.name,
-            context_limit=args.context_limit or cfg.ctx_size,
+            models=published_models,
+            default_model=default_cfg.alias,
+            small_model=small_model_alias,
             proxy_port=args.proxy_port,
             provider_id=args.provider_id,
             provider_name=args.provider_name,
@@ -2775,36 +2940,57 @@ def main():
         ok(f"Wrote repo context: {paths.context_file}")
         ok(f"Wrote metadata: {paths.metadata_file}")
         ok(f"Wrote OpenCode config: {config_path}")
-        info(f"Next: python server.py repo-proxy --repo {paths.repo_dir}")
+        info(f"Repo slug: {paths.slug}")
+        info(f"Project proxy URL: http://127.0.0.1:{args.proxy_port}/r/{paths.slug}/v1")
+        info(f"Next: python server.py repo-proxy --repo {paths.repo_dir} --backend {_current_backend() or 'radv'}")
 
     elif args.command == "repo-refresh":
         paths = refresh_repo_context(args.repo)
         ok(f"Refreshed repo context: {paths.context_file}")
 
     elif args.command == "repo-proxy":
-        if args.refresh:
-            paths = refresh_repo_context(args.repo)
-        else:
-            paths = repo_paths(args.repo)
-            if not paths.context_file.exists():
-                paths = refresh_repo_context(args.repo)
+        default_paths = None
+        if args.repo:
+            if args.refresh:
+                default_paths = refresh_repo_context(args.repo)
+            else:
+                default_paths = repo_paths(args.repo)
+                if not default_paths.context_file.exists():
+                    default_paths = refresh_repo_context(args.repo)
         upstream_headers: dict[str, str] = {}
-        api_key = _api_key_for_model()
-        if api_key:
-            upstream_headers["Authorization"] = f"Bearer {api_key}"
+        proxy_backend = args.backend or _current_backend() or "radv"
+        default_model_alias = get_model(args.default_model).alias if args.default_model else None
+        advertised_models = _advertised_models(args.models)
+
+        def _proxy_upstream_headers() -> dict[str, str]:
+            api_key = _api_key_for_model()
+            return {"Authorization": f"Bearer {api_key}"} if api_key else {}
+
         info(
-            f"Repo proxy for {paths.repo_dir} on http://{args.host}:{args.port} -> "
-            f"http://127.0.0.1:{args.server_port} (slot {args.slot_id})"
+            f"Repo proxy on http://{args.host}:{args.port} -> http://127.0.0.1:{args.server_port} "
+            f"(slot {args.slot_id}, backend {proxy_backend})"
         )
+        if default_paths is not None:
+            info(f"Default repo: {default_paths.repo_dir} ({default_paths.slug})")
+        info(f"Project route format: http://127.0.0.1:{args.port}/r/<repo-slug>/v1")
+
         start_repo_proxy(
-            paths.repo_dir,
+            default_paths.repo_dir if default_paths is not None else None,
             listen_host=args.host,
             listen_port=args.port,
             upstream_port=args.server_port,
             slot_id=args.slot_id,
             upstream_headers=upstream_headers,
+            upstream_headers_callback=_proxy_upstream_headers,
             verbose=args.verbose,
             metrics=not args.no_metrics,
+            available_models=advertised_models,
+            default_model=default_model_alias,
+            switch_model_callback=lambda alias, backend=proxy_backend, port=args.server_port, verbose=args.verbose: _launch_model_for_proxy(alias, backend=backend, port=port, verbose=verbose),
+            save_slot_callback=lambda repo_dir, **kwargs: save_repo_slot(repo_dir, port=args.server_port, **kwargs),
+            restore_slot_callback=lambda repo_dir, **kwargs: restore_repo_slot(repo_dir, port=args.server_port, **kwargs),
+            warm_slot_callback=lambda repo_dir, **kwargs: warm_repo_slot(repo_dir, port=args.server_port, **kwargs),
+            current_model_callback=_current_model_alias,
         )
 
     elif args.command == "repo-warm":
@@ -2818,24 +3004,46 @@ def main():
             info(f"Warm request usage: {usage}")
 
     elif args.command == "repo-save":
-        result = save_repo_slot(args.repo, port=args.port, slot_id=args.slot_id, filename=args.filename)
-        ok(f"Saved slot {args.slot_id} to {result.get('filename', args.filename or repo_paths(args.repo).slot_filename)}")
+        model_alias = get_model(args.model).alias if args.model else None
+        result = save_repo_slot(args.repo, port=args.port, slot_id=args.slot_id, filename=args.filename, model_alias=model_alias)
+        slot_name = result.get("filename", _repo_slot_filename(args.repo, model_alias=model_alias, slot_id=args.slot_id, filename=args.filename))
+        ok(f"Saved slot {args.slot_id} to {slot_name}")
 
     elif args.command == "repo-restore":
-        result = restore_repo_slot(args.repo, port=args.port, slot_id=args.slot_id, filename=args.filename)
-        ok(f"Restored slot {args.slot_id} from {result.get('filename', args.filename or repo_paths(args.repo).slot_filename)}")
+        model_alias = get_model(args.model).alias if args.model else None
+        result = restore_repo_slot(args.repo, port=args.port, slot_id=args.slot_id, filename=args.filename, model_alias=model_alias)
+        slot_name = result.get("filename", _repo_slot_filename(args.repo, model_alias=model_alias, slot_id=args.slot_id, filename=args.filename))
+        ok(f"Restored slot {args.slot_id} from {slot_name}")
 
     elif args.command == "repo-status":
         paths = repo_paths(args.repo)
         state = _load_state() or {}
         slot_root = Path(state.get("slot_save_path", SLOT_CACHE_ROOT))
-        slot_file = slot_root / paths.slot_filename
+        try:
+            selected_model = _repo_model_alias_or_running(args.model) if (args.model or _current_model_alias()) else None
+        except ValueError:
+            selected_model = None
+        slot_file = slot_root / (
+            _repo_slot_filename(paths.repo_dir, model_alias=selected_model, slot_id=DEFAULT_SLOT_ID)
+            if selected_model else paths.slot_filename
+        )
+        snapshots = sorted(slot_root.glob(f"{paths.slug}--m_*--slot*.bin")) if slot_root.exists() else []
         print()
         info(f"Repo: {paths.repo_dir}")
+        info(f"Slug: {paths.slug}")
         info(f"Context file: {paths.context_file} ({'present' if paths.context_file.exists() else 'missing'})")
         info(f"Metadata file: {paths.metadata_file} ({'present' if paths.metadata_file.exists() else 'missing'})")
         info(f"OpenCode config: {paths.opencode_file} ({'present' if paths.opencode_file.exists() else 'missing'})")
-        info(f"Slot snapshot: {slot_file} ({'present' if slot_file.exists() else 'missing'})")
+        if selected_model:
+            info(f"Primary snapshot: {slot_file} ({'present' if slot_file.exists() else 'missing'})")
+        else:
+            info(f"Legacy snapshot path: {slot_file} ({'present' if slot_file.exists() else 'missing'})")
+        if snapshots:
+            preview = ", ".join(item.name for item in snapshots[:5])
+            suffix = " ..." if len(snapshots) > 5 else ""
+            info(f"Saved model-scoped snapshots: {len(snapshots)} ({preview}{suffix})")
+        else:
+            info("Saved model-scoped snapshots: 0")
         if state:
             info(
                 "Running server: "
@@ -2844,6 +3052,17 @@ def main():
             )
         else:
             warn("No running server state file found")
+        if PROXY_STATE_FILE.exists():
+            try:
+                proxy_state = json.loads(PROXY_STATE_FILE.read_text())
+            except json.JSONDecodeError:
+                proxy_state = None
+            if isinstance(proxy_state, dict):
+                info(
+                    "Proxy state: "
+                    f"repo={proxy_state.get('repo_slug')} model={proxy_state.get('model_alias')} "
+                    f"slot={proxy_state.get('slot_id')} dirty={proxy_state.get('dirty')}"
+                )
 
     elif args.command == "bench":
         if args.model:
