@@ -12,7 +12,7 @@ class TestModelLookup:
     def test_get_model_supports_exact_name_alias_and_substring(self):
         exact = get_model("Qwen3 Coder Next (Q6_K)")
         alias = get_model("qwen3-coder-next-q6")
-        substring = get_model("coder-next")
+        substring = get_model("next (q6")
 
         assert exact.alias == "qwen3-coder-next-q6"
         assert alias.name == exact.name
@@ -21,9 +21,16 @@ class TestModelLookup:
     def test_get_model_is_case_insensitive(self):
         assert get_model("QWEN3-CODER-NEXT-Q6").alias == "qwen3-coder-next-q6"
 
+    def test_get_model_supports_minimax_budget_aliases(self):
+        assert get_model("minimax-m2.7-udiq3xxs").quant == "UD-IQ3_XXS"
+        assert get_model("minimax-m2.7-udq2xl").quant == "UD-Q2_K_XL"
+
     def test_get_model_reports_ambiguous_and_missing_inputs(self):
         with pytest.raises(ValueError, match="Ambiguous model name"):
             get_model("nemotron")
+
+        with pytest.raises(ValueError, match="Ambiguous model name"):
+            get_model("minimax-m2.7")
 
         with pytest.raises(ValueError, match="Unknown model"):
             get_model("definitely-not-a-real-model")

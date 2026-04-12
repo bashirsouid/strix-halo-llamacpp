@@ -161,6 +161,30 @@ python server.py aider-bench-all --backend rocm7 --profile python-quick --thread
 
 When `--threads` is provided, the launcher starts `llama-server` with matching `--parallel` so the benchmark worker count and server slot count stay aligned. Context still scales as `ctx_per_slot × threads`, just like the rest of the launcher.
 
+### MiniMax M2.7 on 96 GB shared memory
+
+Two tuned MiniMax M2.7 entries are available for tight Strix Halo budgets:
+
+- `minimax-m2.7-udiq3xxs` — ~80.1 GB, highest MiniMax quality here that still fits a practical local budget.
+- `minimax-m2.7-udq2xl` — ~75.3 GB, safer fallback with more KV headroom.
+
+Suggested compare run versus `qwen3-coder-next-q6`:
+
+```bash
+# Download the recommended MiniMax build for a 96 GB shared-memory box
+python server.py download minimax-m2.7-udiq3xxs
+
+# Speed / latency
+python server.py bench minimax-m2.7-udiq3xxs --backend radv
+python server.py bench qwen3-coder-next-q6 --backend radv
+
+# Quality on the fixed local code-edit set (serial for apples-to-apples)
+python server.py aider-bench minimax-m2.7-udiq3xxs --backend radv --profile python-quick --threads 1
+python server.py aider-bench qwen3-coder-next-q6 --backend radv --profile python-quick --threads 1
+```
+
+If you need a little more memory margin, swap in `minimax-m2.7-udq2xl` for the same commands.
+
 ### Aider verbose diagnostics
 
 Use `--verbose` when you want to debug a noisy or suspicious run. In verbose mode the wrapper:

@@ -382,6 +382,62 @@ MODELS: list[ModelConfig] = [
         ),
     ),
 
+    # ── MiniMax M2.7 ──
+    # ~80 GB at UD-IQ3_XXS → ~4–8 GB left for KV + overhead
+    ModelConfig(
+        name="MiniMax M2.7 (UD-IQ3_XXS)",
+        alias="minimax-m2.7-udiq3xxs",
+        hf_repo="unsloth/MiniMax-M2.7-GGUF",
+        dest_dir=MODELS_DIR / "unsloth/MiniMax-M2.7-GGUF/UD-IQ3_XXS",
+        download_include="UD-IQ3_XXS/*.gguf",
+        shard_glob="*-00001-of-*.gguf",
+        quant="UD-IQ3_XXS",
+        parallel_slots=1,
+        max_parallel=1,
+        ctx_per_slot=16384,
+        ubatch_size=512,
+        temperature=1.0,
+        top_p=0.95,
+        top_k=40,
+        spec=SpecConfig(strategy="ngram"),
+        notes=(
+            "Best for: strongest MiniMax M2.7 quality that still fits a Ryzen AI Max 395 / 96 GB shared-memory budget. "
+            "MoE 229B total with 256 experts and 8 active per token. "
+            "UD dynamic 3-bit quant (~80.1 GB) is the highest MiniMax-M2.7 variant here that still leaves room for a practical KV cache. "
+            "Context is capped to 16K by default because MiniMax KV cache is large at this scale. "
+            "MiniMax official: temp=1.0, top_p=0.95, top_k=40. "
+            "Requires a recent llama.cpp build with MiniMax M2 architecture support; re-pull images if your local containers predate that."
+        ),
+    ),
+
+    # ── MiniMax M2.7 ──
+    # ~75 GB at UD-Q2_K_XL → ~8–12 GB left for KV + overhead
+    ModelConfig(
+        name="MiniMax M2.7 (UD-Q2_K_XL)",
+        alias="minimax-m2.7-udq2xl",
+        hf_repo="unsloth/MiniMax-M2.7-GGUF",
+        dest_dir=MODELS_DIR / "unsloth/MiniMax-M2.7-GGUF/UD-Q2_K_XL",
+        download_include="UD-Q2_K_XL/*.gguf",
+        shard_glob="*-00001-of-*.gguf",
+        quant="UD-Q2_K_XL",
+        parallel_slots=1,
+        max_parallel=2,
+        ctx_per_slot=32768,
+        ubatch_size=512,
+        temperature=1.0,
+        top_p=0.95,
+        top_k=40,
+        spec=SpecConfig(strategy="ngram"),
+        notes=(
+            "Best for: fitting MiniMax M2.7 more comfortably inside an ~80–90 GB mapped-memory budget. "
+            "MoE 229B total with 256 experts and 8 active per token. "
+            "UD dynamic Q2_K_XL (~75.3 GB) is the safest Strix Halo pick; expect a clearer speed edge over the 80 GB 3-bit entry but with a larger quality drop. "
+            "32K context is a safer default on a ~90 GB mapped-memory budget. "
+            "MiniMax official: temp=1.0, top_p=0.95, top_k=40. "
+            "Use this alias when you want the best chance of a clean local benchmark run against qwen3-coder-next-q6."
+        ),
+    ),
+
     # ── Kimi-Dev-72B (Q6_K) ──
     # ~59 GB at Q6_K + ~10 GB KV at 65K ctx = ~69 GB total → comfortable on 96 GB
     # 131K native context possible (total ≈81 GB) if system memory is otherwise clear
