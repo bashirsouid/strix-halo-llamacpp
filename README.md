@@ -14,6 +14,7 @@ The project pulls prebuilt `llama.cpp` container images from `kyuz0/amd-strix-ha
 - keeps the older EvalPlus flow available as a legacy smoke test
 - exposes repo-aware caching helpers for local coding tools such as OpenCode
 - generates a stable per-repo architecture summary that can be reused across many requests
+- auto-starts a transparent proxy on port 8001 for model switching and repo-aware caching while keeping the raw llama-server on port 8000
 - can warm, save, and restore model-scoped llama.cpp slot state per repo
 - ships a pytest suite plus bash smoke tests that cover model helpers, shell entrypoints, wrapper scripts, and the top-level `./test.sh` runner
 
@@ -39,6 +40,11 @@ python server.py download-images
 python server.py download qwen3-coder-next-q6
 python server.py serve qwen3-coder-next-q6 --backend radv
 ```
+
+`python server.py serve ...` and `./start.sh` now do two things automatically:
+
+- keep the raw `llama-server` on `http://127.0.0.1:8000/v1` for debugging, and
+- start a transparent proxy on `http://127.0.0.1:8001/v1` for automatic model switching and repo-aware cache management.
 
 Auto-restart if the launcher notices the server stopped:
 
@@ -81,6 +87,8 @@ Serve a model:
 python server.py serve MODEL --backend radv
 python server.py serve MODEL --backend rocm --np 4 --ctx-per-slot 32768
 ```
+
+By default this also starts the transparent proxy on `127.0.0.1:8001`. Use `--no-proxy` when you explicitly want only the raw server.
 
 Useful cache-related serve flags:
 
@@ -188,16 +196,17 @@ Dry-run launcher checks without touching a live server:
 python server.py test --dry-run --sequential
 ```
 
-Repo-aware caching helpers:
+Repo-aware caching helpers and manual controls:
 
 ```bash
-python server.py repo-init --repo ~/code/my-app --model qwen3-coder-next-udq6xl --models qwen3.5-122b-udq4 qwen3-coder-next-udq6xl
 python server.py repo-refresh --repo ~/code/my-app
-python server.py repo-proxy --backend radv
-python server.py repo-warm --repo ~/code/my-app --model qwen3-coder-next-udq6xl
 python server.py repo-save --repo ~/code/my-app --model qwen3-coder-next-udq6xl
 python server.py repo-restore --repo ~/code/my-app --model qwen3-coder-next-udq6xl
 python server.py repo-status --repo ~/code/my-app --model qwen3-coder-next-udq6xl
+
+# Optional convenience helpers if you want them:
+python server.py repo-init --repo ~/code/my-app --model qwen3-coder-next-udq6xl --models qwen3.5-122b-udq4 qwen3-coder-next-udq6xl
+python server.py repo-proxy --backend radv
 ```
 
 ## Backends
@@ -236,26 +245,31 @@ Useful caching fields in `ModelConfig` now include:
 
 Use `python server.py list` to inspect the current catalog.
 
-## Repo-aware caching, proxy routing, and OpenCode
+## Repo-aware caching, transparent proxy, and OpenCode
 
-The repo helpers now support a **global proxy** that can:
+The normal flow is now intentionally simple:
 
-- inject stable repo context automatically,
-- route requests by project slug,
-- switch `llama-server` models on demand based on the request's `model`,
-- restore the matching repo+model slot automatically,
-- warm a new slot on first use when no snapshot exists yet, and
-- save the active slot automatically when the proxy exits, the launcher stops, or the proxy switches to another repo/model pair.
+1. Start the model once with `./start.sh` or `python server.py serve MODEL --backend ...`.
+2. Point your client at `http://127.0.0.1:8001/v1`.
+3. Send the repo path with `X-Repo-Path` and send the model alias in the normal OpenAI payload.
 
-This keeps the logic at the proxy layer so it works with OpenCode first, but it also stays usable from other OpenAI-compatible tools.
+That is enough for the proxy to:
+
+- auto-generate stable repo context the first time it sees a repository,
+- switch the upstream `llama-server` whenever the requested `model` changes,
+- restore the matching repo+model slot snapshot when it exists,
+- warm a fresh slot when no snapshot exists yet, and
+- save the active slot automatically when the proxy exits, the launcher stops, or traffic moves away from that repo/model pair.
+
+You do **not** need to run `repo-init` or `repo-proxy` for the standard OpenCode workflow anymore. Those commands still exist as manual/debugging helpers.
 
 ### What gets cached
 
 1. A stable repo summary is generated from files such as `README.md`, `AGENTS.md`, `ARCHITECTURE.md`, key manifests, and a trimmed file tree.
-2. The repo summary is injected as the first system message through a local OpenAI-compatible proxy.
+2. The repo summary is injected as the first system message through the local proxy.
 3. Requests are pinned to one llama.cpp slot by setting `id_slot`.
 4. Slot snapshots are scoped to **repo slug + exact model alias + slot id**.
-5. The proxy saves the active slot before switching away and restores the matching slot before forwarding the next request.
+5. The proxy saves before leaving a repo/model pair and restores before returning.
 
 The design goal is to keep the reusable architecture context byte-stable so llama.cpp prompt caching can avoid recomputing the same prefix over and over.
 
@@ -269,58 +283,29 @@ For a repo at `~/code/my-app`, the helper writes cache files under:
 ~/.cache/strix-halo-llamacpp/slots/<repo-slug>--m_<exact-model-key>--slot0.bin
 ~/.cache/strix-halo-llamacpp/proxy-state.json
 ~/.cache/strix-halo-llamacpp/proxy-metrics.jsonl
+./.proxy.log
 ```
 
-`repo-init` also writes an `opencode.json` inside the target project. The generated provider URL is now repo-scoped and looks like:
+### Standard usage
 
-```text
-http://127.0.0.1:8001/r/<repo-slug>/v1
-```
-
-### Recommended flow
-
-1. Generate repo context and a project-local OpenCode config.
+Start the local server and transparent proxy:
 
 ```bash
-python server.py repo-init \
-  --repo ~/code/my-app \
-  --model qwen3-coder-next-udq6xl \
-  --models qwen3.5-122b-udq4 qwen3-coder-next-udq6xl \
-  --small-model qwen3-coder-next-udq6xl
+./start.sh
+# or
+python server.py serve qwen3-coder-next-udq6xl --backend radv
 ```
 
-2. Start the proxy once. Use `--backend` to tell the proxy which backend to use when it has to auto-launch or auto-switch the upstream server.
+After startup:
 
-```bash
-python server.py repo-proxy --backend radv
-```
+- raw upstream server: `http://127.0.0.1:8000/v1`
+- transparent proxy: `http://127.0.0.1:8001/v1`
 
-You can optionally pass a default repo for clients that do not include the repo slug in the URL:
-
-```bash
-python server.py repo-proxy --repo ~/code/my-app --backend radv
-```
-
-3. Start OpenCode from inside the repo.
-
-```bash
-cd ~/code/my-app
-opencode
-```
-
-After that, switching the selected model in OpenCode causes the proxy to:
-
-- save the active repo/model slot if it is dirty,
-- stop the current `llama-server`,
-- start the requested model,
-- restore the matching repo/model slot if one exists, otherwise warm a fresh slot, and
-- forward the real request once the new server is ready.
+The proxy is the endpoint you should give to OpenCode and other coding tools. The raw upstream server stays useful for debugging config issues or talking directly to llama.cpp.
 
 ### OpenCode setup
 
-The generated `opencode.json` is project-local, so OpenCode automatically picks it up when you launch from the project root. OpenCode merges project config on top of global config, and the `model` key uses `provider/model-id` while `small_model` is a separate lightweight model setting. Provider options support `baseURL`, `timeout`, and `chunkTimeout`. Project configs are looked up from the current directory up to the nearest Git root.
-
-A concrete config for the architect/coder split looks like this:
+OpenCode supports custom `baseURL`, `headers`, `timeout`, `chunkTimeout`, project-local `opencode.json`, and environment-variable substitution. A practical project-local config for the architect/coder split looks like this:
 
 ```json
 {
@@ -330,7 +315,10 @@ A concrete config for the architect/coder split looks like this:
       "name": "Strix Halo llama.cpp",
       "npm": "@ai-sdk/openai-compatible",
       "options": {
-        "baseURL": "http://127.0.0.1:8001/r/my-app-a1b2c3d4/v1",
+        "baseURL": "http://127.0.0.1:8001/v1",
+        "headers": {
+          "X-Repo-Path": "{env:PWD}"
+        },
         "chunkTimeout": 120000,
         "timeout": 900000
       },
@@ -362,31 +350,42 @@ A concrete config for the architect/coder split looks like this:
 }
 ```
 
-OpenCode documents that `agent.plan.model` can point at a different model than the global default, which is exactly what you want for a slower architect model and a faster coder model.
+That header-based setup is the important bit. When OpenCode starts inside the repo, `{env:PWD}` resolves to the current working directory, and the proxy walks up to the Git root automatically before building or loading the cache.
 
-### Project routing for other tools
+Typical flow:
 
-Any OpenAI-compatible client can use the same proxy. There are two routing modes:
+```bash
+cd ~/code/my-app
+opencode
+```
 
-- Preferred: include the repo slug in the base URL.
-- Fallback: keep `/v1` and send `X-Repo-Slug: <repo-slug>` if your client supports custom headers.
+After that, switching the selected model in OpenCode causes the proxy to save the old slot, start the requested model if needed, restore the matching slot for the current repo, and then forward the request.
 
-Examples:
+### Other OpenAI-compatible tools
+
+Preferred routing for first-time use is the repo-path header because it lets the proxy auto-initialize a brand-new repo without any setup:
 
 ```text
-http://127.0.0.1:8001/r/my-app-a1b2c3d4/v1
-http://127.0.0.1:8001/v1   +   X-Repo-Slug: my-app-a1b2c3d4
+http://127.0.0.1:8001/v1   +   X-Repo-Path: /absolute/path/to/repo
+```
+
+The older cached-repo slug routing still works after a repo has been seen once:
+
+```text
+http://127.0.0.1:8001/r/<repo-slug>/v1
+http://127.0.0.1:8001/v1   +   X-Repo-Slug: <repo-slug>
 ```
 
 The proxy also serves a synthetic `/v1/models` response so clients can discover the advertised aliases even when the upstream `llama-server` is currently running some other model.
 
 ### Automatic save and restore behavior
 
-Automatic slot persistence is handled in three places:
+Automatic slot persistence is handled in four places:
 
 - the proxy saves the active slot before switching away to another repo/model pair,
+- the proxy saves the active slot when repo-scoped traffic gives way to unscoped traffic,
 - the proxy saves the active slot on clean shutdown, and
-- `python server.py stop` and `./stop.sh` save the active proxy-managed slot before stopping the running container.
+- `python server.py stop` and `./stop.sh` stop the managed proxy before stopping the running container.
 
 Hard kills and power loss still cannot be made crash-safe, so `repo-save` remains available as a manual checkpoint if you want one.
 
@@ -399,17 +398,21 @@ The proxy prints one human-readable line per request and also appends JSONL metr
 [proxy] repo=my-app-a1b2c3d4 status=200 path=/v1/chat/completions time=3.42s model=qwen3-coder-next-udq6xl slot=0 ctx=4102 cache=3800/4102(92.6%) pp=894tok/s gen=412 gen_tps=44.7
 ```
 
+The detached proxy process started by `serve`/`start.sh` also writes its stdout/stderr to `./.proxy.log`.
+
 ### Notes and caveats
 
 - The proxy assumes slot snapshots are only safe to reuse for the **exact same model alias**. Cross-family KV reuse is intentionally not enabled by default.
-- `repo-proxy` listens on `127.0.0.1:8001` by default and forwards to the local `llama-server` on `127.0.0.1:8000`.
+- The standard launcher flow now treats `repo-init` and `repo-proxy` as optional helpers, not required setup steps.
 - If your upstream local server uses an API key, the proxy forwards the correct key upstream after model switches.
 - The launcher publishes the container port to `127.0.0.1` only. This keeps the slot management endpoints local to the machine.
 - Use `repo-refresh` after major refactors so the cached architecture summary stays relevant.
 
 ## API
 
-The server exposes the OpenAI-compatible API on localhost only.
+The raw upstream server and the transparent proxy both expose OpenAI-compatible APIs on localhost only. In day-to-day coding-tool use, prefer the proxy on port `8001`.
+
+Raw upstream llama.cpp:
 
 ```bash
 curl http://127.0.0.1:8000/v1/models
@@ -420,6 +423,21 @@ curl http://127.0.0.1:8000/v1/chat/completions \
     "model": "qwen3-coder-next-q6",
     "messages": [{"role": "user", "content": "Hello"}],
     "max_tokens": 128
+  }'
+```
+
+Transparent proxy with automatic repo routing:
+
+```bash
+curl http://127.0.0.1:8001/v1/models
+
+curl http://127.0.0.1:8001/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "X-Repo-Path: $PWD" \
+  -d '{
+    "model": "qwen3-coder-next-q6",
+    "messages": [{"role": "user", "content": "Summarize the project architecture."}],
+    "max_tokens": 256
   }'
 ```
 

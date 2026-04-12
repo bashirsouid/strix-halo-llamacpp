@@ -23,7 +23,7 @@ def _import_server_for_tests(monkeypatch):
 
     repo_cache = types.ModuleType("repo_cache")
     repo_cache.DEFAULT_PROXY_HOST = "127.0.0.1"
-    repo_cache.DEFAULT_PROXY_PORT = 8001
+    repo_cache.DEFAULT_PROXY_PORT = 8002
     repo_cache.DEFAULT_SLOT_ID = 0
     repo_cache.SLOT_CACHE_ROOT = Path("/tmp/slots")
     repo_cache.ensure_cache_dirs = lambda *args, **kwargs: None
@@ -384,7 +384,7 @@ def test_run_aider_benchmark_uses_exec_and_host_side_stats(monkeypatch, tmp_path
     assert result["post_completion_wait_sec"] == 45.5
     assert result["proxy_enabled"] is True
     assert result["proxy_log_file"].endswith(".proxy.log")
-    assert result["openai_base_url"] == "http://host.docker.internal:8001/v1"
+    assert result["openai_base_url"] == "http://host.docker.internal:8002/v1"
 
 
 class _FakeCfg:

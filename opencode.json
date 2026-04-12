@@ -1,0 +1,27 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "strix-local/qwen3-coder-next-udq6xl",
+  "provider": {
+    "strix-local": {
+      "models": {
+        "qwen3-coder-next-udq6xl": {
+          "limit": {
+            "context": 262144,
+            "output": 8192
+          },
+          "name": "Qwen3 Coder Next (UD-Q6_K_XL)"
+        }
+      },
+      "name": "Strix Halo llama.cpp",
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "baseURL": "http://127.0.0.1:8002/v1",
+        "chunkTimeout": 120000,
+        "headers": {
+          "X-Repo-Path": "{env:PWD}"
+        },
+        "timeout": 900000
+      }
+    }
+  }
+}

@@ -42,6 +42,8 @@ import json
 import hashlib
 import os
 import shutil
+import signal
+import socket
 import subprocess
 import sys
 import textwrap
@@ -86,6 +88,8 @@ PROJECT_DIR  = Path(__file__).resolve().parent
 LLAMA_SRC    = PROJECT_DIR / "llama.cpp"
 PID_FILE     = PROJECT_DIR / ".server.pid"
 STATE_FILE   = PROJECT_DIR / ".server.json"
+PROXY_PID_FILE = PROJECT_DIR / ".proxy.pid"
+PROXY_LOG_FILE = PROJECT_DIR / ".proxy.log"
 
 # Legacy path — if you previously built into "build/", we check there as fallback.
 LLAMA_BUILD_LEGACY = LLAMA_SRC / "build"
@@ -196,6 +200,125 @@ def _current_backend() -> str | None:
     state = _load_state() or {}
     backend = state.get("backend")
     return backend if isinstance(backend, str) and backend else None
+
+
+def _read_pid_file(path: Path) -> int | None:
+    try:
+        raw = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+def _pid_is_running(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _wait_for_tcp(host: str, port: int, timeout: float = 10.0) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            with socket.create_connection((host, port), timeout=1.0):
+                return True
+        except OSError:
+            time.sleep(0.2)
+    return False
+
+
+def _stop_managed_proxy(timeout: float = 15.0, silent: bool = False) -> bool:
+    pid = _read_pid_file(PROXY_PID_FILE)
+    if pid is None:
+        PROXY_PID_FILE.unlink(missing_ok=True)
+        return False
+    if not _pid_is_running(pid):
+        PROXY_PID_FILE.unlink(missing_ok=True)
+        return False
+
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        PROXY_PID_FILE.unlink(missing_ok=True)
+        return False
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not _pid_is_running(pid):
+            PROXY_PID_FILE.unlink(missing_ok=True)
+            if not silent:
+                ok(f"Stopped managed proxy (pid {pid})")
+            return True
+        time.sleep(0.2)
+
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except OSError:
+        pass
+    time.sleep(0.2)
+    PROXY_PID_FILE.unlink(missing_ok=True)
+    if not silent:
+        warn(f"Managed proxy pid {pid} did not exit cleanly; sent SIGKILL")
+    return True
+
+
+def _start_managed_proxy(*, backend: str, server_port: int, listen_host: str = DEFAULT_PROXY_HOST,
+                         listen_port: int = DEFAULT_PROXY_PORT, default_model: str | None = None,
+                         verbose: bool = False, metrics: bool = True) -> tuple[bool, str]:
+    _stop_managed_proxy(silent=True)
+
+    log_handle = PROXY_LOG_FILE.open("ab")
+    cmd = [
+        sys.executable,
+        str(PROJECT_DIR / "server.py"),
+        "repo-proxy",
+        "--host", listen_host,
+        "--port", str(listen_port),
+        "--server-port", str(server_port),
+        "--backend", backend,
+    ]
+    if default_model:
+        cmd += ["--default-model", default_model]
+    if verbose:
+        cmd += ["--verbose"]
+    if not metrics:
+        cmd += ["--no-metrics"]
+
+    env = os.environ.copy()
+    env.setdefault("PYTHONUNBUFFERED", "1")
+
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(PROJECT_DIR),
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+            env=env,
+        )
+    except OSError as exc:
+        log_handle.close()
+        return False, str(exc)
+
+    log_handle.close()
+    PROXY_PID_FILE.write_text(str(proc.pid) + "\n", encoding="utf-8")
+
+    probe_host = "127.0.0.1" if listen_host in {"0.0.0.0", "::"} else listen_host
+    if _wait_for_tcp(probe_host, listen_port, timeout=10.0):
+        return True, f"http://{listen_host}:{listen_port}/v1"
+
+    error = f"managed proxy did not become ready on http://{listen_host}:{listen_port}/v1 (see {PROXY_LOG_FILE})"
+    _stop_managed_proxy(silent=True)
+    return False, error
 
 
 def _api_key_for_model(model_alias: str | None = None) -> str | None:
@@ -423,23 +546,26 @@ def _repo_slot_filename(repo_dir: str | Path, *, model_alias: str | None = None,
 
 
 def _advertised_models(model_args: list[str] | None = None) -> list[dict[str, Any]]:
-    aliases: list[str]
+    configs: list[ModelConfig]
     if model_args:
-        aliases = []
+        configs = []
+        seen: set[str] = set()
         for item in model_args:
-            alias = get_model(item).alias
-            if alias not in aliases:
-                aliases.append(alias)
+            cfg = get_model(item)
+            if cfg.alias in seen:
+                continue
+            configs.append(cfg)
+            seen.add(cfg.alias)
     else:
-        aliases = [alias for alias in MODELS]
+        configs = visible_models()
     return [
         {
-            "alias": MODELS[alias].alias,
-            "name": MODELS[alias].name,
-            "context_limit": MODELS[alias].ctx_size,
+            "alias": cfg.alias,
+            "name": cfg.name,
+            "context_limit": cfg.ctx_size,
             "output_limit": 8192,
         }
-        for alias in aliases
+        for cfg in configs
     ]
 
 
@@ -455,7 +581,7 @@ def _launch_model_for_proxy(model_alias: str, *, backend: str, port: int, verbos
         cfg.cache_ram = state.get("cache_ram")
     if isinstance(state.get("slot_save_path"), str) and state["slot_save_path"]:
         cfg.slot_save_path = state["slot_save_path"]
-    launch_server(cfg, port=port, backend=backend, verbose=verbose)
+    launch_server(cfg, port=port, backend=backend, verbose=verbose, manage_proxy=False)
 
 
 def _flush_proxy_slot_state(port: int | None = None) -> dict[str, Any] | None:
@@ -837,9 +963,13 @@ def wait_for_server(port: int = 8000, timeout: int = 300, verbose: bool = False)
 def launch_server(cfg: ModelConfig, port: int = 8000, backend: str = "vulkan",
                   extra_args: list[str] | None = None, verbose: bool = False,
                   parallel_override: int | None = None,
-                  ctx_override: int | None = None):
+                  ctx_override: int | None = None,
+                  manage_proxy: bool = True):
     """Start llama-server via container."""
     download_model(cfg)
+
+    if manage_proxy:
+        _stop_managed_proxy(silent=True)
 
     # Stop any existing server (native or container)
     stop_server(save_proxy_state=False)
@@ -2577,6 +2707,16 @@ def main():
                          help="Directory used for llama.cpp slot save/restore snapshots")
     p_serve.add_argument("--disable-slot-persistence", action="store_true",
                          help="Disable llama.cpp slot save/restore endpoints for this launch")
+    p_serve.add_argument("--no-proxy", action="store_true",
+                         help="Do not auto-start the transparent proxy on port 8002")
+    p_serve.add_argument("--proxy-host", default=DEFAULT_PROXY_HOST,
+                         help="Host for the auto-managed transparent proxy")
+    p_serve.add_argument("--proxy-port", type=int, default=DEFAULT_PROXY_PORT,
+                         help="Port for the auto-managed transparent proxy")
+    p_serve.add_argument("--proxy-verbose", action="store_true",
+                         help="Enable verbose logging in the auto-managed proxy")
+    p_serve.add_argument("--proxy-no-metrics", action="store_true",
+                         help="Disable one-line request metrics in the auto-managed proxy")
     p_serve.add_argument("--reasoning-format", choices=["auto", "deepseek", "deepseek-legacy", "none"], default=None,
                          help="Override llama.cpp reasoning parser for this launch")
     p_serve.add_argument("--reasoning-budget", type=int, default=None,
@@ -2593,7 +2733,7 @@ def main():
 
     # repo-aware caching helpers
     p_repo_init = sub.add_parser("repo-init",
-        help="Generate stable repo context and an OpenCode config for a project")
+        help="Generate stable repo context and a project-local OpenCode config (optional convenience)")
     p_repo_init.add_argument("--repo", default=".",
                              help="Project repository path (default: current directory)")
     p_repo_init.add_argument("--model", default=None,
@@ -2619,7 +2759,7 @@ def main():
                                 help="Project repository path (default: current directory)")
 
     p_repo_proxy = sub.add_parser("repo-proxy",
-        help="Run a local OpenAI-compatible proxy that injects cached repo context and auto-switches models")
+        help="Run the transparent local OpenAI-compatible proxy manually (normally auto-started by serve/start.sh)")
     p_repo_proxy.add_argument("--repo", default=None,
                               help="Optional default project repository path used when the client does not send a repo slug")
     p_repo_proxy.add_argument("--host", default=DEFAULT_PROXY_HOST,
@@ -2886,7 +3026,28 @@ def main():
                       parallel_override=parallel_override,
                       ctx_override=ctx_override)
 
+        if args.no_proxy:
+            info(f"Transparent proxy disabled; raw llama-server is on http://127.0.0.1:{args.port}/v1")
+        else:
+            proxy_backend = args.backend or _current_backend() or "radv"
+            ok_started, detail = _start_managed_proxy(
+                backend=proxy_backend,
+                server_port=args.port,
+                listen_host=args.proxy_host,
+                listen_port=args.proxy_port,
+                default_model=cfg.alias,
+                verbose=args.proxy_verbose,
+                metrics=not args.proxy_no_metrics,
+            )
+            if ok_started:
+                ok(f"Transparent proxy ready — {detail}")
+                info(f"Proxy routing: send model in payload; send repo with X-Repo-Path or /r/<repo-slug>/v1")
+                info(f"Proxy log: {PROXY_LOG_FILE}")
+            else:
+                warn(f"Failed to auto-start transparent proxy: {detail}")
+
     elif args.command == "stop":
+        _stop_managed_proxy()
         stop_server()
 
     elif args.command == "repo-init":
@@ -2941,8 +3102,9 @@ def main():
         ok(f"Wrote metadata: {paths.metadata_file}")
         ok(f"Wrote OpenCode config: {config_path}")
         info(f"Repo slug: {paths.slug}")
-        info(f"Project proxy URL: http://127.0.0.1:{args.proxy_port}/r/{paths.slug}/v1")
-        info(f"Next: python server.py repo-proxy --repo {paths.repo_dir} --backend {_current_backend() or 'radv'}")
+        info(f"Transparent proxy base URL: http://127.0.0.1:{args.proxy_port}/v1")
+        info("Recommended OpenCode header: X-Repo-Path = {env:PWD}")
+        info(f"Manual proxy start (optional): python server.py repo-proxy --backend {_current_backend() or 'radv'}")
 
     elif args.command == "repo-refresh":
         paths = refresh_repo_context(args.repo)
@@ -2972,7 +3134,8 @@ def main():
         )
         if default_paths is not None:
             info(f"Default repo: {default_paths.repo_dir} ({default_paths.slug})")
-        info(f"Project route format: http://127.0.0.1:{args.port}/r/<repo-slug>/v1")
+        info(f"Repo header format: X-Repo-Path: /absolute/path/to/repo")
+        info(f"Cached repo route format: http://127.0.0.1:{args.port}/r/<repo-slug>/v1")
 
         start_repo_proxy(
             default_paths.repo_dir if default_paths is not None else None,
