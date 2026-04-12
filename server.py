@@ -141,6 +141,13 @@ VULKAN_BACKENDS = ("vulkan", "radv", "amdvlk")
 ROCM_BACKENDS = tuple(name for name in VALID_BACKENDS if name.startswith("rocm"))
 
 RESULTS_DIR = PROJECT_DIR / "results"
+
+DEFAULT_REPO_BUILD_MODEL = "qwen3-coder-next-udq6xl"
+DEFAULT_REPO_PLAN_MODEL = "qwen3.5-122b-udq4"
+DEFAULT_REPO_INIT_MODEL_ALIASES = (
+    DEFAULT_REPO_BUILD_MODEL,
+    DEFAULT_REPO_PLAN_MODEL,
+)
 BENCH_RESULTS_DIR = RESULTS_DIR / "benchmark"
 EVAL_RESULTS_DIR = RESULTS_DIR / "eval"
 BENCH_RESULTS_FILE = BENCH_RESULTS_DIR / "bench_results.jsonl"
@@ -543,6 +550,18 @@ def _repo_slot_filename(repo_dir: str | Path, *, model_alias: str | None = None,
         return filename
     alias = _repo_model_alias_or_running(model_alias)
     return slot_filename_for(repo_dir, alias, slot_id=slot_id)
+
+
+def _default_repo_init_model_configs() -> list[ModelConfig]:
+    configs: list[ModelConfig] = []
+    seen: set[str] = set()
+    for alias in DEFAULT_REPO_INIT_MODEL_ALIASES:
+        cfg = copy.deepcopy(get_model(alias))
+        if cfg.alias in seen:
+            continue
+        configs.append(cfg)
+        seen.add(cfg.alias)
+    return configs
 
 
 def _advertised_models(model_args: list[str] | None = None) -> list[dict[str, Any]]:
@@ -2708,7 +2727,7 @@ def main():
     p_serve.add_argument("--disable-slot-persistence", action="store_true",
                          help="Disable llama.cpp slot save/restore endpoints for this launch")
     p_serve.add_argument("--no-proxy", action="store_true",
-                         help="Do not auto-start the transparent proxy on port 8002")
+                         help="Do not auto-start the transparent proxy on port 8001")
     p_serve.add_argument("--proxy-host", default=DEFAULT_PROXY_HOST,
                          help="Host for the auto-managed transparent proxy")
     p_serve.add_argument("--proxy-port", type=int, default=DEFAULT_PROXY_PORT,
@@ -2737,11 +2756,11 @@ def main():
     p_repo_init.add_argument("--repo", default=".",
                              help="Project repository path (default: current directory)")
     p_repo_init.add_argument("--model", default=None,
-                             help="Default model alias or name for OpenCode (default: running model or picker)")
+                             help="Default model alias or name for OpenCode (default: qwen3-coder-next-udq6xl)")
     p_repo_init.add_argument("--models", nargs="+", default=None,
-                             help="Additional model aliases or names to publish in opencode.json")
+                             help="Model aliases or names to publish in opencode.json (default: qwen3-coder-next-udq6xl + qwen3.5-122b-udq4)")
     p_repo_init.add_argument("--small-model", default=None,
-                             help="Optional OpenCode small_model alias or name")
+                             help="Optional OpenCode small_model alias or name (default: same as --model)")
     p_repo_init.add_argument("--proxy-port", type=int, default=DEFAULT_PROXY_PORT,
                              help="Port that the repo-aware proxy will listen on")
     p_repo_init.add_argument("--context-limit", type=int, default=None,
@@ -3060,22 +3079,33 @@ def main():
                     continue
                 selected_cfgs.append(cfg)
                 seen_aliases.add(cfg.alias)
-
-        if args.model or not selected_cfgs:
-            default_cfg = copy.deepcopy(resolve_model_or_running(args.model, "Pick a default model for OpenCode"))
         else:
-            default_cfg = selected_cfgs[0]
+            for cfg in _default_repo_init_model_configs():
+                if cfg.alias in seen_aliases:
+                    continue
+                selected_cfgs.append(cfg)
+                seen_aliases.add(cfg.alias)
+
+        if args.model:
+            default_cfg = copy.deepcopy(get_model(args.model))
+        else:
+            default_cfg = copy.deepcopy(selected_cfgs[0])
         if default_cfg.alias not in seen_aliases:
             selected_cfgs.insert(0, default_cfg)
             seen_aliases.add(default_cfg.alias)
 
-        small_model_alias = None
         if args.small_model:
             small_cfg = copy.deepcopy(get_model(args.small_model))
             small_model_alias = small_cfg.alias
             if small_cfg.alias not in seen_aliases:
                 selected_cfgs.append(small_cfg)
                 seen_aliases.add(small_cfg.alias)
+        else:
+            small_model_alias = default_cfg.alias
+
+        plan_model_alias = None
+        if DEFAULT_REPO_PLAN_MODEL in seen_aliases and default_cfg.alias != DEFAULT_REPO_PLAN_MODEL:
+            plan_model_alias = DEFAULT_REPO_PLAN_MODEL
 
         published_models = [
             {
@@ -3093,6 +3123,7 @@ def main():
             models=published_models,
             default_model=default_cfg.alias,
             small_model=small_model_alias,
+            plan_model=plan_model_alias,
             proxy_port=args.proxy_port,
             provider_id=args.provider_id,
             provider_name=args.provider_name,
@@ -3103,6 +3134,9 @@ def main():
         ok(f"Wrote OpenCode config: {config_path}")
         info(f"Repo slug: {paths.slug}")
         info(f"Transparent proxy base URL: http://127.0.0.1:{args.proxy_port}/v1")
+        info(f"Default OpenCode model: {default_cfg.alias}")
+        if plan_model_alias:
+            info(f"Default OpenCode agent.plan model: {plan_model_alias}")
         info("Recommended OpenCode header: X-Repo-Path = {env:PWD}")
         info(f"Manual proxy start (optional): python server.py repo-proxy --backend {_current_backend() or 'radv'}")
 

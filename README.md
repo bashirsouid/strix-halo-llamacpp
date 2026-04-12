@@ -205,7 +205,7 @@ python server.py repo-restore --repo ~/code/my-app --model qwen3-coder-next-udq6
 python server.py repo-status --repo ~/code/my-app --model qwen3-coder-next-udq6xl
 
 # Optional convenience helpers if you want them:
-python server.py repo-init --repo ~/code/my-app --model qwen3-coder-next-udq6xl --models qwen3.5-122b-udq4 qwen3-coder-next-udq6xl
+python server.py repo-init --repo ~/code/my-app
 python server.py repo-proxy --backend radv
 ```
 
@@ -305,7 +305,7 @@ The proxy is the endpoint you should give to OpenCode and other coding tools. Th
 
 ### OpenCode setup
 
-OpenCode supports custom `baseURL`, `headers`, `timeout`, `chunkTimeout`, project-local `opencode.json`, and environment-variable substitution. A practical project-local config for the architect/coder split looks like this:
+OpenCode supports custom `baseURL`, `headers`, `timeout`, `chunkTimeout`, project-local `opencode.json`, and environment-variable substitution. `repo-init` now writes this shape by default with `qwen3-coder-next-udq6xl` as the main and `small_model`, plus `agent.plan.model = qwen3.5-122b-udq4`, unless you override it with flags. A practical project-local config for the architect/coder split looks like this:
 
 ```json
 {

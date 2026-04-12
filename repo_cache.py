@@ -24,7 +24,7 @@ REPO_CACHE_ROOT = CACHE_ROOT / "repositories"
 SLOT_CACHE_ROOT = CACHE_ROOT / "slots"
 PROXY_STATE_FILE = CACHE_ROOT / "proxy-state.json"
 PROXY_METRICS_FILE = CACHE_ROOT / "proxy-metrics.jsonl"
-DEFAULT_PROXY_PORT = 8002
+DEFAULT_PROXY_PORT = 8001
 DEFAULT_PROXY_HOST = "127.0.0.1"
 DEFAULT_SLOT_ID = 0
 REPO_ROUTE_PREFIX = "/r"
@@ -639,6 +639,7 @@ def write_opencode_config(
     models: list[PublishedModel | dict[str, Any]] | None = None,
     default_model: str | None = None,
     small_model: str | None = None,
+    plan_model: str | None = None,
     model_alias: str | None = None,
     model_name: str | None = None,
     context_limit: int | None = None,
@@ -695,6 +696,15 @@ def write_opencode_config(
     if small_model:
         config["small_model"] = f"{provider_id}/{small_model}"
 
+    if plan_model:
+        agent = config.setdefault("agent", {})
+        if not isinstance(agent, dict):
+            raise ValueError(f"The agent field in {config_path} must be an object")
+        plan_agent = agent.setdefault("plan", {})
+        if not isinstance(plan_agent, dict):
+            raise ValueError(f"The agent.plan field in {config_path} must be an object")
+        plan_agent["model"] = f"{provider_id}/{plan_model}"
+
     config_path.write_text(json.dumps(config, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return config_path
 
@@ -703,14 +713,94 @@ def repo_system_prompt(context_text: str) -> str:
     return f"{REPO_CONTEXT_MARKER}\n{context_text.strip()}"
 
 
+def _content_contains_marker(content: Any) -> bool:
+    if isinstance(content, str):
+        return REPO_CONTEXT_MARKER in content
+    if isinstance(content, list):
+        for item in content:
+            if isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str) and REPO_CONTEXT_MARKER in text:
+                    return True
+            elif isinstance(item, str) and REPO_CONTEXT_MARKER in item:
+                return True
+    return False
+
+
+def _merge_system_contents(contents: list[Any]) -> Any:
+    normalized: list[str | list[Any]] = []
+    for content in contents:
+        if content is None:
+            continue
+        if isinstance(content, str):
+            stripped = content.strip()
+            if stripped:
+                normalized.append(stripped)
+            continue
+        if isinstance(content, list):
+            if content:
+                normalized.append(copy.deepcopy(content))
+            continue
+        rendered = str(content).strip()
+        if rendered:
+            normalized.append(rendered)
+
+    if not normalized:
+        return ""
+    if not any(isinstance(item, list) for item in normalized):
+        return "\n\n".join(item for item in normalized if isinstance(item, str))
+
+    merged: list[Any] = []
+    for item in normalized:
+        if merged:
+            merged.append({"type": "text", "text": "\n\n"})
+        if isinstance(item, str):
+            merged.append({"type": "text", "text": item})
+        else:
+            merged.extend(item)
+    return merged
+
+
 def payload_has_repo_context(messages: list[dict[str, Any]]) -> bool:
     for message in messages:
         if message.get("role") != "system":
             continue
-        content = message.get("content")
-        if isinstance(content, str) and REPO_CONTEXT_MARKER in content:
+        if _content_contains_marker(message.get("content")):
             return True
     return False
+
+
+def collapse_system_messages(
+    messages: list[dict[str, Any]],
+    *,
+    repo_context_text: str | None = None,
+) -> list[dict[str, Any]]:
+    system_contents: list[Any] = []
+    remaining_messages: list[dict[str, Any]] = []
+    has_repo_context = False
+
+    for message in messages:
+        if not isinstance(message, dict):
+            remaining_messages.append(message)
+            continue
+        if message.get("role") == "system":
+            content = message.get("content")
+            system_contents.append(content)
+            has_repo_context = has_repo_context or _content_contains_marker(content)
+            continue
+        remaining_messages.append(copy.deepcopy(message))
+
+    if repo_context_text and not has_repo_context:
+        system_contents.insert(0, repo_system_prompt(repo_context_text))
+
+    if not system_contents:
+        return remaining_messages
+
+    merged_system = {
+        "role": "system",
+        "content": _merge_system_contents(system_contents),
+    }
+    return [merged_system] + remaining_messages
 
 
 def inject_repo_context(payload: dict[str, Any], context_text: str, slot_id: int = DEFAULT_SLOT_ID) -> dict[str, Any]:
@@ -718,9 +808,7 @@ def inject_repo_context(payload: dict[str, Any], context_text: str, slot_id: int
     messages = cloned.get("messages")
     if not isinstance(messages, list):
         raise ValueError("Expected an OpenAI-compatible payload with a 'messages' array")
-    if not payload_has_repo_context(messages):
-        messages = [{"role": "system", "content": repo_system_prompt(context_text)}] + messages
-    cloned["messages"] = messages
+    cloned["messages"] = collapse_system_messages(messages, repo_context_text=context_text)
     cloned.setdefault("cache_prompt", True)
     cloned.setdefault("id_slot", slot_id)
     return cloned
@@ -874,6 +962,36 @@ def format_proxy_metrics_line(
 
     return " ".join(parts)
 
+
+def _update_sse_metrics_buffer(
+    buffer: str,
+    chunk: bytes,
+    *,
+    latest_payload: dict[str, Any] | None = None,
+) -> tuple[str, dict[str, Any] | None]:
+    text = chunk.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+    buffer += text
+    while "\n\n" in buffer:
+        event, buffer = buffer.split("\n\n", 1)
+        if not event.strip():
+            continue
+        data_lines: list[str] = []
+        for line in event.split("\n"):
+            if not line.startswith("data:"):
+                continue
+            data_lines.append(line[5:].lstrip())
+        if not data_lines:
+            continue
+        data = "\n".join(data_lines).strip()
+        if not data or data == "[DONE]":
+            continue
+        try:
+            payload = json.loads(data)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            latest_payload = payload
+    return buffer, latest_payload
 
 
 def _jsonable(value: Any) -> Any:

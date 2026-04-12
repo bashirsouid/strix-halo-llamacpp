@@ -1,6 +1,7 @@
 __pycache__/
 .venv/
 .server.pid
+.proxy.pid
 llama.cpp/
 .server.json
 .env
