@@ -101,13 +101,18 @@ LLAMA_BUILD_LEGACY = LLAMA_SRC / "build"
 
 CONTAINER_REGISTRY = "docker.io/kyuz0/amd-strix-halo-toolboxes"
 
+# Optional override for experimental ROCm images whose upstream tag names may change.
+# Example:
+#   export STRIX_LLAMA_ROCM7_ROCWMMA_IMPROVED_IMAGE=docker.io/kyuz0/amd-strix-halo-toolboxes:rocm-7alpha-rocwmma-improved
+ROCM7_ROCWMMA_IMPROVED_IMAGE = os.getenv("STRIX_LLAMA_ROCM7_ROCWMMA_IMPROVED_IMAGE", "").strip()
+
 CONTAINER_IMAGES = {
     "vulkan":      f"{CONTAINER_REGISTRY}:vulkan-radv",
     "radv":        f"{CONTAINER_REGISTRY}:vulkan-radv",
     "amdvlk":      f"{CONTAINER_REGISTRY}:vulkan-amdvlk",
     "rocm":        f"{CONTAINER_REGISTRY}:rocm-nightly",
     "rocm6":       f"{CONTAINER_REGISTRY}:rocm-6.4.4",
-    "rocm7":       f"{CONTAINER_REGISTRY}:rocm-7.2",
+    "rocm7":       f"{CONTAINER_REGISTRY}:rocm-7.2.1",
     "rocm7-nightly": f"{CONTAINER_REGISTRY}:rocm7-nightlies",
 }
 
@@ -121,9 +126,13 @@ CONTAINER_NAMES = {
     "rocm7-nightly": "strix-llama-rocm7-nightly",
 }
 
+if ROCM7_ROCWMMA_IMPROVED_IMAGE:
+    CONTAINER_IMAGES["rocm7-rocwmma-improved"] = ROCM7_ROCWMMA_IMPROVED_IMAGE
+    CONTAINER_NAMES["rocm7-rocwmma-improved"] = "strix-llama-rocm7-rocwmma-improved"
+
 VALID_BACKENDS = tuple(CONTAINER_IMAGES.keys())
 VULKAN_BACKENDS = ("vulkan", "radv", "amdvlk")
-ROCM_BACKENDS = ("rocm", "rocm6", "rocm7", "rocm7-nightly")
+ROCM_BACKENDS = tuple(name for name in VALID_BACKENDS if name.startswith("rocm"))
 
 RESULTS_DIR = PROJECT_DIR / "results"
 BENCH_RESULTS_DIR = RESULTS_DIR / "benchmark"
@@ -287,6 +296,33 @@ def _container_image(backend: str) -> str:
 def _container_name(backend: str) -> str:
     """Return the container name for a given backend."""
     return CONTAINER_NAMES.get(backend, CONTAINER_NAMES["vulkan"])
+
+def _rocm_env_flags(backend: str) -> list[str]:
+    """Container env for ROCm backends on integrated Strix Halo GPUs."""
+    if backend not in ROCM_BACKENDS:
+        return []
+
+    env_map: dict[str, str] = {
+        # llama.cpp documents this as the Linux UMA switch for integrated GPUs.
+        "GGML_CUDA_ENABLE_UNIFIED_MEMORY": os.getenv("GGML_CUDA_ENABLE_UNIFIED_MEMORY", "1"),
+        # The Strix Halo benchmark docs compare this enabled vs disabled; keep it easy to override.
+        "ROCBLAS_USE_HIPBLASLT": os.getenv("ROCBLAS_USE_HIPBLASLT", "1"),
+    }
+
+    passthrough = (
+        "HIP_VISIBLE_DEVICES",
+        "HSA_OVERRIDE_GFX_VERSION",
+    )
+
+    flags: list[str] = []
+    for key, value in env_map.items():
+        if value != "":
+            flags += ["-e", f"{key}={value}"]
+    for key in passthrough:
+        value = os.getenv(key)
+        if value:
+            flags += ["-e", f"{key}={value}"]
+    return flags
 
 def _is_container_backend(backend: str) -> bool:
     """All backends now use containers."""
@@ -743,6 +779,7 @@ def launch_server(cfg: ModelConfig, port: int = 8000, backend: str = "vulkan",
 
     image = _container_image(backend)
     container_name = _container_name(backend)
+    env_flags = _rocm_env_flags(backend)
 
     from models import MODELS_DIR
 
@@ -771,7 +808,7 @@ def launch_server(cfg: ModelConfig, port: int = 8000, backend: str = "vulkan",
             "-v", f"{MODELS_DIR}:{MODELS_DIR}:ro",
             "-v", f"{slot_save_dir}:{slot_save_dir}",
             "-p", f"{LOCAL_API_HOST}:{port}:{port}",
-        #] + env_flags + [ #TODO: this is undefined
+        ] + env_flags + [
             image,
             "llama-server",
         ] + args
@@ -2382,7 +2419,7 @@ def main():
                         help="Model to test (uses the hidden smoke-test model by default)")
     p_test.add_argument("--port", type=int, default=8000,
                         help="Port for dry-run tests")
-    p_test.add_argument("--backend", choices=["vulkan", "radv", "amdvlk", "rocm", "rocm6", "rocm7", "rocm7-nightly"], default="radv",
+    p_test.add_argument("--backend", choices=VALID_BACKENDS, default="radv",
                         help="Backend for tests")
     p_test.add_argument("--np", type=int, default=1,
                         help="Parallel slots for parallelization tests (default: 1)")
@@ -2410,7 +2447,7 @@ def main():
                          help="Override parallel slots")
     p_serve.add_argument("--threads", "-t", type=int, default=None,
                          help="Override thread count")
-    p_serve.add_argument("--backend", choices=["vulkan", "radv", "amdvlk", "rocm", "rocm6", "rocm7", "rocm7-nightly"], default="vulkan",
+    p_serve.add_argument("--backend", choices=VALID_BACKENDS, default="vulkan",
                          help="Backend: vulkan/radv (RADV), amdvlk (AMDVLK), rocm/rocm6/rocm7/rocm7-nightly (ROCm)")
     p_serve.add_argument("--no-spec", action="store_true",
                          help="Disable speculative decoding")
@@ -2526,13 +2563,13 @@ def main():
     p_bench.add_argument("model", nargs="?", default=None,
                          help="Model to benchmark (omit to test running server)")
     p_bench.add_argument("--port", type=int, default=8000)
-    p_bench.add_argument("--backend", choices=["vulkan", "radv", "amdvlk", "rocm", "rocm6", "rocm7", "rocm7-nightly"], default="radv")
+    p_bench.add_argument("--backend", choices=VALID_BACKENDS, default="radv")
 
     # bench-all
     p_ball = sub.add_parser("bench-all",
         help="Benchmark all downloaded models and print a comparison report")
     p_ball.add_argument("--port", type=int, default=8000)
-    p_ball.add_argument("--backend", choices=["vulkan", "radv", "amdvlk", "rocm", "rocm6", "rocm7", "rocm7-nightly"], default="radv")
+    p_ball.add_argument("--backend", choices=VALID_BACKENDS, default="radv")
 
     # bench-parallel  ← NEW
     p_bpar = sub.add_parser("bench-parallel",
@@ -2540,7 +2577,7 @@ def main():
     p_bpar.add_argument("model", nargs="?", default=None,
                         help="Model to sweep (interactive picker if omitted)")
     p_bpar.add_argument("--port", type=int, default=8000)
-    p_bpar.add_argument("--backend", choices=["vulkan", "radv", "amdvlk", "rocm", "rocm6", "rocm7", "rocm7-nightly"], default="radv")
+    p_bpar.add_argument("--backend", choices=VALID_BACKENDS, default="radv")
     p_bpar.add_argument("--max-np", type=int, default=None,
                         help="Max --parallel value to test (default: model's max_parallel)")
     p_bpar.add_argument("--max-tokens", type=int, default=256,
@@ -2586,7 +2623,7 @@ def main():
     p_aider.add_argument("--edit-format", default="whole",
                          help="Aider edit format (default: whole)")
     p_aider.add_argument("--port", type=int, default=8000)
-    p_aider.add_argument("--backend", choices=["vulkan", "radv", "amdvlk", "rocm", "rocm6", "rocm7", "rocm7-nightly"],
+    p_aider.add_argument("--backend", choices=VALID_BACKENDS,
                          default=None)
     p_aider.add_argument("--update-harness", action="store_true",
                          help="Fetch latest harness refs and rebuild the Aider Docker image before running")
@@ -2612,7 +2649,7 @@ def main():
     p_aider_all.add_argument("--tries", type=int, default=None)
     p_aider_all.add_argument("--edit-format", default="whole")
     p_aider_all.add_argument("--port", type=int, default=8000)
-    p_aider_all.add_argument("--backend", choices=["vulkan", "radv", "amdvlk", "rocm", "rocm6", "rocm7", "rocm7-nightly"],
+    p_aider_all.add_argument("--backend", choices=VALID_BACKENDS,
                              default=None)
     p_aider_all.add_argument("--update-harness", action="store_true")
     p_aider_all.add_argument("--aider-ref", default=DEFAULT_AIDER_REF)
@@ -2634,7 +2671,7 @@ def main():
     p_eval.add_argument("--label", default=None,
                         help="Optional label to distinguish repeated eval runs")
     p_eval.add_argument("--port", type=int, default=8000)
-    p_eval.add_argument("--backend", choices=["vulkan", "radv", "amdvlk", "rocm", "rocm6", "rocm7", "rocm7-nightly"],
+    p_eval.add_argument("--backend", choices=VALID_BACKENDS,
                         default=None)
 
     # eval-all
@@ -2647,7 +2684,7 @@ def main():
     p_eval_all.add_argument("--label", default=None,
                             help="Optional label to attach to every run in the sweep")
     p_eval_all.add_argument("--port", type=int, default=8000)
-    p_eval_all.add_argument("--backend", choices=["vulkan", "radv", "amdvlk", "rocm", "rocm6", "rocm7", "rocm7-nightly"],
+    p_eval_all.add_argument("--backend", choices=VALID_BACKENDS,
                             default=None)
 
     # eval-reanalyze
@@ -2657,7 +2694,7 @@ def main():
                            help="Only re-analyze runs for this model alias")
     p_eval_re.add_argument("--suite", choices=["humaneval", "mbpp"],
                            default=None)
-    p_eval_re.add_argument("--backend", choices=["vulkan", "radv", "amdvlk", "rocm", "rocm6", "rocm7", "rocm7-nightly"],
+    p_eval_re.add_argument("--backend", choices=VALID_BACKENDS,
                            default=None)
     p_eval_re.add_argument("--profile", choices=["quick", "quick-v1", "mini", "full"],
                            default=None,
