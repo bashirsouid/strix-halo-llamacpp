@@ -2273,6 +2273,7 @@ def aider_setup(
 
 
 MAX_DEFAULT_AIDER_THREADS = 3
+MIN_CONTEXT_SAFE_AIDER_MAX_TOKENS = 2048
 
 
 def _resolve_aider_threads(cfg: ModelConfig, threads: int | None) -> tuple[int, str]:
@@ -2292,6 +2293,26 @@ def _resolve_aider_context_window(cfg: ModelConfig, threads: int) -> int:
     if ctx_per_slot <= 0:
         return int(getattr(cfg, "ctx_size", 0) or 0)
     return ctx_per_slot * max(1, int(threads))
+
+
+def _context_safe_aider_max_tokens(context_window: int) -> int:
+    """Reserve most of the window for prompts, diffs, test output, and retries."""
+    ctx = max(0, int(context_window))
+    if ctx <= 0:
+        return DEFAULT_AIDER_MAX_TOKENS
+    return max(MIN_CONTEXT_SAFE_AIDER_MAX_TOKENS, ctx // 4)
+
+
+def _resolve_aider_max_tokens(requested_max_tokens: int, context_window: int) -> tuple[int, str]:
+    requested = max(1, int(requested_max_tokens))
+    context_cap = _context_safe_aider_max_tokens(context_window)
+    effective = min(requested, context_cap)
+    if effective != requested:
+        return (
+            effective,
+            f"context-safe auto clamp ({context_window} total ctx -> {effective} max_tokens; requested {requested})",
+        )
+    return effective, "cli/default"
 
 
 def _refresh_aider_html_report() -> Path | None:
@@ -2341,15 +2362,24 @@ def aider_bench_single(
 
     effective_threads, threads_source = _resolve_aider_threads(cfg, threads)
     effective_context_window = _resolve_aider_context_window(cfg, effective_threads)
+    effective_max_tokens, max_tokens_source = _resolve_aider_max_tokens(
+        max_tokens,
+        effective_context_window,
+    )
 
     profile_label = manifest_path or profile_name
     label_suffix = f"  label={run_label}" if run_label else ""
     verbose_suffix = "  verbose" if verbose else ""
     info(
         f"═══ Aider benchmark: {cfg.name} ({cfg.alias})  {backend}  "
-        f"profile={profile_label}  max_tokens={max_tokens}  "
+        f"profile={profile_label}  max_tokens={effective_max_tokens} ({max_tokens_source})  "
         f"threads={effective_threads} ({threads_source}){label_suffix}{verbose_suffix} ═══"
     )
+    if effective_max_tokens != int(max_tokens):
+        warn(
+            f"Requested max_tokens={int(max_tokens)} is too high for {effective_context_window} total context. "
+            f"Using max_tokens={effective_max_tokens} instead."
+        )
 
     launch_server(cfg, port=port, backend=backend, parallel_override=effective_threads)
 
@@ -2361,7 +2391,7 @@ def aider_bench_single(
             profile_name=profile_name,
             manifest_path=manifest_path,
             run_label=run_label,
-            max_tokens=max_tokens,
+            max_tokens=effective_max_tokens,
             threads=effective_threads,
             tries=tries,
             edit_format=edit_format,
@@ -2400,7 +2430,7 @@ def aider_bench_single(
     if result.get("exhausted_context_windows"):
         warn(
             f"Context window exhaustion seen {int(result['exhausted_context_windows'])} time(s). "
-            f"Consider raising --max-tokens or the server context window."
+            f"Consider lowering --max-tokens or raising the server context window."
         )
     if result.get("num_malformed_responses"):
         warn(f"Malformed responses seen: {int(result['num_malformed_responses'])}")
@@ -2904,7 +2934,10 @@ def main():
     p_aider.add_argument("--label", default=None,
                          help="Optional label to distinguish repeated aider runs")
     p_aider.add_argument("--max-tokens", type=int, default=DEFAULT_AIDER_MAX_TOKENS,
-                         help=f"Generation cap forwarded to the model via Aider/LiteLLM (default: {DEFAULT_AIDER_MAX_TOKENS})")
+                         help=(
+                             f"Generation cap forwarded to the model via Aider/LiteLLM "
+                             f"(default: {DEFAULT_AIDER_MAX_TOKENS}; automatically clamped for low-context models)"
+                         ))
     p_aider.add_argument("--threads", type=int, default=None,
                          help="Aider benchmark worker threads (default: min(model parallel_slots, 3); override to force another value)")
     p_aider.add_argument("--tries", type=int, default=None,

@@ -525,6 +525,81 @@ MODELS: list[ModelConfig] = [
             "Qwen official: temp=0.6 (coding), top_p=0.95, top_k=20, presence_penalty=0.0."
         ),
     ),
+    
+    # ── Qwen3.6 27B Dense ──
+    # ~17.6 GB at UD-Q4_K_XL → plenty of headroom for KV cache under an ~80 GB budget
+    ModelConfig(
+        name="Qwen3.6 27B (UD-Q4_K_XL)",
+        alias="qwen3.6-27b-udq4",
+        hf_repo="unsloth/Qwen3.6-27B-GGUF",
+        dest_dir=MODELS_DIR / "unsloth/Qwen3.6-27B-GGUF",
+        download_include="*UD-Q4_K_XL*",
+        shard_glob="*UD-Q4_K_XL*.gguf",
+        quant="UD-Q4_K_XL",
+        parallel_slots=1,
+        max_parallel=2,
+        ctx_per_slot=131072,
+        ubatch_size=512,
+        # Qwen3.6 thinking-mode (coding) recommended: temp=1.0, top_p=0.95, top_k=20
+        temperature=1.0,
+        top_p=0.95,
+        top_k=20,
+        min_p=0.0,
+        presence_penalty=0.0,
+        repeat_penalty=1.0,
+        spec=SpecConfig(strategy="ngram"),
+        chat_template_kwargs={"enable_thinking": True},
+        reasoning_format="auto",
+        notes=(
+            "Best for: dense flagship-level coding, reasoning, and hard SWE tasks. "
+            "Qwen3.6-27B is a 27B dense multimodal model with 262K native context and hybrid-thinking, "
+            "released April 2026 under Apache-2.0. "
+            "UD-Q4_K_XL (~17.6 GB) keeps quality close to BF16 while cutting bandwidth — "
+            "critical for Strix Halo's UMA memory bandwidth bottleneck. "
+            "Thinking mode always enabled via chat_template_kwargs; use for all coding tasks. "
+            "Qwen official thinking-mode sampling: temp=1.0, top_p=0.95, top_k=20. "
+            "Dense = slower tok/s than the A3B MoE; use when you need the strongest single-pass answer. "
+            "ctx_per_slot capped at 131K (vs native 262K) to keep KV pressure manageable on UMA."
+        ),
+    ),
+
+    # ── Qwen3.6 35B A3B MoE ──
+    # ~19.5 GB at UD-IQ4_NL_XL → MoE ~3B active → very KV-light, great for UMA + multi-slot
+    ModelConfig(
+        name="Qwen3.6 35B A3B (UD-IQ4_NL_XL)",
+        alias="qwen3.6-35b-a3b-udiq4nlxl",
+        hf_repo="unsloth/Qwen3.6-35B-A3B-GGUF",
+        dest_dir=MODELS_DIR / "unsloth/Qwen3.6-35B-A3B-GGUF",
+        download_include="*UD-IQ4_NL_XL*",
+        shard_glob="*UD-IQ4_NL_XL*.gguf",
+        quant="UD-IQ4_NL_XL",
+        # MoE (3B active) plays nicely with UMA → more parallelism is viable
+        parallel_slots=3,
+        max_parallel=6,
+        ctx_per_slot=262144,
+        ubatch_size=512,
+        # Qwen3.6 thinking-mode (coding) recommended: temp=1.0, top_p=0.95, top_k=20
+        temperature=1.0,
+        top_p=0.95,
+        top_k=20,
+        min_p=0.0,
+        presence_penalty=0.0,
+        repeat_penalty=1.0,
+        spec=SpecConfig(strategy="ngram"),
+        chat_template_kwargs={"enable_thinking": True},
+        reasoning_format="auto",
+        notes=(
+            "Best for: fast hybrid-thinking coding, SWE-bench-style repair, agentic loops. "
+            "Qwen3.6-35B-A3B is a sparse MoE (35B total, ~3B active) with 262K native context, "
+            "hybrid thinking, and 73.4%% SWE-bench. Released April 2026 under Apache-2.0. "
+            "UD-IQ4_NL_XL (~19.5 GB) uses improved KL-divergence vs older Q4_K variants — "
+            "near-lossless quality at 4-bit, well within an ~80 GB budget on Strix Halo. "
+            "Thinking mode always enabled via chat_template_kwargs; Qwen official thinking-mode "
+            "sampling: temp=1.0, top_p=0.95, top_k=20. "
+            "MoE 3B active + ngram speculation = much better tok/s than dense peers on UMA. "
+            "3 parallel slots viable since active KV footprint is tiny at 3B active params."
+        ),
+    ),
 
     # ── Gemma 4 26B A4B MoE ──
     ModelConfig(
