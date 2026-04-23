@@ -146,6 +146,7 @@ class ModelConfig:
     clear_idle: int = 0                  # --clear-idle (seconds)
     cpu_moe: int = 0                     # --cpu-moe (layers)
     n_cpu_moe: int = 0                   # --n-cpu-moe (n-batch)
+    prefill_assistant: bool = True       # --prefill-assistant / --no-prefill-assistant
 
     #  Speculation  
     spec: SpecConfig = field(default_factory=SpecConfig)
@@ -272,6 +273,8 @@ class ModelConfig:
             args += ["--cpu-moe", str(self.cpu_moe)]
         if self.n_cpu_moe > 0:
             args += ["--n-cpu-moe", str(self.n_cpu_moe)]
+        if not self.prefill_assistant:
+            args += ["--no-prefill-assistant"]
 
         args += self.spec.server_args()
         args += self.extra_args
@@ -313,6 +316,7 @@ MODELS: list[ModelConfig] = [
         top_p=0.95,
         top_k=40,
         min_p=0.01,
+        prefill_assistant=False,
         spec=SpecConfig(strategy="ngram"),
         notes=(
             "Best for: coding agents, tool calling, agentic workflows. "
@@ -320,7 +324,8 @@ MODELS: list[ModelConfig] = [
             "Non-thinking — fast direct responses, no <think> blocks. "
             "Qwen official: temp=1.0, top_p=0.95, top_k=40. "
             "Bug: -ub must be 512 on Strix Halo Vulkan (issue #18725). "
-            "Bug: Do NOT use Q6_K_XL — broken architecture detection."
+            "Bug: Do NOT use Q6_K_XL — broken architecture detection. "
+            "--no-prefill-assistant improves multi-turn conversation quality."
         ),
     ),
 
@@ -342,6 +347,7 @@ MODELS: list[ModelConfig] = [
         top_p=0.95,
         top_k=40,
         min_p=0.01,
+        prefill_assistant=False,
         spec=SpecConfig(strategy="ngram"),
         notes=(
             "Best for: coding agents, tool calling, agentic workflows. "
@@ -349,7 +355,8 @@ MODELS: list[ModelConfig] = [
             "Non-thinking — fast direct responses, no  Witt blocks. "
             "Qwen official: temp=1.0, top_p=0.95, top_k=40. "
             "Bug: -ub must be 512 on Strix Halo Vulkan (issue #18725). "
-            "Bug: Do NOT use Q6_K_XL — broken architecture detection."
+            "Bug: Do NOT use Q6_K_XL — broken architecture detection. "
+            "--no-prefill-assistant improves multi-turn conversation quality."
         ),
     ),
 
@@ -371,6 +378,7 @@ MODELS: list[ModelConfig] = [
         top_p=0.95,
         top_k=40,
         min_p=0.01,
+        prefill_assistant=False,
         spec=SpecConfig(strategy="ngram"),
         notes=(
             "Best for: coding agents, tool calling, agentic workflows. "
@@ -378,7 +386,8 @@ MODELS: list[ModelConfig] = [
             "Non-thinking — fast direct responses, no <think> blocks. "
             "Qwen official: temp=1.0, top_p=0.95, top_k=40. "
             "Bug: -ub must be 512 on Strix Halo Vulkan (issue #18725). "
-            "Bug: Do NOT use Q6_K_XL — broken architecture detection."
+            "Bug: Do NOT use Q6_K_XL — broken architecture detection. "
+            "--no-prefill-assistant improves multi-turn conversation quality."
         ),
     ),
 
@@ -515,6 +524,7 @@ MODELS: list[ModelConfig] = [
         min_p=0.0,
         presence_penalty=0.0,  # Qwen official: 0.0 for coding tasks
         repeat_penalty=1.0,
+        prefill_assistant=False,
         spec=SpecConfig(strategy="ngram"),
         chat_template_kwargs={"enable_thinking": True},
         reasoning_format="auto",
@@ -522,7 +532,8 @@ MODELS: list[ModelConfig] = [
             "Best for: reasoning, summarization, general-purpose. "
             "MoE 35B (3B active). Thinking mode forced on via chat_template_kwargs.enable_thinking. "
             "~48 GB at Q8_K_XL — high quality. Multimodal. "
-            "Qwen official: temp=0.6 (coding), top_p=0.95, top_k=20, presence_penalty=0.0."
+            "Qwen official: temp=0.6 (coding), top_p=0.95, top_k=20, presence_penalty=0.0. "
+            "--no-prefill-assistant improves multi-turn conversation quality."
         ),
     ),
     
@@ -547,6 +558,7 @@ MODELS: list[ModelConfig] = [
         min_p=0.0,
         presence_penalty=0.0,
         repeat_penalty=1.0,
+        prefill_assistant=False,
         spec=SpecConfig(strategy="ngram"),
         chat_template_kwargs={"enable_thinking": True},
         reasoning_format="auto",
@@ -559,7 +571,8 @@ MODELS: list[ModelConfig] = [
             "Thinking mode always enabled via chat_template_kwargs; use for all coding tasks. "
             "Qwen official thinking-mode sampling: temp=1.0, top_p=0.95, top_k=20. "
             "Dense = slower tok/s than the A3B MoE; use when you need the strongest single-pass answer. "
-            "ctx_per_slot capped at 131K (vs native 262K) to keep KV pressure manageable on UMA."
+            "ctx_per_slot capped at 131K (vs native 262K) to keep KV pressure manageable on UMA. "
+            "--no-prefill-assistant improves multi-turn conversation quality."
         ),
     ),
 
@@ -585,6 +598,7 @@ MODELS: list[ModelConfig] = [
         min_p=0.0,
         presence_penalty=0.0,
         repeat_penalty=1.0,
+        prefill_assistant=False,
         spec=SpecConfig(strategy="ngram"),
         chat_template_kwargs={"enable_thinking": True},
         reasoning_format="auto",
@@ -597,7 +611,8 @@ MODELS: list[ModelConfig] = [
             "Thinking mode always enabled via chat_template_kwargs; Qwen official thinking-mode "
             "sampling: temp=1.0, top_p=0.95, top_k=20. "
             "MoE 3B active + ngram speculation = much better tok/s than dense peers on UMA. "
-            "3 parallel slots viable since active KV footprint is tiny at 3B active params."
+            "3 parallel slots viable since active KV footprint is tiny at 3B active params. "
+            "--no-prefill-assistant improves multi-turn conversation quality."
         ),
     ),
 
@@ -618,6 +633,7 @@ MODELS: list[ModelConfig] = [
         temperature=1.0,
         top_p=0.95,
         top_k=64,
+        prefill_assistant=False,
         spec=SpecConfig(strategy="ngram"),
         chat_template_kwargs={"enable_thinking": True},
         reasoning_format="auto",
@@ -629,7 +645,8 @@ MODELS: list[ModelConfig] = [
             "Thinking mode is forced on via chat_template_kwargs.enable_thinking. "
             "Google official: temp=1.0, top_p=0.95, top_k=64. "
             "Vision: requires mmproj-BF16.gguf projector file. "
-            "Apache 2.0. Day-1 note: tool-call templates still maturing in llama.cpp."
+            "Apache 2.0. Day-1 note: tool-call templates still maturing in llama.cpp. "
+            "--no-prefill-assistant improves multi-turn conversation quality."
         ),
     ),
 
@@ -650,6 +667,7 @@ MODELS: list[ModelConfig] = [
         temperature=1.0,
         top_p=0.95,
         top_k=64,
+        prefill_assistant=False,
         chat_template_kwargs={"enable_thinking": True},
         reasoning_format="auto",
         notes=(
@@ -662,7 +680,8 @@ MODELS: list[ModelConfig] = [
             "Google official: temp=1.0, top_p=0.95, top_k=64. "
             "Vision: download mmproj-BF16.gguf separately, use --mmproj flag. "
             "Apache 2.0. No speculation — dense models don't benefit much from "
-            "ngram on UMA, and draft models add memory pressure."
+            "ngram on UMA, and draft models add memory pressure. "
+            "--no-prefill-assistant improves multi-turn conversation quality."
         ),
     ),
 
@@ -779,6 +798,7 @@ MODELS: list[ModelConfig] = [
         top_p=0.95,
         presence_penalty=0.0,  # NVIDIA default (no penalty)
         frequency_penalty=0.0,  # NVIDIA default (no penalty)
+        prefill_assistant=False,
         spec=SpecConfig(strategy="ngram"),
         chat_template_kwargs={"enable_thinking": True},
         reasoning_format="auto",
@@ -788,7 +808,8 @@ MODELS: list[ModelConfig] = [
             "Natively supports 1M context (limited here by memory). "
             "NVIDIA official: temp=1.0, top_p=0.95. "
             "Thinking mode is forced on via chat_template_kwargs.enable_thinking. "
-            "Use --reasoning-budget and --reasoning-format controls for advanced usage."
+            "Use --reasoning-budget and --reasoning-format controls for advanced usage. "
+            "--no-prefill-assistant improves multi-turn conversation quality."
         ),
     ),
 
@@ -809,6 +830,7 @@ MODELS: list[ModelConfig] = [
         min_p=0.0,
         presence_penalty=0.0,
         frequency_penalty=0.0,
+        prefill_assistant=False,
         spec=SpecConfig(strategy="ngram"),
         chat_template_kwargs={"enable_thinking": True},
         reasoning_format="auto",
@@ -818,7 +840,8 @@ MODELS: list[ModelConfig] = [
             "UD dynamic quant for better quality-per-GB than the prior uniform Q4 entry. "
             "Thinking mode is forced on via chat_template_kwargs.enable_thinking. "
             "Good for drafting, quick Q&A, low-latency tool calls. "
-            "NVIDIA: temp=0.6 for lightweight tasks."
+            "NVIDIA: temp=0.6 for lightweight tasks. "
+            "--no-prefill-assistant improves multi-turn conversation quality."
         ),
     ),
 
@@ -840,6 +863,7 @@ MODELS: list[ModelConfig] = [
         min_p=0.0,
         presence_penalty=0.0,
         frequency_penalty=0.0,
+        prefill_assistant=False,
         spec=SpecConfig(strategy="ngram"),
         chat_template_kwargs={"enable_thinking": True},
         reasoning_format="auto",
@@ -848,7 +872,8 @@ MODELS: list[ModelConfig] = [
             "MoE 30B (3B active). ~45+ tok/s at Q8. "
             "Thinking mode is forced on via chat_template_kwargs.enable_thinking. "
             "Good for drafting, quick Q&A, low-latency tool calls. "
-            "NVIDIA: temp=0.6 for lightweight tasks."
+            "NVIDIA: temp=0.6 for lightweight tasks. "
+            "--no-prefill-assistant improves multi-turn conversation quality."
         ),
     ),
 
@@ -871,6 +896,7 @@ MODELS: list[ModelConfig] = [
         min_p=0.0,
         presence_penalty=0.0,  # Qwen official: 0.0 for coding tasks
         repeat_penalty=1.0,       # Keep at 1.0 (off) to prevent degrading <think> loops
+        prefill_assistant=False,
         spec=SpecConfig(strategy="ngram"),
         chat_template_kwargs={"enable_thinking": True},
         reasoning_format="auto",
@@ -880,7 +906,8 @@ MODELS: list[ModelConfig] = [
             "Expect ~12-15 tok/sec on Strix Halo 395 due to 10B active parameters. "
             "Thinking mode is forced on via chat_template_kwargs.enable_thinking. "
             "Qwen official: temp=0.6 (coding), top_p=0.95, top_k=20, presence_penalty=0.0. "
-            "Do not use for fast autocomplete; use strictly as a planner/architect."
+            "Do not use for fast autocomplete; use strictly as a planner/architect. "
+            "--no-prefill-assistant improves multi-turn conversation quality."
         ),
     ),
 
